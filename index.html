@@ -60,7 +60,7 @@
     <main class="app-main">
         <div class="grid-stack">
             <!-- Panel A: Connection -->
-            <div class="grid-stack-item" gs-w="3" gs-h="4" gs-x="0" gs-y="0" id="panel-connection">
+            <div class="grid-stack-item" gs-w="4" gs-h="6" gs-x="0" gs-y="0" id="panel-connection">
                 <div class="grid-stack-item-content panel-glass">
                     <div class="panel-header" style="justify-content: space-between;">
                         <h2>Connection</h2>
@@ -101,7 +101,7 @@
             </div>
 
             <!-- Panel D: Machine Controls -->
-            <div class="grid-stack-item" gs-w="3" gs-h="5" gs-x="0" gs-y="4" id="panel-machine-jog">
+            <div class="grid-stack-item" gs-w="4" gs-h="6" gs-x="4" gs-y="0" id="panel-machine-jog">
                 <div class="grid-stack-item-content panel-glass">
                     <div class="panel-header">
                         <h2>Machine & Jog</h2>
@@ -155,7 +155,7 @@
             </div>
 
             <!-- Panel B: Command Log -->
-            <div class="grid-stack-item" gs-w="3" gs-h="13" gs-x="9" gs-y="0" id="panel-console">
+            <div class="grid-stack-item" gs-w="4" gs-h="6" gs-x="8" gs-y="0" id="panel-console">
                 <div class="grid-stack-item-content panel-glass">
                     <div class="panel-header">
                         <h2>Command Log</h2>
@@ -192,7 +192,7 @@
             </div>
 
             <!-- Panel C: Visualiser -->
-            <div class="grid-stack-item" gs-w="6" gs-h="11" gs-x="3" gs-y="0" id="panel-visualiser">
+            <div class="grid-stack-item" gs-w="4" gs-h="6" gs-x="0" gs-y="6" id="panel-visualiser">
                 <div class="grid-stack-item-content panel-glass">
                     <div class="panel-header">
                         <h2>Visualiser</h2>
@@ -317,7 +317,7 @@
             </div>
 
             <!-- Panel E: Patterns -->
-            <div class="grid-stack-item" gs-w="3" gs-h="10" gs-x="9" gs-y="13" id="panel-patterns">
+            <div class="grid-stack-item" gs-w="4" gs-h="6" gs-x="4" gs-y="6" id="panel-patterns">
                 <div class="grid-stack-item-content panel-glass">
                     <div class="panel-header">
                         <h2>Pattern Generator</h2>
@@ -381,7 +381,7 @@
             </div>
 
             <!-- Panel F: Handwriting Generator -->
-            <div class="grid-stack-item" gs-w="6" gs-h="8" gs-x="3" gs-y="11" id="panel-handwriting">
+            <div class="grid-stack-item" gs-w="4" gs-h="6" gs-x="8" gs-y="6" id="panel-handwriting">
                 <div class="grid-stack-item-content panel-glass">
                     <div class="panel-header">
                         <h2>Handwriting Generator</h2>
@@ -497,7 +497,7 @@
             </div>
 
             <!-- Panel G: Image to Vector -->
-            <div class="grid-stack-item" gs-w="6" gs-h="12" gs-x="3" gs-y="19" id="panel-image-vector">
+            <div class="grid-stack-item" gs-w="4" gs-h="6" gs-x="4" gs-y="12" id="panel-image-vector">
                 <div class="grid-stack-item-content panel-glass">
                     <div class="panel-header">
                         <h2>Image to Vector</h2>
@@ -603,106 +603,115 @@
 
     <!-- Settings Modal -->
     <div id="settings-modal" class="modal-overlay hidden">
-        <div class="modal-content">
+        <div class="modal-content settings-modal-content">
             <div class="modal-header">
                 <h2>Application Settings</h2>
                 <button id="btn-close-settings" class="btn btn-icon">&times;</button>
             </div>
-            <div class="modal-body">
-                <div class="form-group">
-                    <label>Theme</label>
-                    <select id="sel-theme">
-                        <option value="dark-theme">Dark Premium</option>
-                        <option value="light-theme">Modern Light</option>
-                        <option value="retro-theme">DXY Retro</option>
-                        <option value="olive-theme">Olive (Cream/Brown/Olive)</option>
-                        <option value="blue-theme">Blue Theme</option>
-                        <option value="red-theme">Warm Red Theme</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label>Handshake Type</label>
-                    <select id="sel-handshake">
-                        <option value="normal">Normal (Hardware Flow)</option>
-                        <option value="ydrop">Y-Drop (Manual DTR/RTS)</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label>Machine Send Speed</label>
-                    <select id="sel-speed">
-                        <option value="fast" selected>Fast (50ms delay)</option>
-                        <option value="medium">Medium (150ms delay)</option>
-                        <option value="slow">Slow (300ms delay)</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label>Plotter Bed Width (mm)</label>
-                    <input type="number" id="input-bed-w" value="432" step="1">
-                </div>
-                <div class="form-group">
-                    <label>Plotter Bed Height (mm)</label>
-                    <input type="number" id="input-bed-h" value="297" step="1">
-                </div>
-                <div class="form-group">
-                    <label>Paper Left Margin Offset (mm)</label>
-                    <input type="number" id="input-margin-x" value="15" step="1">
-                </div>
-                <div class="form-group">
-                    <label>Paper Bottom Margin Offset (mm)</label>
-                    <input type="number" id="input-margin-y" value="10" step="1">
-                </div>
-                <div class="form-group">
-                    <label>Import Curve Resolution (1-50)</label>
-                    <div style="display: flex; align-items: center; gap: 10px;">
-                        <input type="range" id="input-import-resolution" min="1" max="50" step="1" value="15"
-                            style="flex: 1;">
-                        <span id="val-import-resolution"
-                            style="width: 30px; font-weight: bold; color: var(--accent-blue);">15</span>
-                    </div>
-                    <small style="opacity: 0.6; font-size: 0.75rem;">Higher = smoother curves, more plotter points.
-                        Lower = faster imports, blockier curves.</small>
-                </div>
+            <div class="modal-body settings-modal-body">
+                <div class="settings-grid">
+                    <section class="settings-section">
+                        <h3>Interface</h3>
+                        <div class="form-group">
+                            <label>Theme</label>
+                            <select id="sel-theme">
+                                <option value="dark-theme">Dark Premium</option>
+                                <option value="light-theme">Modern Light</option>
+                                <option value="retro-theme">DXY Retro</option>
+                                <option value="olive-theme">Olive (Cream/Brown/Olive)</option>
+                                <option value="blue-theme">Blue Theme</option>
+                                <option value="red-theme">Warm Red Theme</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Visible Panels</label>
+                            <div class="panel-toggle-list settings-panel-toggle-list">
+                                <label class="panel-toggle-item">
+                                    <input type="checkbox" data-panel-toggle="panel-connection" checked disabled>
+                                    <span>Connection</span>
+                                </label>
+                                <label class="panel-toggle-item">
+                                    <input type="checkbox" data-panel-toggle="panel-machine-jog" checked>
+                                    <span>Machine & Jog</span>
+                                </label>
+                                <label class="panel-toggle-item">
+                                    <input type="checkbox" data-panel-toggle="panel-console" checked>
+                                    <span>Command Log</span>
+                                </label>
+                                <label class="panel-toggle-item">
+                                    <input type="checkbox" data-panel-toggle="panel-visualiser" checked>
+                                    <span>Visualiser</span>
+                                </label>
+                                <label class="panel-toggle-item">
+                                    <input type="checkbox" data-panel-toggle="panel-patterns" checked>
+                                    <span>Pattern Generator</span>
+                                </label>
+                                <label class="panel-toggle-item">
+                                    <input type="checkbox" data-panel-toggle="panel-handwriting" checked>
+                                    <span>Handwriting Generator</span>
+                                </label>
+                                <label class="panel-toggle-item">
+                                    <input type="checkbox" data-panel-toggle="panel-image-vector" checked>
+                                    <span>Image to Vector</span>
+                                </label>
+                            </div>
+                        </div>
+                    </section>
 
-                <div class="divider"></div>
-                <h3>Visuals</h3>
-                <div class="form-group">
-                    <label>Sim Background Opacity: <span id="val-sim-opacity">0.25</span></label>
-                    <div style="display: flex; align-items: center; gap: 10px;">
-                        <input type="range" id="input-sim-opacity" min="0" max="1" step="0.05" value="0.25"
-                            style="flex: 1;">
-                    </div>
-                </div>
-                <div class="divider"></div>
-                <h3>Visible Panels</h3>
-                <div class="panel-toggle-list">
-                    <label class="panel-toggle-item">
-                        <input type="checkbox" data-panel-toggle="panel-connection" checked disabled>
-                        <span>Connection</span>
-                    </label>
-                    <label class="panel-toggle-item">
-                        <input type="checkbox" data-panel-toggle="panel-machine-jog" checked>
-                        <span>Machine & Jog</span>
-                    </label>
-                    <label class="panel-toggle-item">
-                        <input type="checkbox" data-panel-toggle="panel-console" checked>
-                        <span>Command Log</span>
-                    </label>
-                    <label class="panel-toggle-item">
-                        <input type="checkbox" data-panel-toggle="panel-visualiser" checked>
-                        <span>Visualiser</span>
-                    </label>
-                    <label class="panel-toggle-item">
-                        <input type="checkbox" data-panel-toggle="panel-patterns" checked>
-                        <span>Pattern Generator</span>
-                    </label>
-                    <label class="panel-toggle-item">
-                        <input type="checkbox" data-panel-toggle="panel-handwriting" checked>
-                        <span>Handwriting Generator</span>
-                    </label>
-                    <label class="panel-toggle-item">
-                        <input type="checkbox" data-panel-toggle="panel-image-vector" checked>
-                        <span>Image to Vector</span>
-                    </label>
+                    <section class="settings-section">
+                        <h3>Machine</h3>
+                        <div class="settings-two-col">
+                            <div class="form-group">
+                                <label>Handshake Type</label>
+                                <select id="sel-handshake">
+                                    <option value="normal">Normal (Hardware Flow)</option>
+                                    <option value="ydrop">Y-Drop (Manual DTR/RTS)</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label>Machine Send Speed</label>
+                                <select id="sel-speed">
+                                    <option value="fast" selected>Fast (50ms delay)</option>
+                                    <option value="medium">Medium (150ms delay)</option>
+                                    <option value="slow">Slow (300ms delay)</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label>Plotter Bed Width (mm)</label>
+                                <input type="number" id="input-bed-w" value="432" step="1">
+                            </div>
+                            <div class="form-group">
+                                <label>Plotter Bed Height (mm)</label>
+                                <input type="number" id="input-bed-h" value="297" step="1">
+                            </div>
+                            <div class="form-group">
+                                <label>Paper Left Margin Offset (mm)</label>
+                                <input type="number" id="input-margin-x" value="15" step="1">
+                            </div>
+                            <div class="form-group">
+                                <label>Paper Bottom Margin Offset (mm)</label>
+                                <input type="number" id="input-margin-y" value="10" step="1">
+                            </div>
+                        </div>
+                    </section>
+
+                    <section class="settings-section settings-section-wide">
+                        <h3>Import & Visuals</h3>
+                        <div class="form-group">
+                            <label>Import Curve Resolution (1-50)</label>
+                            <div class="settings-range-row">
+                                <input type="range" id="input-import-resolution" min="1" max="50" step="1" value="15">
+                                <span id="val-import-resolution" class="settings-range-value">15</span>
+                            </div>
+                            <small class="settings-help">Higher = smoother curves, more plotter points. Lower = faster imports, blockier curves.</small>
+                        </div>
+                        <div class="form-group">
+                            <label>Sim Background Opacity: <span id="val-sim-opacity">0.25</span></label>
+                            <div class="settings-range-row">
+                                <input type="range" id="input-sim-opacity" min="0" max="1" step="0.05" value="0.25">
+                            </div>
+                        </div>
+                    </section>
                 </div>
             </div>
             <div class="modal-footer">
