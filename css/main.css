@@ -886,8 +886,8 @@ input[type="color"] {
 }
 
 .grid-stack {
-    width: min(100%, 1240px);
-    margin: 0 auto;
+    width: 100%;
+    margin: 0;
 }
 
 /* Panels */
