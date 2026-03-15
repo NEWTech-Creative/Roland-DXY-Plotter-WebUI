@@ -8,7 +8,7 @@ class UIController {
         this.jogStepSize = 1; // Default Small (1mm)
         this.layoutVersion = 2;
         this.gridBaseColumns = 12;
-        this.gridMinPanelWidth = 400;
+        this.gridMinPanelWidth = 320;
         this.currentGridColumns = this.gridBaseColumns;
         this.baseGridLayout = [];
         this.legacyDefaultLayout = [
