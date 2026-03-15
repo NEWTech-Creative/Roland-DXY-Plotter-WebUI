@@ -6,10 +6,29 @@ class UIController {
         this.activeTool = 'select'; // select, text, shape
         this.activeVisualizerPen = 1;
         this.jogStepSize = 1; // Default Small (1mm)
+        this.layoutVersion = 2;
         this.gridBaseColumns = 12;
         this.gridMinPanelWidth = 400;
         this.currentGridColumns = this.gridBaseColumns;
         this.baseGridLayout = [];
+        this.legacyDefaultLayout = [
+            { id: 'panel-connection', x: 0, y: 0, w: 3, h: 4 },
+            { id: 'panel-machine-jog', x: 0, y: 4, w: 3, h: 5 },
+            { id: 'panel-console', x: 9, y: 0, w: 3, h: 13 },
+            { id: 'panel-visualiser', x: 3, y: 0, w: 6, h: 11 },
+            { id: 'panel-patterns', x: 9, y: 13, w: 3, h: 10 },
+            { id: 'panel-handwriting', x: 3, y: 11, w: 6, h: 8 },
+            { id: 'panel-image-vector', x: 3, y: 19, w: 6, h: 12 }
+        ];
+        this.defaultGridLayout = [
+            { id: 'panel-connection', x: 0, y: 0, w: 4, h: 6 },
+            { id: 'panel-machine-jog', x: 4, y: 0, w: 4, h: 6 },
+            { id: 'panel-console', x: 8, y: 0, w: 4, h: 6 },
+            { id: 'panel-visualiser', x: 0, y: 6, w: 4, h: 6 },
+            { id: 'panel-patterns', x: 4, y: 6, w: 4, h: 6 },
+            { id: 'panel-handwriting', x: 8, y: 6, w: 4, h: 6 },
+            { id: 'panel-image-vector', x: 4, y: 12, w: 4, h: 6 }
+        ];
         this.panelDefinitions = [
             { id: 'panel-connection', label: 'Connection', alwaysVisible: true },
             { id: 'panel-machine-jog', label: 'Machine & Jog' },
@@ -171,6 +190,7 @@ class UIController {
         const hiddenLayout = this.baseGridLayout.filter(item => !this._isPanelVisible(item.id));
         const normalizedLayout = this._collapseTrailingPanelGap([...visibleLayout, ...hiddenLayout]);
         localStorage.setItem('plotterLayout', JSON.stringify(normalizedLayout));
+        localStorage.setItem('plotterLayoutVersion', String(this.layoutVersion));
         this.baseGridLayout = normalizedLayout;
         if (!silent) this.logToConsole('System: Layout saved.');
     }
@@ -180,10 +200,36 @@ class UIController {
             const saved = localStorage.getItem('plotterLayout');
             if (!saved) return [];
             const layout = JSON.parse(saved);
-            return Array.isArray(layout) ? this._collapseTrailingPanelGap(layout) : [];
+            if (!Array.isArray(layout)) return [];
+
+            const savedVersion = parseInt(localStorage.getItem('plotterLayoutVersion') || '0', 10);
+            if (savedVersion < this.layoutVersion && this._layoutsMatch(layout, this.legacyDefaultLayout)) {
+                const migratedLayout = this.defaultGridLayout.map(item => ({ ...item }));
+                localStorage.setItem('plotterLayout', JSON.stringify(migratedLayout));
+                localStorage.setItem('plotterLayoutVersion', String(this.layoutVersion));
+                return migratedLayout;
+            }
+
+            localStorage.setItem('plotterLayoutVersion', String(this.layoutVersion));
+            return this._collapseTrailingPanelGap(layout);
         } catch (e) {
             return [];
         }
+    }
+
+    _layoutsMatch(a, b) {
+        const normalizedA = this._sortLayout(a || []);
+        const normalizedB = this._sortLayout(b || []);
+        if (normalizedA.length !== normalizedB.length) return false;
+
+        return normalizedA.every((item, index) => {
+            const other = normalizedB[index];
+            return item.id === other.id
+                && item.x === other.x
+                && item.y === other.y
+                && item.w === other.w
+                && item.h === other.h;
+        });
     }
 
     applyLayoutToElements(layout) {
