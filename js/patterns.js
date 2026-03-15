@@ -61,6 +61,7 @@ class PatternGenerator {
             const clone = JSON.parse(JSON.stringify(p));
 
             const transformPoint = (pt) => {
+                if (!pt || pt.x === undefined || pt.y === undefined) return pt;
                 // 1. Scale relative to anchor
                 let x = anchorX + (pt.x - anchorX) * scale;
                 let y = anchorY + (pt.y - anchorY) * scale;
@@ -90,6 +91,27 @@ class PatternGenerator {
                 if (clone.fontSize) clone.fontSize *= scale;
             } else if (clone.points) {
                 clone.points = clone.points.map(pt => transformPoint(pt));
+                if (clone.segments) {
+                    clone.segments = clone.segments.map(segment => {
+                        const nextSegment = { ...segment };
+                        if (segment.x !== undefined && segment.y !== undefined) {
+                            const pt = transformPoint({ x: segment.x, y: segment.y });
+                            nextSegment.x = pt.x;
+                            nextSegment.y = pt.y;
+                        }
+                        if (segment.x1 !== undefined && segment.y1 !== undefined) {
+                            const pt = transformPoint({ x: segment.x1, y: segment.y1 });
+                            nextSegment.x1 = pt.x;
+                            nextSegment.y1 = pt.y;
+                        }
+                        if (segment.x2 !== undefined && segment.y2 !== undefined) {
+                            const pt = transformPoint({ x: segment.x2, y: segment.y2 });
+                            nextSegment.x2 = pt.x;
+                            nextSegment.y2 = pt.y;
+                        }
+                        return nextSegment;
+                    });
+                }
             }
 
             return clone;
