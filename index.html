@@ -1,0 +1,833 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Roland Plotter Web UI</title>
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;700&display=swap"
+        rel="stylesheet">
+
+    <!-- GridStack CSS -->
+    <link href="vendor/gridstack.min.css" rel="stylesheet" />
+    <link href="vendor/gridstack-extra.min.css" rel="stylesheet" />
+
+    <!-- App CSS -->
+    <link rel="stylesheet" href="css/main.css">
+</head>
+
+<body class="dark-theme">
+    <header class="app-header">
+        <div class="logo-area">
+            <svg class="app-logo" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 396.73 97.47"
+                style="color: var(--accent-color);"
+                aria-label="DXY Connect Logo">
+                <path fill="currentColor" d="M137.74,3v55.68H3V3h134.74M140.74,0H0v61.68h140.74V0h0Z" />
+                <rect fill="currentColor" y="69.76" width="140.74" height="27.71" />
+                <g fill="currentColor">
+                    <path
+                        d="M212.84,43.09c2.32-4.02,3.48-8.56,3.48-13.64s-1.08-9.86-3.24-13.75c-2.16-3.89-5.12-6.99-8.88-9.28-2.2-1.37-4.91-2.42-8.13-3.17-3.22-.74-7.06-1.12-11.5-1.12h-19.78v54.53h19.23c4.35,0,8.11-.32,11.28-.95,3.17-.63,6.09-1.76,8.75-3.37,3.54-2.15,6.47-5.23,8.79-9.25ZM199.98,38.44c-1.2,2.45-3.08,4.41-5.64,5.88-1.49.81-3.02,1.36-4.58,1.67-1.56.31-4.02.46-7.36.46h-3.55V12.31h3.55c3.03,0,5.29.13,6.79.38,1.5.26,2.97.74,4.41,1.45,2.83,1.44,4.9,3.44,6.21,5.99,1.31,2.55,1.96,5.62,1.96,9.21s-.6,6.65-1.79,9.1Z" />
+                    <polygon
+                        points="270.56 56.65 251.24 28.61 267.86 5.48 286.28 36.22 286.28 56.65 300.34 56.65 300.34 35.56 320.45 2.13 304.98 2.13 293.61 23.16 281.85 2.13 270.27 2.13 265.84 2.13 254.69 2.13 243.02 19.1 231.68 2.13 215.45 2.13 234.38 29.18 215.04 56.65 230.58 56.65 242.55 38.76 254.28 56.65 270.56 56.65" />
+                    <polygon
+                        points="186.43 92.32 181.2 71.27 177.81 71.27 172.63 92.11 167.36 71.27 163.94 71.27 170.57 96.34 174.24 96.34 179.39 75.53 184.66 96.34 188.42 96.34 194.93 71.27 191.67 71.27 186.43 92.32" />
+                    <polygon
+                        points="197.13 96.34 213.64 96.34 213.64 93.38 200.46 93.38 200.46 84.07 213.64 84.07 213.64 81.1 200.46 81.1 200.46 74.23 213.64 74.23 213.64 71.27 197.13 71.27 197.13 96.34" />
+                    <path
+                        d="M229.64,82.08v-.13c1.01-.5,1.82-1.18,2.42-2.01.61-.84.91-1.85.91-3.04,0-1.05-.21-1.96-.62-2.72-.42-.76-1.08-1.38-2-1.86-.83-.43-1.7-.71-2.61-.84-.91-.13-2.28-.2-4.11-.2h-7.42v25.07h8.89c1.74,0,3.17-.16,4.3-.47,1.13-.31,2.16-.84,3.11-1.58.8-.62,1.43-1.4,1.9-2.36.47-.95.71-2.05.71-3.3,0-1.74-.49-3.18-1.46-4.32-.98-1.14-2.31-1.88-4.01-2.23ZM219.54,74.12h3.97c1.11,0,2.04.04,2.79.11.75.07,1.39.26,1.92.56.45.26.77.6.98,1.01.2.42.3.93.3,1.53,0,.73-.11,1.36-.33,1.89s-.59.97-1.12,1.3c-.53.34-1.1.56-1.72.67-.62.11-1.45.16-2.49.16h-4.31v-7.24ZM231.21,90.94c-.29.56-.75,1.06-1.38,1.5-.6.4-1.36.68-2.29.83-.93.15-2.13.23-3.59.23h-4.41v-9.33h5.24c1.1,0,2.03.04,2.8.13.77.08,1.42.27,1.96.55.8.42,1.35.92,1.65,1.52.3.6.45,1.4.45,2.41,0,.89-.15,1.61-.44,2.17Z" />
+                    <path
+                        d="M257.38,70.82c-1.84,0-3.52.29-5.03.86-1.51.57-2.8,1.4-3.86,2.49-1.1,1.12-1.94,2.5-2.53,4.12s-.88,3.47-.88,5.54c0,2.18.3,4.09.91,5.73.61,1.64,1.45,3,2.53,4.07,1.1,1.09,2.39,1.89,3.88,2.4,1.49.51,3.14.77,4.96.77.97,0,1.85-.08,2.65-.23.8-.15,1.55-.33,2.23-.55.81-.26,1.46-.51,1.96-.74.5-.24,1.06-.49,1.67-.76v-3.91h-.24c-1.22,1.1-2.54,1.92-3.94,2.47-1.4.55-2.91.83-4.51.83-1.17,0-2.28-.2-3.33-.6-1.05-.4-1.97-1.01-2.75-1.84-.75-.8-1.37-1.83-1.84-3.1-.48-1.27-.72-2.78-.72-4.55s.22-3.17.65-4.45c.43-1.29,1.04-2.35,1.81-3.19.8-.86,1.7-1.5,2.72-1.91,1.02-.41,2.16-.61,3.43-.61,1.55,0,3,.26,4.36.79,1.36.53,2.73,1.37,4.11,2.53h.25v-3.96c-1.64-.82-3.13-1.39-4.47-1.72-1.34-.33-2.69-.49-4.03-.49Z" />
+                    <path
+                        d="M286.56,74.15c-1-1.09-2.21-1.93-3.65-2.52s-3.04-.88-4.84-.88-3.33.29-4.79.88c-1.46.58-2.69,1.43-3.68,2.53-1.03,1.16-1.82,2.54-2.36,4.17-.54,1.62-.81,3.45-.81,5.5s.27,3.92.82,5.54c.54,1.62,1.32,2.98,2.33,4.09,1.01,1.11,2.24,1.96,3.68,2.54,1.44.58,3.04.88,4.81.88s3.42-.29,4.82-.86c1.41-.57,2.63-1.43,3.66-2.56,1-1.09,1.78-2.45,2.33-4.08s.83-3.48.83-5.55-.27-3.91-.82-5.54-1.33-3-2.35-4.12ZM284.04,91.37c-1.48,1.75-3.46,2.62-5.95,2.62s-4.48-.87-5.96-2.62c-1.48-1.75-2.22-4.26-2.22-7.55s.73-5.77,2.18-7.53c1.45-1.77,3.45-2.65,6-2.65s4.52.88,5.98,2.65c1.46,1.77,2.19,4.28,2.19,7.53s-.74,5.81-2.21,7.55Z" />
+                    <polygon
+                        points="308.3 91.74 297.45 71.27 292.28 71.27 292.28 96.34 295.4 96.34 295.4 73.91 307.29 96.34 311.41 96.34 311.41 71.27 308.3 71.27 308.3 91.74" />
+                    <polygon
+                        points="331.36 91.74 320.52 71.27 315.35 71.27 315.35 96.34 318.47 96.34 318.47 73.91 330.35 96.34 334.48 96.34 334.48 71.27 331.36 71.27 331.36 91.74" />
+                    <polygon
+                        points="338.42 96.34 354.94 96.34 354.94 93.38 341.76 93.38 341.76 84.07 354.94 84.07 354.94 81.1 341.76 81.1 341.76 74.23 354.94 74.23 354.94 71.27 338.42 71.27 338.42 96.34" />
+                    <path
+                        d="M375.49,71.27v1.11c-1.11-.48-2.14-.84-3.09-1.08-1.34-.33-2.69-.49-4.03-.49-1.84,0-3.52.29-5.03.86-1.51.57-2.8,1.4-3.86,2.49-1.1,1.12-1.94,2.5-2.53,4.12s-.88,3.47-.88,5.54c0,2.18.3,4.09.91,5.73.61,1.64,1.45,3,2.53,4.07,1.1,1.09,2.39,1.89,3.88,2.4,1.49.51,3.14.77,4.96.77.97,0,1.85-.08,2.65-.23.8-.15,1.55-.33,2.23-.55.81-.26,1.46-.51,1.96-.74.5-.24,1.06-.49,1.67-.76v-3.91h-.24c-1.22,1.1-2.54,1.92-3.94,2.47-1.4.55-2.91.83-4.51.83-1.17,0-2.28-.2-3.33-.6-1.05-.4-1.97-1.01-2.75-1.84-.75-.8-1.37-1.83-1.84-3.1-.48-1.27-.72-2.78-.72-4.55s.22-3.17.65-4.45c.43-1.29,1.04-2.35,1.81-3.19.8-.86,1.7-1.5,2.72-1.91,1.02-.41,2.16-.61,3.43-.61,1.55,0,3,.26,4.36.79,1.36.53,2.73,1.37,4.11,2.53h.25v-2.74h7.58v22.11h3.33v-22.11h8.96v-2.96h-21.25Z" />
+                </g>
+            </svg>
+            <span class="status-badge disconnected" id="global-status">Disconnected</span>
+        </div>
+    </header>
+
+    <main class="app-main">
+        <div class="grid-stack">
+            <!-- Panel A: Connection -->
+            <div class="grid-stack-item" gs-w="3" gs-h="4" gs-x="0" gs-y="0" id="panel-connection">
+                <div class="grid-stack-item-content panel-glass">
+                    <div class="panel-header" style="justify-content: space-between;">
+                        <h2>Connection</h2>
+                        <button id="btn-settings" class="btn btn-icon" title="Application Settings">⚙️</button>
+                    </div>
+                    <div class="panel-body">
+                        <div class="form-row">
+                            <div class="form-group flex-1">
+                                <label>Plotter Model</label>
+                                <select id="sel-model">
+                                    <option value="1100">DXY 1100</option>
+                                    <option value="1200">DXY 1200</option>
+                                    <option value="1300">DXY 1300</option>
+                                </select>
+                            </div>
+                            <div class="form-group flex-1">
+                                <label>Baud Rate</label>
+                                <select id="sel-baud">
+                                    <option value="9600">9600</option>
+                                    <option value="19200">19200</option>
+                                    <option value="38400">38400</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="button-group">
+                            <button id="btn-connect" class="btn btn-primary">Connect USB Serial</button>
+                        </div>
+                        <hr class="divider">
+                        <h3>File Controls</h3>
+                        <div class="button-grid">
+                            <button id="btn-new" class="btn btn-action">New</button>
+                            <button id="btn-upload" class="btn btn-action">Load</button>
+                            <button id="btn-save" class="btn btn-action">Save</button>
+                            <button id="btn-export" class="btn btn-action">Export HPGL</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Panel D: Machine Controls -->
+            <div class="grid-stack-item" gs-w="3" gs-h="5" gs-x="0" gs-y="4" id="panel-machine-jog">
+                <div class="grid-stack-item-content panel-glass">
+                    <div class="panel-header">
+                        <h2>Machine & Jog</h2>
+                    </div>
+                    <div class="panel-body">
+                        <h3>Jog Machine</h3>
+                        <div class="jog-container">
+                            <div class="jog-pen-controls">
+                                <button id="btn-pen-up" class="btn btn-action jog-pen-btn" title="Send PU; command">Pen Up</button>
+                                <button id="btn-pen-down" class="btn btn-action jog-pen-btn" title="Send PD; command">Pen Down</button>
+                            </div>
+                            <div class="jog-grid">
+                                <div class="jog-empty"></div>
+                                <button id="btn-jog-y-plus" class="btn btn-secondary jog-btn" title="Jog Y+">▲</button>
+                                <div class="jog-empty"></div>
+                                <button id="btn-jog-x-minus" class="btn btn-secondary jog-btn" title="Jog X-">◀</button>
+                                <button id="btn-jog-home" class="btn btn-primary jog-btn" title="Home">H</button>
+                                <button id="btn-jog-x-plus" class="btn btn-secondary jog-btn" title="Jog X+">▶</button>
+                                <div class="jog-empty"></div>
+                                <button id="btn-jog-y-minus" class="btn btn-secondary jog-btn" title="Jog Y-">▼</button>
+                                <div class="jog-empty"></div>
+                            </div>
+                            <div class="jog-steps">
+                                <div class="step-toggle">
+                                    <button class="btn btn-secondary step-btn active" data-step="1">S</button>
+                                    <button class="btn btn-secondary step-btn" data-step="10">M</button>
+                                    <button class="btn btn-secondary step-btn" data-step="50">L</button>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="machine-stream-panel">
+                            <div class="machine-stream-stats">
+                                <div class="stat-item compact">
+                                    <span class="stat-label">Lines</span>
+                                    <span id="stat-lines-jog" data-stat="lines" class="stat-value">0</span>
+                                </div>
+                                <div class="stat-item compact">
+                                    <span class="stat-label">Queue</span>
+                                    <span id="stat-queue-jog" data-stat="queue" class="stat-value">0</span>
+                                </div>
+                                <div id="stream-indicator-jog" data-stream-indicator class="traffic-light red compact"></div>
+                            </div>
+                            <div class="machine-stream-actions">
+                                <button id="btn-run-jog" data-stream-action="run" class="btn btn-action btn-stream-run" disabled>Run</button>
+                                <button id="btn-hold-jog" data-stream-action="hold" class="btn btn-action btn-stream-hold" disabled>Hold</button>
+                                <button id="btn-cancel-jog" data-stream-action="cancel" class="btn btn-action btn-stream-cancel" disabled>Cancel</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Panel B: Command Log -->
+            <div class="grid-stack-item" gs-w="3" gs-h="13" gs-x="9" gs-y="0" id="panel-console">
+                <div class="grid-stack-item-content panel-glass">
+                    <div class="panel-header">
+                        <h2>Command Log</h2>
+                    </div>
+                    <div class="panel-body flex-col" style="padding: 0; overflow: hidden;">
+                        <div id="hpgl-console" class="hpgl-console">
+                            <div class="log-line">System: Welcome to Roland DXY Web Interface.</div>
+                            <div class="log-line">System: Ready for connection.</div>
+                        </div>
+                        <div class="console-input-area">
+                            <input type="text" id="hpgl-input" placeholder="Enter HPGL command (e.g. PU;)...">
+                        </div>
+
+                        <div class="transmission-panel">
+                            <div class="transmission-stats">
+                                <div class="stat-item">
+                                    <span class="stat-label">Lines:</span>
+                                    <span id="stat-lines" data-stat="lines" class="stat-value">0</span>
+                                </div>
+                                <div class="stat-item">
+                                    <span class="stat-label">Queue:</span>
+                                    <span id="stat-queue" data-stat="queue" class="stat-value">0</span>
+                                </div>
+                                <div id="stream-indicator" data-stream-indicator class="traffic-light red"></div>
+                            </div>
+                            <div class="button-grid" style="grid-template-columns: 1fr 1fr 1fr; margin-top: 10px;">
+                                <button id="btn-run" data-stream-action="run" class="btn btn-action btn-stream-run" disabled>Run</button>
+                                <button id="btn-hold" data-stream-action="hold" class="btn btn-action btn-stream-hold" disabled>Hold</button>
+                                <button id="btn-cancel" data-stream-action="cancel" class="btn btn-action btn-stream-cancel" disabled>Cancel</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Panel C: Visualiser -->
+            <div class="grid-stack-item" gs-w="6" gs-h="11" gs-x="3" gs-y="0" id="panel-visualiser">
+                <div class="grid-stack-item-content panel-glass">
+                    <div class="panel-header">
+                        <h2>Visualiser</h2>
+                        <div class="header-tools">
+                            <select id="sel-paper-size" class="tool-select"
+                                style="width: 80px; padding: 2px 6px; font-size: 0.8rem; height: 26px; border-radius: 4px; margin-right: 10px;">
+                                <option value="A3">A3</option>
+                                <option value="A4">A4</option>
+                                <option value="A5">A5</option>
+                                <option value="Max">Max</option>
+                            </select>
+                            <div class="sim-group"
+                                style="display: flex; align-items: center; border: 1px solid var(--border-color); border-radius: 6px; padding: 2px; margin-right: 10px; background: rgba(0,0,0,0.05);">
+                                <button id="btn-simulate" class="btn btn-action" title="Simulate Plotter Movement"
+                                    style="height: 24px; line-height: 22px; padding: 0 10px; font-size: 0.75rem; border: none; background: var(--accent-blue); color: white; border-radius: 4px; margin-right: 2px;">Simulate</button>
+                                <button id="btn-simulate-speed" class="btn btn-action" title="Change Simulation Speed"
+                                    style="height: 24px; line-height: 22px; padding: 0 8px; font-size: 0.75rem; border: none; background: transparent; color: var(--text-main); border-radius: 4px;">x10</button>
+                            </div>
+
+                            <!-- Undo/Redo Buttons -->
+                            <div class="undo-redo-group" style="display: flex; gap: 4px; margin-right: 10px;">
+                                <button class="tool-btn" id="btn-undo" title="Undo (Ctrl+Z)">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                        stroke-width="2">
+                                        <path d="M3 7v6h6" />
+                                        <path d="M21 17a9 9 0 00-9-9 9 9 0 00-6 2.3L3 13" />
+                                    </svg>
+                                </button>
+                                <button class="tool-btn" id="btn-redo" title="Redo (Ctrl+Y)">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                        stroke-width="2">
+                                        <path d="M21 7v6h-6" />
+                                        <path d="M3 17a9 9 0 019-9 9 9 0 016 2.3L21 13" />
+                                    </svg>
+                                </button>
+                            </div>
+
+                            <!-- Group/Ungroup Buttons -->
+                            <div class="group-ops-toolbar" style="display: flex; gap: 4px; margin-right: 10px;">
+                                <button class="tool-btn" id="btn-group" title="Group (Ctrl+G)">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                        stroke-width="2">
+                                        <rect x="3" y="3" width="7" height="7" rx="1" />
+                                        <rect x="14" y="3" width="7" height="7" rx="1" />
+                                        <rect x="14" y="14" width="7" height="7" rx="1" />
+                                        <rect x="3" y="14" width="7" height="7" rx="1" />
+                                    </svg>
+                                </button>
+                                <button class="tool-btn" id="btn-ungroup" title="Ungroup (Ctrl+Shift+G)">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                        stroke-width="2">
+                                        <path d="M8 3H5a2 2 0 0 0-2 2v3" />
+                                        <path d="M21 8V5a2 2 0 0 0-2-2h-3" />
+                                        <path d="M3 16v3a2 2 0 0 0 2 2h3" />
+                                        <path d="M16 21h3a2 2 0 0 0 2-2v-3" />
+                                    </svg>
+                                </button>
+                            </div>
+
+                            <div class="vis-size-toolbar">
+                                <label class="vis-size-field">
+                                    <span>W</span>
+                                    <input type="number" id="input-selection-width" min="0.1" step="0.1" disabled>
+                                </label>
+                                <label class="vis-size-field">
+                                    <span>H</span>
+                                    <input type="number" id="input-selection-height" min="0.1" step="0.1" disabled>
+                                </label>
+                                <label class="vis-size-uniform" for="chk-selection-uniform">
+                                    <input type="checkbox" id="chk-selection-uniform" checked>
+                                    <span>Uniform</span>
+                                </label>
+                            </div>
+
+                            <button class="tool-btn active" title="Select (Escape)" data-tool="select"><svg width="16"
+                                    height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z" />
+                                </svg></button>
+                            <button class="tool-btn" title="Add Text" data-tool="text"><svg width="16" height="16"
+                                    viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <polyline points="4 7 4 4 20 4 20 7" />
+                                    <line x1="9" y1="20" x2="15" y2="20" />
+                                    <line x1="12" y1="4" x2="12" y2="20" />
+                                </svg></button>
+                            <button class="tool-btn" title="Shapes (Hold to change)" data-tool="shape"
+                                id="btn-draw-shape"><svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+                                    stroke="currentColor" stroke-width="2">
+                                    <circle cx="12" cy="12" r="10" />
+                                </svg></button>
+                            <button class="tool-btn" title="Edit Nodes (Points)" data-tool="node"><svg width="16"
+                                    height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M5 5h4v4H5z" />
+                                    <path d="M15 5h4v4h-4z" />
+                                    <path d="M5 15h4v4H5z" />
+                                    <path d="M15 15h4v4h-4z" />
+                                    <line x1="9" y1="7" x2="15" y2="7" />
+                                    <line x1="9" y1="17" x2="15" y2="17" />
+                                    <line x1="7" y1="9" x2="7" y2="15" />
+                                    <line x1="17" y1="9" x2="17" y2="15" />
+                                </svg></button>
+                            <div class="vis-toolbar-overflow">
+                                <button class="tool-btn vis-toolbar-overflow-btn hidden" id="btn-vis-toolbar-more" title="More tools">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <circle cx="5" cy="12" r="1.5" />
+                                        <circle cx="12" cy="12" r="1.5" />
+                                        <circle cx="19" cy="12" r="1.5" />
+                                    </svg>
+                                </button>
+                                <div class="vis-toolbar-overflow-menu hidden" id="vis-toolbar-overflow-menu"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="panel-body canvas-wrapper">
+                        <div class="vis-palette" id="vis-palette">
+                            <!-- Populated by JS -->
+                        </div>
+                        <div class="canvas-container">
+                            <canvas id="plotter-canvas"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Panel E: Patterns -->
+            <div class="grid-stack-item" gs-w="3" gs-h="10" gs-x="9" gs-y="13" id="panel-patterns">
+                <div class="grid-stack-item-content panel-glass">
+                    <div class="panel-header">
+                        <h2>Pattern Generator</h2>
+                    </div>
+                    <div class="panel-body">
+                        <div class="form-group">
+                            <label>Pattern Type</label>
+                            <select id="sel-pattern-type" disabled>
+                                <option value="none">None (Select an object)</option>
+                                <option value="radial">Radial Pattern</option>
+                                <option value="grid">Repeat Square (Grid)</option>
+                                <option value="spiral">Spiral Pattern</option>
+                                <option value="staggered">Staggered Repeats</option>
+                                <option value="geometric">Geometric / Symmetrical</option>
+                            </select>
+                        </div>
+
+                        <div id="pattern-controls" class="hidden">
+                            <hr class="divider" style="margin: 10px 0;">
+
+                            <div class="form-group">
+                                <label>How Many: <span id="val-pattern-count">1</span></label>
+                                <input type="range" id="input-pattern-count" min="1" max="50" step="1" value="1">
+                            </div>
+
+                            <div class="form-group" id="group-spacing">
+                                <label>Spacing (mm): <span id="val-pattern-spacing">10</span></label>
+                                <input type="range" id="input-pattern-spacing" min="0" max="200" step="1" value="10">
+                            </div>
+
+                            <div class="form-group" id="group-direction">
+                                <label>Direction (Offset): <span id="val-pattern-direction">0</span></label>
+                                <input type="range" id="input-pattern-direction" min="0" max="360" step="1" value="0">
+                            </div>
+
+                            <div class="form-group">
+                                <label>Angle (Rotation): <span id="val-pattern-angle">0</span>°</label>
+                                <input type="range" id="input-pattern-angle" min="0" max="360" step="1" value="0">
+                            </div>
+
+                            <div class="form-group" id="group-spacing-angle">
+                                <label>Spacing Angle: <span id="val-pattern-spacing-angle">0</span>°</label>
+                                <input type="range" id="input-pattern-spacing-angle" min="-180" max="180" step="1"
+                                    value="0">
+                            </div>
+
+
+                            <div class="form-group">
+                                <label>Growth / Spiral Factor: <span id="val-pattern-growth">1.0</span></label>
+                                <input type="range" id="input-pattern-growth" min="0.5" max="2.0" step="0.05"
+                                    value="1.0">
+                            </div>
+
+                            <div class="button-group" style="margin-top: 15px;">
+                                <button id="btn-apply-pattern" class="btn btn-primary">Apply Pattern</button>
+                                <button id="btn-cancel-pattern" class="btn btn-secondary">Clear Preview</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Panel F: Handwriting Generator -->
+            <div class="grid-stack-item" gs-w="6" gs-h="8" gs-x="3" gs-y="11" id="panel-handwriting">
+                <div class="grid-stack-item-content panel-glass">
+                    <div class="panel-header">
+                        <h2>Handwriting Generator</h2>
+                    </div>
+                    <div class="panel-body flex-col" style="gap: 15px; overflow: hidden; height: 100%;">
+                        <!-- Full-Width Text Input -->
+                        <div class="form-group" style="margin-bottom: 5px; flex-shrink: 0;">
+                            <label>Text Input</label>
+                            <textarea id="input-hw-text" placeholder="Enter text to generate handwriting..."
+                                style="height: 100px; width: 100%; resize: none;"></textarea>
+                        </div>
+
+                        <div class="flex-row" style="gap: 20px; flex: 1; min-height: 0; overflow: hidden;">
+                            <!-- Controls Column - Widened to prevent clipping -->
+                            <div class="hw-controls flex-col"
+                                style="gap: 12px; width: 320px; min-width: 320px; flex-shrink: 0; overflow-y: auto; padding-right: 5px;">
+                                <!-- Row 1: Style & Seed -->
+                                <div class="form-row">
+                                    <div class="form-group" style="flex: 1 1 0; min-width: 0;">
+                                        <label>Style</label>
+                                        <select id="sel-hw-style" style="width: 100%;">
+                                            <option value="print">Print</option>
+                                            <option value="cursive">Cursive</option>
+                                            <option value="architect">Architect</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group" style="flex: 1 1 0; min-width: 0;">
+                                        <label>Seed</label>
+                                        <div style="display: flex; gap: 4px;">
+                                            <input type="number" id="input-hw-seed" value="1234"
+                                                style="flex: 1; min-width: 0;">
+                                            <button id="btn-hw-regenerate" class="btn btn-secondary"
+                                                style="padding: 0 8px;">🎲</button>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Row 2: Slant & Messiness -->
+                                <div class="form-row">
+                                    <div class="form-group" style="flex: 1 1 0; min-width: 0;">
+                                        <label>Slant: <span id="val-hw-slant">0</span></label>
+                                        <input type="range" id="input-hw-slant" min="-20" max="20" step="1" value="0"
+                                            style="width: 100%;">
+                                    </div>
+                                    <div class="form-group" style="flex: 1 1 0; min-width: 0;">
+                                        <label>Mess: <span id="val-hw-messiness">0</span></label>
+                                        <input type="range" id="input-hw-messiness" min="0" max="5" step="0.1" value="0"
+                                            style="width: 100%;">
+                                    </div>
+                                </div>
+
+                                <!-- Row 3: Sizes -->
+                                <div class="form-row">
+                                    <div class="form-group" style="flex: 1 1 0; min-width: 0;">
+                                        <label>Height: <span id="val-hw-char-height">6</span>mm</label>
+                                        <input type="range" id="input-hw-char-height" min="2" max="20" step="0.5"
+                                            value="6" style="width: 100%;">
+                                    </div>
+                                    <div class="form-group" style="flex: 1 1 0; min-width: 0;">
+                                        <label>Line Space: <span id="val-hw-line-spacing">10</span>mm</label>
+                                        <input type="range" id="input-hw-line-spacing" min="5" max="40" step="1"
+                                            value="10" style="width: 100%;">
+                                    </div>
+                                </div>
+
+                                <!-- New Row: Character Spacing -->
+                                <div class="form-row">
+                                    <div class="form-group" style="flex: 1 1 0; min-width: 0;">
+                                        <label>Char Spacing: <span id="val-hw-char-spacing">0</span>mm</label>
+                                        <input type="range" id="input-hw-char-spacing" min="-2" max="10" step="0.1"
+                                            value="0" style="width: 100%;">
+                                    </div>
+                                    <div class="form-group" style="flex: 1 1 0; min-width: 0;">
+                                        <!-- Placeholder or second control if needed later -->
+                                    </div>
+                                </div>
+
+                                <!-- Row 4: Page Dimensions -->
+                                <div class="form-row">
+                                    <div class="form-group" style="flex: 1 1 0; min-width: 0;">
+                                        <label>Page W (mm)</label>
+                                        <input type="number" id="input-hw-width" value="210" step="1"
+                                            style="width: 100%;">
+                                    </div>
+                                    <div class="form-group" style="flex: 1 1 0; min-width: 0;">
+                                        <label>Page H (mm)</label>
+                                        <input type="number" id="input-hw-height" value="297" step="1"
+                                            style="width: 100%;">
+                                    </div>
+                                </div>
+
+                                <div class="button-grid"
+                                    style="grid-template-columns: 1fr 1fr; gap: 8px; margin-top: auto; padding-top: 10px; flex-shrink: 0;">
+                                    <button id="btn-hw-generate" class="btn btn-primary"
+                                        style="grid-column: span 2;">Generate Preview Line</button>
+                                    <button id="btn-hw-add" class="btn btn-action">Add To Bed</button>
+                                    <button id="btn-hw-export" class="btn btn-secondary">Export SVG</button>
+                                </div>
+                            </div>
+
+                            <!-- Preview Column -->
+                            <div class="hw-preview flex-1"
+                                style="background: rgba(255,255,255,0.05); border: 1px solid var(--border-color); border-radius: 8px; position: relative; overflow: auto; min-width: 0;">
+                                <div id="hw-preview-container"
+                                    style="padding: 15px; background: white; min-height: 100%; display: flex; align-items: flex-start; justify-content: center;">
+                                    <div style="color: #999; margin-top: 50px; text-align: center;">Handwriting Preview
+                                        Area</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Panel G: Image to Vector -->
+            <div class="grid-stack-item" gs-w="6" gs-h="12" gs-x="3" gs-y="19" id="panel-image-vector">
+                <div class="grid-stack-item-content panel-glass">
+                    <div class="panel-header">
+                        <h2>Image to Vector</h2>
+                    </div>
+                    <div class="panel-body flex-col" style="gap: 0; overflow: hidden; height: 100%; padding: 0;">
+                        <!-- Controls Section (Top) -->
+                        <div class="iv-controls-section flex-col"
+                            style="padding: 12px; gap: 12px; flex-shrink: 0; border-bottom: 1px solid var(--panel-border); background: rgba(255,255,255,0.02);">
+
+                            <!-- Row 1: Actions & Method -->
+                            <div class="flex-row" style="gap: 10px; align-items: flex-end; flex-wrap: wrap;">
+                                <div class="form-group" style="margin-bottom: 0; flex: 1; min-width: 150px;">
+                                    <label>Method</label>
+                                    <select id="sel-iv-method" style="width: 100%;">
+                                        <option value="contour">Contour / Edge Tracing</option>
+                                        <option value="hatch">Cross-Hatching Shading</option>
+                                        <option value="spiral">Spiral Brightness</option>
+                                        <option value="wave">Wave Distortion</option>
+                                        <option value="stipple">Dot Mapping</option>
+                                        <option value="flow">Flow Field Lines</option>
+                                        <option value="shape">Shape Replacement</option>
+                                        <option value="topo">Topographic Contours</option>
+                                    </select>
+                                </div>
+                                <div class="form-group" style="margin-bottom: 0; flex: 1; min-width: 120px;">
+                                    <label>Colour Mode</label>
+                                    <select id="sel-iv-color-mode" style="width: 100%;">
+                                        <option value="bw">Black & White (1 Layer)</option>
+                                        <option value="color">Colour (3 Layers - RGB)</option>
+                                    </select>
+                                </div>
+                                <div class="flex-row iv-action-row" style="gap: 8px;">
+                                    <button id="iv-upload-btn" class="btn btn-secondary"
+                                        style="height: 38px; padding: 0 12px; display: flex; align-items: center; gap: 6px;">
+                                        <span>📁 Import</span>
+                                    </button>
+                                    <button id="btn-iv-generate" class="btn btn-primary"
+                                        style="height: 38px; padding: 0 12px;">Refresh</button>
+                                    <button id="btn-iv-add" class="btn btn-action"
+                                        style="height: 38px; padding: 0 15px;" disabled>Add To Bed</button>
+                                    <button id="btn-iv-clear" class="btn btn-secondary"
+                                        style="height: 38px; padding: 0 15px;">Clear</button>
+                                    <div class="iv-source-toggle iv-source-toggle-inline">
+                                        <label class="switch-small" for="chk-iv-show-img">
+                                            <input type="checkbox" id="chk-iv-show-img" checked>
+                                            <span class="slider-round"></span>
+                                        </label>
+                                        <label for="chk-iv-show-img">Source</label>
+                                    </div>
+                                </div>
+                                <div id="iv-upload-zone" class="hidden">
+                                    <input type="file" id="input-iv-image" accept="image/*">
+                                </div>
+                            </div>
+
+                            <!-- Row 2: Sliders (Basic + Dynamic) -->
+                            <div class="iv-slider-panel">
+                                <div class="iv-static-params">
+                                <div class="form-group iv-compact-group">
+                                    <label>Thr: <span id="val-iv-threshold">128</span></label>
+                                    <input type="range" id="input-iv-threshold" min="0" max="255" step="1" value="128"
+                                        style="width: 100%;">
+                                </div>
+                                <div class="form-group iv-compact-group">
+                                    <label>Cont: <span id="val-iv-contrast">50</span></label>
+                                    <input type="range" id="input-iv-contrast" min="0" max="100" step="1" value="50"
+                                        style="width: 100%;">
+                                </div>
+                                <div class="form-group iv-compact-group">
+                                    <label>Simp: <span id="val-iv-simplify">10</span></label>
+                                    <input type="range" id="input-iv-simplify" min="0" max="100" step="1" value="10"
+                                        style="width: 100%;">
+                                </div>
+                                </div>
+                                <!-- Dynamic Sliders Row -->
+                                <div id="iv-dynamic-params" class="iv-dynamic-params">
+                                    <!-- Contextual sliders -->
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Preview Area (Bottom) -->
+                        <div class="iv-preview-viewport flex-1">
+                            <div id="iv-preview-container" class="iv-preview-container">
+                                <canvas id="iv-preview-canvas" class="iv-preview-canvas"></canvas>
+                                <div id="iv-placeholder" class="iv-placeholder">
+                                    Click 'Import' or Drag image here
+                                </div>
+                            </div>
+                            <!-- Stats Overlay -->
+                            <div class="iv-stats">
+                                <div id="iv-stat-pix">Pixels: 0x0</div>
+                                <div style="flex: 1; text-align: center;">Scroll: Zoom | Drag: Pan</div>
+                                <div id="iv-stat-paths">Paths: 0</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </main>
+
+    <!-- Settings Modal -->
+    <div id="settings-modal" class="modal-overlay hidden">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Application Settings</h2>
+                <button id="btn-close-settings" class="btn btn-icon">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>Theme</label>
+                    <select id="sel-theme">
+                        <option value="dark-theme">Dark Premium</option>
+                        <option value="light-theme">Modern Light</option>
+                        <option value="retro-theme">DXY Retro</option>
+                        <option value="olive-theme">Olive (Cream/Brown/Olive)</option>
+                        <option value="blue-theme">Blue Theme</option>
+                        <option value="red-theme">Warm Red Theme</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Handshake Type</label>
+                    <select id="sel-handshake">
+                        <option value="normal">Normal (Hardware Flow)</option>
+                        <option value="ydrop">Y-Drop (Manual DTR/RTS)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Machine Send Speed</label>
+                    <select id="sel-speed">
+                        <option value="fast" selected>Fast (50ms delay)</option>
+                        <option value="medium">Medium (150ms delay)</option>
+                        <option value="slow">Slow (300ms delay)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Plotter Bed Width (mm)</label>
+                    <input type="number" id="input-bed-w" value="432" step="1">
+                </div>
+                <div class="form-group">
+                    <label>Plotter Bed Height (mm)</label>
+                    <input type="number" id="input-bed-h" value="297" step="1">
+                </div>
+                <div class="form-group">
+                    <label>Paper Left Margin Offset (mm)</label>
+                    <input type="number" id="input-margin-x" value="15" step="1">
+                </div>
+                <div class="form-group">
+                    <label>Paper Bottom Margin Offset (mm)</label>
+                    <input type="number" id="input-margin-y" value="10" step="1">
+                </div>
+                <div class="form-group">
+                    <label>Import Curve Resolution (1-50)</label>
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <input type="range" id="input-import-resolution" min="1" max="50" step="1" value="15"
+                            style="flex: 1;">
+                        <span id="val-import-resolution"
+                            style="width: 30px; font-weight: bold; color: var(--accent-blue);">15</span>
+                    </div>
+                    <small style="opacity: 0.6; font-size: 0.75rem;">Higher = smoother curves, more plotter points.
+                        Lower = faster imports, blockier curves.</small>
+                </div>
+
+                <div class="divider"></div>
+                <h3>Visuals</h3>
+                <div class="form-group">
+                    <label>Sim Background Opacity: <span id="val-sim-opacity">0.25</span></label>
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <input type="range" id="input-sim-opacity" min="0" max="1" step="0.05" value="0.25"
+                            style="flex: 1;">
+                    </div>
+                </div>
+                <div class="divider"></div>
+                <h3>Visible Panels</h3>
+                <div class="panel-toggle-list">
+                    <label class="panel-toggle-item">
+                        <input type="checkbox" data-panel-toggle="panel-connection" checked disabled>
+                        <span>Connection</span>
+                    </label>
+                    <label class="panel-toggle-item">
+                        <input type="checkbox" data-panel-toggle="panel-machine-jog" checked>
+                        <span>Machine & Jog</span>
+                    </label>
+                    <label class="panel-toggle-item">
+                        <input type="checkbox" data-panel-toggle="panel-console" checked>
+                        <span>Command Log</span>
+                    </label>
+                    <label class="panel-toggle-item">
+                        <input type="checkbox" data-panel-toggle="panel-visualiser" checked>
+                        <span>Visualiser</span>
+                    </label>
+                    <label class="panel-toggle-item">
+                        <input type="checkbox" data-panel-toggle="panel-patterns" checked>
+                        <span>Pattern Generator</span>
+                    </label>
+                    <label class="panel-toggle-item">
+                        <input type="checkbox" data-panel-toggle="panel-handwriting" checked>
+                        <span>Handwriting Generator</span>
+                    </label>
+                    <label class="panel-toggle-item">
+                        <input type="checkbox" data-panel-toggle="panel-image-vector" checked>
+                        <span>Image to Vector</span>
+                    </label>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="btn-save-settings" class="btn btn-primary">Save & Apply</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Visualizer Pen Context Menu -->
+    <div id="vis-pen-menu" class="context-menu hidden">
+        <div class="menu-header">
+            <span id="vis-pen-menu-title">Pen 1 Settings</span>
+            <button id="btn-close-pen-menu" class="btn btn-icon btn-sm">&times;</button>
+        </div>
+        <div class="menu-body">
+            <div class="form-group-inline">
+                <label>Color</label>
+                <input type="color" id="input-pen-color">
+            </div>
+            <div class="form-group-inline">
+                <label>Thickness (mm)</label>
+                <input type="number" id="input-pen-thick" value="0.3" step="0.01" min="0.01" max="5">
+            </div>
+            <div class="form-group-inline" style="margin-top: 5px;">
+                <label>Layer Visible</label>
+                <input type="checkbox" id="input-pen-visible" style="width: auto;">
+            </div>
+            <button id="btn-pen-goto" class="btn btn-secondary btn-sm" style="margin-top: 10px;">Go to Pen
+                (SP)</button>
+        </div>
+    </div>
+
+    <!-- Shape Type Menu -->
+    <div id="shape-type-menu" class="context-menu hidden" style="width: 150px;">
+        <div class="menu-header">
+            <span id="shape-type-menu-title">Select Shape</span>
+            <button id="btn-close-shape-menu" class="btn btn-icon btn-sm">&times;</button>
+        </div>
+        <div class="menu-body" style="display: flex; gap: 5px; justify-content: space-around;">
+            <button class="btn btn-secondary shape-select-btn" data-shape="circle" title="Circle" style="padding: 5px;">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10" />
+                </svg>
+            </button>
+            <button class="btn btn-secondary shape-select-btn" data-shape="rectangle" title="Rectangle"
+                style="padding: 5px;">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                </svg>
+            </button>
+            <button class="btn btn-secondary shape-select-btn" data-shape="line" title="Line" style="padding: 5px;">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <line x1="3" y1="21" x2="21" y2="3" />
+                </svg>
+            </button>
+        </div>
+    </div>
+
+    <!-- ERROR CATCHER OVERLAY -->
+    <div id="error-overlay"
+        style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; z-index:9999; background:rgba(0,0,0,0.8); color:#ff6b6b; padding:40px; font-family:monospace; font-size:18px; overflow:auto;">
+        <h2>JavaScript Error Detected!</h2>
+        <p>Please copy this text and send it exactly to the AI:</p>
+        <pre id="error-overlay-text"
+            style="background:#222; padding:20px; border:1px solid #ff6b6b; white-space:pre-wrap;"></pre>
+        <button onclick="document.getElementById('error-overlay').style.display='none';"
+            style="padding:10px 20px; background:#444; color:white; border:none; cursor:pointer;">Dismiss</button>
+    </div>
+
+    <!-- LOADING OVERLAY -->
+    <div id="loading-overlay" class="panel-glass"
+        style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; z-index:10000; background:rgba(0,0,0,0.7); flex-direction:column; align-items:center; justify-content:center; color:white; backdrop-filter: blur(5px);">
+        <div style="width:300px; text-align:center;">
+            <h3 id="loading-title" style="margin-bottom:15px; font-weight:300; letter-spacing:1px;">Importing
+                File...
+            </h3>
+            <div
+                style="width:100%; height:10px; background:rgba(255,255,255,0.1); border-radius:5px; overflow:hidden; border:1px solid rgba(255,255,255,0.2);">
+                <div id="loading-bar"
+                    style="width:0%; height:100%; background:var(--accent-blue); transition: width 0.3s ease;">
+                </div>
+            </div>
+            <p id="loading-status" style="margin-top:10px; font-size:0.8rem; opacity:0.7;">Processing geometry...
+            </p>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script>
+        window.onerror = function (msg, url, lineNo, columnNo, error) {
+            const errDiv = document.getElementById('error-overlay');
+            const errText = document.getElementById('error-overlay-text');
+            errDiv.style.display = 'block';
+            errText.innerText += "Message: " + msg + "\nURL: " + url + "\nLine: " + lineNo + ":" + columnNo + "\n\nStack Trace:\n" + (error && error.stack ? error.stack : "N/A") + "\n\n-----------------\n";
+            return false;
+        };
+        window.addEventListener('unhandledrejection', function (event) {
+            const errDiv = document.getElementById('error-overlay');
+            const errText = document.getElementById('error-overlay-text');
+            errDiv.style.display = 'block';
+            errText.innerText += "Unhandled Promise Rejection: " + event.reason + "\n\n-----------------\n";
+        });
+
+
+    </script>
+    <script src="vendor/gridstack-all.js"></script>
+    <script src="js/ui.js"></script>
+    <script src="js/serial.js"></script>
+    <script src="js/canvas.js"></script>
+    <script src="js/patterns.js"></script>
+    <script src="js/hpgl.js"></script>
+
+    <!-- Handwriting Module Scripts -->
+    <script src="js/handwriting/handwriting-library.js"></script>
+    <script src="js/handwriting/handwriting-variation.js"></script>
+    <script src="js/handwriting/handwriting-layout.js"></script>
+    <script src="js/handwriting/handwriting-export.js"></script>
+    <script src="js/handwriting/handwriting-engine.js"></script>
+    <script src="js/handwriting/handwriting-panel.js"></script>
+
+    <!-- Image to Vector Scripts -->
+    <script src="js/image-vector/image-vector-engine.js"></script>
+    <script src="js/image-vector/image-vector-panel.js"></script>
+
+    <script src="js/app.js"></script>
+</body>
+
+</html>
