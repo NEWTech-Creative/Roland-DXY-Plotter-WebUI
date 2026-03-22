@@ -7,6 +7,7 @@ class App {
         this.hpgl = new HpglParser(this);
 
         this.settings = {
+            model: '1200',
             theme: 'dark-theme',
             handshake: 'normal',
             speed: 'fast',
@@ -14,6 +15,9 @@ class App {
             bedHeight: 297,
             marginX: 15,
             marginY: 10,
+            outputFlipHorizontal: false,
+            outputFlipVertical: true,
+            showPredictedCrosshair: true,
             importResolution: 15,
             simBackgroundOpacity: 0.25,
             panelVisibility: {
@@ -38,6 +42,11 @@ class App {
     init() {
         this.ui.initGridStack();
         this.ui.initPenSlots();
+
+        const modelSelect = document.getElementById('sel-model');
+        if (modelSelect) {
+            modelSelect.value = this.settings.model || '1200';
+        }
 
         // Sync canvas with loaded settings
         if (this.settings) {
@@ -75,6 +84,24 @@ class App {
     }
 
     bindEvents() {
+        const modelSelect = document.getElementById('sel-model');
+        if (modelSelect) {
+            modelSelect.addEventListener('change', () => {
+                this.settings.model = modelSelect.value || '1200';
+                // All current DXY profiles default to the same working envelope.
+                this.settings.bedWidth = 432;
+                this.settings.bedHeight = 297;
+                this.saveSettings();
+                if (this.canvas) {
+                    this.canvas.bedWidth = 432;
+                    this.canvas.bedHeight = 297;
+                    this.canvas.resize();
+                    this.canvas.draw(true);
+                }
+                this.ui.logToConsole(`System: ${this.settings.model} workspace set to 432 x 297 mm.`);
+            });
+        }
+
         // Connection events
         document.getElementById('btn-connect').addEventListener('click', () => {
             if (this.serial.isConnected) {

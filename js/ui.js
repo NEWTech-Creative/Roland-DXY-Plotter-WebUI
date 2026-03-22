@@ -55,6 +55,7 @@ class UIController {
         this._bindPatterns();
         this._bindSelectionSizeControls();
         this._bindVisualizerToolbarOverflow();
+        this._bindPredictedCrosshairToggle();
         // HandwritingPanel is initialized by its own window.load listener in handwriting-panel.js
 
         // Global click listener to close context menus
@@ -278,6 +279,21 @@ class UIController {
 
     resetLayout() {
         localStorage.removeItem('plotterLayout');
+        localStorage.removeItem('plotterLayoutVersion');
+        location.reload();
+    }
+
+    resetApplicationToDefaults() {
+        [
+            'dxySettings',
+            'canvasBackup',
+            'visPenConfig',
+            'penColors',
+            'activeVisualizerPen',
+            'plotterLayout',
+            'plotterLayoutVersion'
+        ].forEach(key => localStorage.removeItem(key));
+
         location.reload();
     }
 
@@ -602,6 +618,7 @@ class UIController {
         const btnSettings = document.getElementById('btn-settings');
         const btnClose = document.getElementById('btn-close-settings');
         const btnSave = document.getElementById('btn-save-settings');
+        const btnResetDefaults = document.getElementById('btn-reset-settings');
         const selTheme = document.getElementById('sel-theme');
         const selHandshake = document.getElementById('sel-handshake');
         const selSpeed = document.getElementById('sel-speed');
@@ -613,6 +630,8 @@ class UIController {
         const valRes = document.getElementById('val-import-resolution');
         const inputMarginX = document.getElementById('input-margin-x');
         const inputMarginY = document.getElementById('input-margin-y');
+        const inputOutputFlipX = document.getElementById('input-output-flip-x');
+        const inputOutputFlipY = document.getElementById('input-output-flip-y');
         const panelToggleInputs = Array.from(document.querySelectorAll('[data-panel-toggle]'));
 
         btnSettings.onclick = () => {
@@ -631,6 +650,8 @@ class UIController {
             }
             if (inputMarginX) inputMarginX.value = this.app.settings.marginX || 15;
             if (inputMarginY) inputMarginY.value = this.app.settings.marginY || 10;
+            if (inputOutputFlipX) inputOutputFlipX.checked = this.app.settings.outputFlipHorizontal === true;
+            if (inputOutputFlipY) inputOutputFlipY.checked = this.app.settings.outputFlipVertical !== false;
             const visibility = this._getPanelVisibilitySettings();
             panelToggleInputs.forEach(input => {
                 input.checked = visibility[input.dataset.panelToggle] !== false;
@@ -651,6 +672,13 @@ class UIController {
         }
 
         btnClose.onclick = () => modal.classList.add('hidden');
+        if (btnResetDefaults) {
+            btnResetDefaults.onclick = () => {
+                const confirmed = confirm('Reset all settings, clear all graphics, and restore the default layout?');
+                if (!confirmed) return;
+                this.resetApplicationToDefaults();
+            };
+        }
         btnSave.onclick = () => {
             this.app.settings.theme = selTheme.value;
             if (selHandshake) this.app.settings.handshake = selHandshake.value;
@@ -665,6 +693,8 @@ class UIController {
             }
             if (inputMarginX) this.app.settings.marginX = parseFloat(inputMarginX.value);
             if (inputMarginY) this.app.settings.marginY = parseFloat(inputMarginY.value);
+            if (inputOutputFlipX) this.app.settings.outputFlipHorizontal = inputOutputFlipX.checked;
+            if (inputOutputFlipY) this.app.settings.outputFlipVertical = inputOutputFlipY.checked;
             this.app.settings.panelVisibility = panelToggleInputs.reduce((acc, input) => {
                 acc[input.dataset.panelToggle] = input.disabled ? true : input.checked;
                 return acc;
@@ -807,14 +837,25 @@ class UIController {
         Object.entries(jogBtns).forEach(([id, move]) => {
             const btn = document.getElementById(id);
             if (btn) {
-                btn.onclick = () => {
+                btn.onclick = async () => {
                     if (this.app.serial.isConnected) {
-                        const units = this.jogStepSize * 40; // Approx 40 units per mm
-                        this.app.serial.sendManualCommand(`PR${move.dx * units},${move.dy * units};`);
+                        await this.app.serial.sendJogCommand(move.dx * this.jogStepSize, move.dy * this.jogStepSize);
+                    } else {
+                        this.app.ui.logToConsole('Error: Printer not connected.', 'error');
                     }
                 };
             }
         });
+        const homeBtn = document.getElementById('btn-jog-home');
+        if (homeBtn) {
+            homeBtn.onclick = async () => {
+                if (this.app.serial.isConnected) {
+                    await this.app.serial.sendHomeCommand();
+                } else {
+                    this.app.ui.logToConsole('Error: Printer not connected.', 'error');
+                }
+            };
+        }
         document.querySelectorAll('.step-btn').forEach(btn => {
             btn.onclick = () => {
                 document.querySelectorAll('.step-btn').forEach(b => b.classList.remove('active'));
@@ -847,6 +888,27 @@ class UIController {
 
         document.getElementById('btn-apply-pattern').onclick = () => this.applyPattern();
         document.getElementById('btn-cancel-pattern').onclick = () => this.clearPatternPreview();
+    }
+
+    _bindPredictedCrosshairToggle() {
+        const toggleBtn = document.getElementById('btn-toggle-predicted-crosshair');
+        if (!toggleBtn) return;
+
+        const syncState = () => {
+            const isVisible = this.app?.settings?.showPredictedCrosshair !== false;
+            toggleBtn.classList.toggle('active', isVisible);
+            toggleBtn.setAttribute('aria-pressed', isVisible ? 'true' : 'false');
+        };
+
+        toggleBtn.onclick = () => {
+            if (!this.app.settings) this.app.settings = {};
+            this.app.settings.showPredictedCrosshair = this.app.settings.showPredictedCrosshair === false;
+            this.app.saveSettings();
+            syncState();
+            if (this.app.canvas) this.app.canvas.draw();
+        };
+
+        syncState();
     }
 
     _bindSelectionSizeControls() {

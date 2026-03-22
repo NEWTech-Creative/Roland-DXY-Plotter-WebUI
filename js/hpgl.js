@@ -17,9 +17,47 @@ class HpglParser {
         return ((quarterTurns % 4) + 4) % 4;
     }
 
+    getOutputFlipSettings() {
+        const settings = this.app?.settings || {};
+        return {
+            horizontal: settings.outputFlipHorizontal === true,
+            vertical: settings.outputFlipVertical !== false
+        };
+    }
+
+    transformOutputPoint(xMM, yMM) {
+        const { horizontal, vertical } = this.getOutputFlipSettings();
+        const bedWidth = this.app?.settings?.bedWidth || this.app?.canvas?.bedWidth || 432;
+        const bedHeight = this.app?.settings?.bedHeight || this.app?.canvas?.bedHeight || 297;
+
+        return {
+            x: horizontal ? (bedWidth - xMM) : xMM,
+            y: vertical ? (bedHeight - yMM) : yMM
+        };
+    }
+
+    inverseTransformOutputPoint(xMM, yMM) {
+        // Flips are their own inverse, so map machine-space coordinates back to visualiser-space.
+        return this.transformOutputPoint(xMM, yMM);
+    }
+
+    transformOutputPoints(points = []) {
+        return points.map(point => this.transformOutputPoint(point.x, point.y));
+    }
+
+    transformOutputRotation(rotation = 0) {
+        const { horizontal, vertical } = this.getOutputFlipSettings();
+        const radians = (rotation || 0) * (Math.PI / 180);
+        const scaleX = horizontal ? -1 : 1;
+        const scaleY = vertical ? -1 : 1;
+        const transformedAngle = Math.atan2(Math.sin(radians) * scaleY, Math.cos(radians) * scaleX);
+        return Math.round((transformedAngle * 180) / Math.PI / 90) * 90;
+    }
+
     generateCircle(xMM, yMM, rMM) {
-        const x = Math.round(xMM * this.UNITS_PER_MM);
-        const y = Math.round(yMM * this.UNITS_PER_MM);
+        const point = this.transformOutputPoint(xMM, yMM);
+        const x = Math.round(point.x * this.UNITS_PER_MM);
+        const y = Math.round(point.y * this.UNITS_PER_MM);
         const r = Math.round(rMM * this.UNITS_PER_MM);
 
         return [
@@ -41,14 +79,16 @@ class HpglParser {
     }
 
     generateText(text, xMM, yMM, fontSize = 10, rotation = 0) {
-        const x = Math.round(xMM * this.UNITS_PER_MM);
-        const y = Math.round(yMM * this.UNITS_PER_MM);
+        const point = this.transformOutputPoint(xMM, yMM);
+        const x = Math.round(point.x * this.UNITS_PER_MM);
+        const y = Math.round(point.y * this.UNITS_PER_MM);
+        const transformedRotation = this.transformOutputRotation(rotation);
 
         // Roland S command: n=0 -> 0.8mm, n=127 -> 102.4mm
         const nAtSize = Math.max(0, Math.min(127, Math.round(fontSize / 0.8) - 1));
 
         // Roland Q command: 0=0, 1=90, 2=180, 3=270
-        const nAtRotate = this.getRolandTextRotationIndex(rotation);
+        const nAtRotate = this.getRolandTextRotationIndex(transformedRotation);
 
         return [
             `PA${x},${y};`,
@@ -63,13 +103,35 @@ class HpglParser {
         if (!points || points.length < (closed ? 3 : 3)) return []; // Y requires at least 3 pairs for m=0,1
 
         const m = closed ? 1 : 0; // Absolute curves
-        const coords = points.map(p => {
+        const coords = this.transformOutputPoints(points).map(p => {
             const ux = Math.round(p.x * this.UNITS_PER_MM);
             const uy = Math.round(p.y * this.UNITS_PER_MM);
             return `${ux},${uy}`;
         }).join(",");
 
         return [`Y${m},${coords};`];
+    }
+
+    generatePolylineCommands(points) {
+        if (!points || points.length < 2) return [];
+
+        const transformedPts = this.transformOutputPoints(points);
+        const commands = [];
+
+        for (let i = 0; i < transformedPts.length; i++) {
+            const ux = Math.round(transformedPts[i].x * this.UNITS_PER_MM);
+            const uy = Math.round(transformedPts[i].y * this.UNITS_PER_MM);
+
+            if (i === 0) {
+                commands.push(`PU${ux},${uy};`);
+                commands.push('PD;');
+            } else {
+                commands.push(`PA${ux},${uy};`);
+            }
+        }
+
+        commands.push('PU;');
+        return commands;
     }
 
     generateVectorText(text, xMM, yMM, fontSize = 10) {
@@ -98,8 +160,12 @@ class HpglParser {
             strokes.forEach(stroke => {
                 if (stroke.length < 2) return;
                 for (let j = 0; j < stroke.length; j++) {
-                    const ux = Math.round((curX + stroke[j].x * h * 0.6) * this.UNITS_PER_MM);
-                    const uy = Math.round((curY + (stroke[j].y - 1) * h) * this.UNITS_PER_MM);
+                    const point = this.transformOutputPoint(
+                        curX + stroke[j].x * h * 0.6,
+                        curY + (stroke[j].y - 1) * h
+                    );
+                    const ux = Math.round(point.x * this.UNITS_PER_MM);
+                    const uy = Math.round(point.y * this.UNITS_PER_MM);
                     if (j === 0) {
                         hpgl.push(`PU${ux},${uy};`);
                         hpgl.push('PD;');
@@ -193,20 +259,8 @@ class HpglParser {
                     { x: p.x, y: p.y }
                 ] : p.points;
 
-                if (pts && pts.length >= 3 && (p.type === 'path' || p.type === 'polyline')) {
-                    hpglCommands = hpglCommands.concat(this.generateCurve(pts, p.closed || false));
-                } else if (pts && pts.length >= 2) {
-                    for (let i = 0; i < pts.length; i++) {
-                        const ux = Math.round(pts[i].x * this.UNITS_PER_MM);
-                        const uy = Math.round(pts[i].y * this.UNITS_PER_MM);
-                        if (i === 0) {
-                            hpglCommands.push(`PU${ux},${uy};`);
-                            hpglCommands.push('PD;');
-                        } else {
-                            hpglCommands.push(`PA${ux},${uy};`);
-                        }
-                    }
-                    hpglCommands.push('PU;');
+                if (pts && pts.length >= 2) {
+                    hpglCommands = hpglCommands.concat(this.generatePolylineCommands(pts));
                 }
             }
         });
@@ -265,22 +319,8 @@ class HpglParser {
                     { x: p.x, y: p.y }
                 ] : p.points;
 
-                if (pts && pts.length >= 3 && (p.type === 'path' || p.type === 'polyline')) {
-                    hpglQueue = hpglQueue.concat(this.generateCurve(pts, p.closed || false));
-                    commandsFound++;
-                } else if (pts && pts.length >= 2) {
-                    for (let i = 0; i < pts.length; i++) {
-                        const ux = Math.round(pts[i].x * this.UNITS_PER_MM);
-                        const uy = Math.round(pts[i].y * this.UNITS_PER_MM);
-
-                        if (i === 0) {
-                            hpglQueue.push(`PU${ux},${uy};`);
-                            hpglQueue.push('PD;');
-                        } else {
-                            hpglQueue.push(`PA${ux},${uy};`);
-                        }
-                    }
-                    hpglQueue.push('PU;');
+                if (pts && pts.length >= 2) {
+                    hpglQueue = hpglQueue.concat(this.generatePolylineCommands(pts));
                     commandsFound += pts.length;
                 }
             }

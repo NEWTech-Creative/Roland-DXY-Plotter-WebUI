@@ -1041,7 +1041,7 @@ class CanvasManager {
 
         // Centering logic (same as in draw)
         const mmToPx = this.scale;
-        const horizontalShift = Math.max(0, (this.pixelW - (this.bedWidth * mmToPx)) / 2);
+        const horizontalShift = 0;
         const verticalShift = Math.max(0, this.pixelH - (this.bedHeight * mmToPx));
 
         // Reverse translate and zoom
@@ -1137,6 +1137,17 @@ class CanvasManager {
     getBoundingBox(p) {
         if (p.type === 'circle') {
             return { minX: p.x - p.r, minY: p.y - p.r, maxX: p.x + p.r, maxY: p.y + p.r };
+        } else if (p.type === 'rectangle') {
+            const x1 = p.x;
+            const y1 = p.y;
+            const x2 = p.x + (p.w || 0);
+            const y2 = p.y + (p.h || 0);
+            return {
+                minX: Math.min(x1, x2),
+                minY: Math.min(y1, y2),
+                maxX: Math.max(x1, x2),
+                maxY: Math.max(y1, y2)
+            };
         } else if (p.type === 'line' || p.type === 'polyline' || p.type === 'path') {
             let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
             if (p.points && p.points.length > 0) {
@@ -1445,10 +1456,9 @@ class CanvasManager {
         this.ctx.save(); // Save default unscaled state
         this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
 
-        // Bottom-align / Centering logic: if bed is smaller than container, push it to bottom/center
+        // Bottom-left anchor logic: keep the machine origin fixed to the lower-left of the viewport.
         const mmToPx = this.scale;
-        // Horizontal centering if bed is narrower than parent
-        const horizontalShift = Math.max(0, (this.pixelW - (this.bedWidth * mmToPx)) / 2);
+        const horizontalShift = 0;
         const verticalShift = Math.max(0, this.pixelH - (this.bedHeight * mmToPx));
 
         // Apply panning and zooming transformations
@@ -1550,10 +1560,44 @@ class CanvasManager {
         }
 
         this.ctx.restore(); // CRITICAL: Stop transformation accumulation
+        this.drawPredictedCrosshair(mmToPx, horizontalShift, verticalShift);
         const isInteracting = this.isDragging || this.isRotating || this.isPanning || this.isMarqueeSelecting || this.isCreatingShape;
         if (!isInteracting && this.app.ui && this.app.ui.updateSelectionSizeControls) {
             this.app.ui.updateSelectionSizeControls();
         }
+    }
+
+    drawPredictedCrosshair(mmToPx, horizontalShift = 0, verticalShift = 0) {
+        if (!this.app?.settings || this.app.settings.showPredictedCrosshair === false) return;
+        if (!this.app?.serial || !this.app.serial.getEstimatedPosition) return;
+
+        const predicted = this.app.serial.getEstimatedPosition();
+        if (!predicted) return;
+
+        const visualPoint = this.app?.hpgl?.inverseTransformOutputPoint
+            ? this.app.hpgl.inverseTransformOutputPoint(predicted.x, predicted.y)
+            : { x: predicted.x, y: predicted.y };
+        const x = (visualPoint.x * mmToPx * this.viewZoom) + this.viewOffsetX + horizontalShift;
+        const y = (visualPoint.y * mmToPx * this.viewZoom) + this.viewOffsetY + verticalShift;
+        const size = 10;
+
+        this.ctx.save();
+        this.ctx.strokeStyle = 'rgba(239, 68, 68, 0.9)';
+        this.ctx.fillStyle = 'rgba(239, 68, 68, 0.18)';
+        this.ctx.lineWidth = 1.5;
+
+        this.ctx.beginPath();
+        this.ctx.arc(x, y, size, 0, Math.PI * 2);
+        this.ctx.fill();
+        this.ctx.stroke();
+
+        this.ctx.beginPath();
+        this.ctx.moveTo(x - (size * 1.8), y);
+        this.ctx.lineTo(x + (size * 1.8), y);
+        this.ctx.moveTo(x, y - (size * 1.8));
+        this.ctx.lineTo(x, y + (size * 1.8));
+        this.ctx.stroke();
+        this.ctx.restore();
     }
 
     drawPaths() {
