@@ -71,11 +71,13 @@ class CanvasManager {
         this.simulationRoute = [];
         this.simulationRouteLength = 0;
         this.simulationSpeed = 60; // mm per second base
-        this.simulationMaxSpeedMmPerMin = 10000;
+        this.simulationMaxSpeedMmPerMin = 60000;
         this.simulationLastTimestamp = 0;
         this.simulationSpeedMultiplier = 1;
 
         this.patternPreviewPaths = [];
+        this.bucketHoverRegion = null;
+        this.bucketHoverPathIdx = -1;
         this.editingPathIdx = -1;
         this.displayedCrosshairPoint = null;
         this.cursorBlink = true;
@@ -176,6 +178,8 @@ class CanvasManager {
         this.isRotating = false;
         this.isMarqueeSelecting = false;
         this.snapPoint = null;
+        this.bucketHoverRegion = null;
+        this.bucketHoverPathIdx = -1;
 
         if (this.canvas) {
             this.canvas.classList.remove('rotating');
@@ -387,6 +391,11 @@ class CanvasManager {
             if (this.app.ui.activeTool === 'text' || (this.app.ui.activeTool === 'shape' && !this.isCreatingShape)) {
                 this.handleCanvasClick(pos.xMM, pos.yMM);
                 if (this.app.ui.activeTool === 'text') return; // Handled
+            }
+
+            if (this.app.ui.activeTool === 'bucket' && e.button === 0) {
+                this.applyBucketFillAt(pos.xMM, pos.yMM);
+                return;
             }
 
             // Toggle Panning on Middle Mouse
@@ -611,6 +620,17 @@ class CanvasManager {
             }
 
             const pos = this.getMousePosMM(e);
+
+            if (this.app.ui.activeTool === 'bucket' && !this.isDragging && !this.isMarqueeSelecting && !this.isCreatingShape && !this.isRotating) {
+                const target = this.getFillTargetAt(pos.xMM, pos.yMM);
+                this.bucketHoverRegion = target ? target.region : null;
+                this.bucketHoverPathIdx = target ? target.pathIdx : -1;
+                this.draw();
+            } else if (this.bucketHoverRegion) {
+                this.bucketHoverRegion = null;
+                this.bucketHoverPathIdx = -1;
+                this.draw();
+            }
 
             // Set Cursor
             let cursor = 'default';
@@ -1412,6 +1432,348 @@ class CanvasManager {
         return snap;
     }
 
+    isPathClosed(path) {
+        if (!path) return false;
+        if (path.type === 'rectangle' || path.type === 'circle') return true;
+        if (Array.isArray(path.segments) && path.segments.some(segment => segment.type === 'Z')) return true;
+        if (Array.isArray(path.points) && path.points.length >= 3) {
+            const first = path.points[0];
+            const last = path.points[path.points.length - 1];
+            return Math.hypot((last.x || 0) - (first.x || 0), (last.y || 0) - (first.y || 0)) <= 1;
+        }
+        return false;
+    }
+
+    flattenPathForFill(path) {
+        if (!path) return [];
+        if (path.type === 'rectangle') {
+            return [
+                { x: path.x, y: path.y },
+                { x: path.x + (path.w || 0), y: path.y },
+                { x: path.x + (path.w || 0), y: path.y + (path.h || 0) },
+                { x: path.x, y: path.y + (path.h || 0) }
+            ];
+        }
+        if (path.type === 'circle') {
+            const points = [];
+            const steps = 64;
+            for (let i = 0; i < steps; i++) {
+                const angle = (i / steps) * Math.PI * 2;
+                points.push({
+                    x: path.x + Math.cos(angle) * path.r,
+                    y: path.y + Math.sin(angle) * path.r
+                });
+            }
+            return points;
+        }
+        if (path.type === 'path' && Array.isArray(path.segments) && path.segments.length > 0) {
+            const points = [];
+            let currentPoint = null;
+            let subpathStart = null;
+            const addPoint = (pt) => {
+                if (!pt) return;
+                const prev = points[points.length - 1];
+                if (!prev || Math.hypot(prev.x - pt.x, prev.y - pt.y) > 0.01) points.push(pt);
+            };
+            path.segments.forEach(segment => {
+                if (segment.type === 'M') {
+                    currentPoint = { x: segment.x, y: segment.y };
+                    subpathStart = { ...currentPoint };
+                    addPoint(currentPoint);
+                } else if (segment.type === 'L') {
+                    currentPoint = { x: segment.x, y: segment.y };
+                    addPoint(currentPoint);
+                } else if (segment.type === 'C' && currentPoint) {
+                    const start = { ...currentPoint };
+                    for (let i = 1; i <= 24; i++) {
+                        const t = i / 24;
+                        const mt = 1 - t;
+                        addPoint({
+                            x: (mt ** 3) * start.x + 3 * (mt ** 2) * t * segment.x1 + 3 * mt * (t ** 2) * segment.x2 + (t ** 3) * segment.x,
+                            y: (mt ** 3) * start.y + 3 * (mt ** 2) * t * segment.y1 + 3 * mt * (t ** 2) * segment.y2 + (t ** 3) * segment.y
+                        });
+                    }
+                    currentPoint = { x: segment.x, y: segment.y };
+                } else if (segment.type === 'Q' && currentPoint) {
+                    const start = { ...currentPoint };
+                    for (let i = 1; i <= 20; i++) {
+                        const t = i / 20;
+                        const mt = 1 - t;
+                        addPoint({
+                            x: (mt ** 2) * start.x + 2 * mt * t * segment.x1 + (t ** 2) * segment.x,
+                            y: (mt ** 2) * start.y + 2 * mt * t * segment.y1 + (t ** 2) * segment.y
+                        });
+                    }
+                    currentPoint = { x: segment.x, y: segment.y };
+                } else if (segment.type === 'A') {
+                    currentPoint = { x: segment.x, y: segment.y };
+                    addPoint(currentPoint);
+                } else if (segment.type === 'Z' && subpathStart) {
+                    addPoint({ ...subpathStart });
+                    currentPoint = { ...subpathStart };
+                }
+            });
+            return points;
+        }
+        return Array.isArray(path.points) ? path.points.map(pt => ({ x: pt.x, y: pt.y })) : [];
+    }
+
+    pointInPolygon(x, y, polygon) {
+        let inside = false;
+        for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+            const xi = polygon[i].x, yi = polygon[i].y;
+            const xj = polygon[j].x, yj = polygon[j].y;
+            const intersect = ((yi > y) !== (yj > y))
+                && (x < ((xj - xi) * (y - yi) / ((yj - yi) || 0.000001)) + xi);
+            if (intersect) inside = !inside;
+        }
+        return inside;
+    }
+
+    getBaseFillRegion(path) {
+        const box = this.getBoundingBox(path);
+        if (!box || !this.isPathClosed(path)) return null;
+        const polygon = this.flattenPathForFill(path);
+        if (!polygon || polygon.length < 3) return null;
+        return {
+            box,
+            polygon,
+            contains: (x, y) => {
+                if (path.type === 'circle') {
+                    return Math.hypot(x - path.x, y - path.y) <= path.r;
+                }
+                if (path.type === 'rectangle') {
+                    const minX = Math.min(path.x, path.x + (path.w || 0));
+                    const maxX = Math.max(path.x, path.x + (path.w || 0));
+                    const minY = Math.min(path.y, path.y + (path.h || 0));
+                    const maxY = Math.max(path.y, path.y + (path.h || 0));
+                    return x >= minX && x <= maxX && y >= minY && y <= maxY;
+                }
+                return this.pointInPolygon(x, y, polygon);
+            }
+        };
+    }
+
+    getFillRegion(path, pathIdx = -1) {
+        const baseRegion = this.getBaseFillRegion(path);
+        if (!baseRegion) return null;
+
+        const holes = [];
+        for (let i = 0; i < this.paths.length; i++) {
+            if (i === pathIdx) continue;
+            const candidate = this.paths[i];
+            if (candidate?.generatedBy === 'bucket-fill') continue;
+            const candidateRegion = this.getBaseFillRegion(candidate);
+            if (!candidateRegion) continue;
+
+            const representative = candidateRegion.polygon[0];
+            if (!representative) continue;
+            if (!baseRegion.contains(representative.x, representative.y)) continue;
+
+            const corners = [
+                { x: candidateRegion.box.minX, y: candidateRegion.box.minY },
+                { x: candidateRegion.box.maxX, y: candidateRegion.box.minY },
+                { x: candidateRegion.box.maxX, y: candidateRegion.box.maxY },
+                { x: candidateRegion.box.minX, y: candidateRegion.box.maxY }
+            ];
+            if (corners.every(corner => baseRegion.contains(corner.x, corner.y))) {
+                holes.push(candidateRegion);
+            }
+        }
+
+        return {
+            ...baseRegion,
+            holes,
+            contains: (x, y) => {
+                if (!baseRegion.contains(x, y)) return false;
+                return !holes.some(hole => hole.contains(x, y));
+            }
+        };
+    }
+
+    getFillTargetAt(xMM, yMM) {
+        for (let i = this.paths.length - 1; i >= 0; i--) {
+            const path = this.paths[i];
+            const region = this.getFillRegion(path, i);
+            if (!region) continue;
+            if (region.contains(xMM, yMM)) return { path, pathIdx: i, region };
+        }
+        return null;
+    }
+
+    drawBucketHoverPreview(mmToPx) {
+        if (!this.bucketHoverRegion || !Array.isArray(this.bucketHoverRegion.polygon) || this.bucketHoverRegion.polygon.length < 3) return;
+
+        this.ctx.save();
+        this.ctx.fillStyle = 'rgba(96, 165, 250, 0.18)';
+        this.ctx.strokeStyle = 'rgba(96, 165, 250, 0.65)';
+        this.ctx.lineWidth = 1.5 / this.viewZoom;
+
+        this.ctx.beginPath();
+        this.ctx.moveTo(this.bucketHoverRegion.polygon[0].x * mmToPx, this.bucketHoverRegion.polygon[0].y * mmToPx);
+        for (let i = 1; i < this.bucketHoverRegion.polygon.length; i++) {
+            const pt = this.bucketHoverRegion.polygon[i];
+            this.ctx.lineTo(pt.x * mmToPx, pt.y * mmToPx);
+        }
+        this.ctx.closePath();
+
+        if (Array.isArray(this.bucketHoverRegion.holes)) {
+            this.bucketHoverRegion.holes.forEach(hole => {
+                if (!Array.isArray(hole.polygon) || hole.polygon.length < 3) return;
+                this.ctx.moveTo(hole.polygon[0].x * mmToPx, hole.polygon[0].y * mmToPx);
+                for (let i = 1; i < hole.polygon.length; i++) {
+                    const pt = hole.polygon[i];
+                    this.ctx.lineTo(pt.x * mmToPx, pt.y * mmToPx);
+                }
+                this.ctx.closePath();
+            });
+        }
+
+        this.ctx.fill('evenodd');
+        this.ctx.stroke();
+        this.ctx.restore();
+    }
+
+    generateAngledFillPaths(region, options, variant = 'lines') {
+        const spacing = Math.max(0.8, options.spacing || 6);
+        const angleDeg = options.angle || 0;
+        const angle = angleDeg * Math.PI / 180;
+        const cos = Math.cos(angle);
+        const sin = Math.sin(angle);
+        const toLocal = (x, y) => ({ u: x * cos + y * sin, v: -x * sin + y * cos });
+        const toWorld = (u, v) => ({ x: u * cos - v * sin, y: u * sin + v * cos });
+        const corners = [
+            { x: region.box.minX, y: region.box.minY },
+            { x: region.box.maxX, y: region.box.minY },
+            { x: region.box.maxX, y: region.box.maxY },
+            { x: region.box.minX, y: region.box.maxY }
+        ].map(pt => toLocal(pt.x, pt.y));
+        const minU = Math.min(...corners.map(pt => pt.u)) - spacing * 2;
+        const maxU = Math.max(...corners.map(pt => pt.u)) + spacing * 2;
+        const minV = Math.min(...corners.map(pt => pt.v)) - spacing * 2;
+        const maxV = Math.max(...corners.map(pt => pt.v)) + spacing * 2;
+        const sampleStep = Math.max(0.6, Math.min(1.5, spacing / 3));
+        const created = [];
+
+        for (let v = minV; v <= maxV; v += spacing) {
+            let run = [];
+            for (let u = minU; u <= maxU; u += sampleStep) {
+                let offsetV = v;
+                if (variant === 'zigzag') {
+                    const period = Math.max(spacing * 1.6, 2);
+                    const wave = ((u / period) % 1 + 1) % 1;
+                    const triangle = wave < 0.5 ? (wave * 2) : (2 - wave * 2);
+                    offsetV = v + ((triangle - 0.5) * spacing * 0.7);
+                } else if (variant === 'curves') {
+                    offsetV = v + Math.sin(u / Math.max(spacing * 1.8, 1)) * spacing * 0.35;
+                } else if (variant === 'topography') {
+                    offsetV = v + Math.sin((u / Math.max(spacing * 2.8, 1)) + (v / Math.max(spacing * 2.4, 1))) * spacing * 0.28;
+                }
+
+                const world = toWorld(u, offsetV);
+                if (region.contains(world.x, world.y)) {
+                    run.push(world);
+                } else if (run.length >= 2) {
+                    created.push({
+                        type: 'polyline',
+                        points: run,
+                        pen: options.pen || 1,
+                        generatedBy: 'bucket-fill',
+                        fillPattern: variant
+                    });
+                    run = [];
+                } else {
+                    run = [];
+                }
+            }
+            if (run.length >= 2) {
+                created.push({
+                    type: 'polyline',
+                    points: run,
+                    pen: options.pen || 1,
+                    generatedBy: 'bucket-fill',
+                    fillPattern: variant
+                });
+            }
+        }
+
+        return created;
+    }
+
+    generateCircleFillPaths(region, options) {
+        const spacing = Math.max(2, options.spacing || 6);
+        const radius = Math.max(0.6, spacing * 0.28);
+        const created = [];
+        for (let y = region.box.minY + spacing / 2; y <= region.box.maxY - spacing / 2; y += spacing) {
+            for (let x = region.box.minX + spacing / 2; x <= region.box.maxX - spacing / 2; x += spacing) {
+                if (region.contains(x, y)) {
+                    created.push({
+                        type: 'circle',
+                        x,
+                        y,
+                        r: radius,
+                        pen: options.pen || 1,
+                        generatedBy: 'bucket-fill',
+                        fillPattern: 'circles'
+                    });
+                }
+            }
+        }
+        return created;
+    }
+
+    generateBucketFillPaths(region, options) {
+        switch (options.pattern) {
+            case 'crosshatch':
+                return [
+                    ...this.generateAngledFillPaths(region, options, 'lines'),
+                    ...this.generateAngledFillPaths(region, { ...options, angle: (options.angle || 0) + 90 }, 'lines')
+                ];
+            case 'zigzag':
+                return this.generateAngledFillPaths(region, options, 'zigzag');
+            case 'curves':
+                return this.generateAngledFillPaths(region, options, 'curves');
+            case 'circles':
+                return this.generateCircleFillPaths(region, options);
+            case 'topography':
+                return this.generateAngledFillPaths(region, options, 'topography');
+            case 'lines':
+            default:
+                return this.generateAngledFillPaths(region, options, 'lines');
+        }
+    }
+
+    applyBucketFillAt(xMM, yMM) {
+        const target = this.getFillTargetAt(xMM, yMM);
+        if (!target) {
+            if (this.app?.ui) this.app.ui.logToConsole('System: Pattern bucket works on closed shapes only.');
+            return false;
+        }
+
+        const options = this.app?.ui?.fillBucketSettings || { pattern: 'lines', spacing: 6, angle: 45, pen: 1 };
+        const fillPaths = this.generateBucketFillPaths(target.region, options);
+        if (!Array.isArray(fillPaths) || fillPaths.length === 0) {
+            if (this.app?.ui) this.app.ui.logToConsole('System: No fill paths were generated for that area.');
+            return false;
+        }
+
+        const groupId = `fill_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+        fillPaths.forEach(path => {
+            path.groupId = groupId;
+            path.parentGroupId = target.path.groupId || null;
+            this.paths.push(path);
+        });
+        this.selectedPaths = fillPaths.map((_, index) => this.paths.length - fillPaths.length + index);
+        this.selectedNodes = [];
+        this.saveUndoState();
+        this.draw();
+        if (this.app?.ui) {
+            this.app.ui.logToConsole(`System: Generated ${fillPaths.length} ${options.pattern} fill paths.`);
+            this.app.ui.updatePatternPanelState();
+        }
+        return true;
+    }
+
     hitTestResizeGroup(indices, xMM, yMM) {
         const box = this.getGroupBoundingBox(indices);
         if (!box) return -1;
@@ -1591,6 +1953,7 @@ class CanvasManager {
         this.ctx.fill();
 
         this.drawPaths();
+        this.drawBucketHoverPreview(mmToPx);
 
         // Draw Snap Hint
         if (this.snapPoint) {
@@ -2097,8 +2460,17 @@ class CanvasManager {
         this.simulationActive = true;
         this.simulationProgress = 0;
         this.simulationLastTimestamp = 0;
+        const toSimMachinePoint = (point) => {
+            if (!point) return null;
+            if (this.app?.hpgl?.transformOutputPoint) {
+                return this.app.hpgl.transformOutputPoint(point.x, point.y);
+            }
+            return point;
+        };
+
         if (this.simulationRoute[0] && this.app?.serial?.setEstimatedPosition) {
-            this.app.serial.setEstimatedPosition(this.simulationRoute[0].x1, this.simulationRoute[0].y1);
+            const startPoint = toSimMachinePoint({ x: this.simulationRoute[0].x1, y: this.simulationRoute[0].y1 });
+            if (startPoint) this.app.serial.setEstimatedPosition(startPoint.x, startPoint.y);
         }
         this.app.ui.logToConsole('System: Plot simulation started.');
 
@@ -2116,7 +2488,8 @@ class CanvasManager {
 
             const currentPos = this.getSimulationPositionAtDistance(this.simulationProgress);
             if (currentPos && this.app?.serial?.setEstimatedPosition) {
-                this.app.serial.setEstimatedPosition(currentPos.x, currentPos.y);
+                const machinePoint = toSimMachinePoint(currentPos);
+                if (machinePoint) this.app.serial.setEstimatedPosition(machinePoint.x, machinePoint.y);
             } else {
                 this.draw();
             }
@@ -2124,7 +2497,8 @@ class CanvasManager {
             if (this.simulationProgress >= this.simulationRouteLength) {
                 const finalSegment = this.simulationRoute[this.simulationRoute.length - 1];
                 if (finalSegment && this.app?.serial?.setEstimatedPosition) {
-                    this.app.serial.setEstimatedPosition(finalSegment.x2, finalSegment.y2);
+                    const finalPoint = toSimMachinePoint({ x: finalSegment.x2, y: finalSegment.y2 });
+                    if (finalPoint) this.app.serial.setEstimatedPosition(finalPoint.x, finalPoint.y);
                 }
                 this.simulationActive = false;
                 this.simulationProgress = 0;

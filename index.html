@@ -335,6 +335,13 @@
                     </div>
                     <div class="panel-body canvas-wrapper">
                         <div class="vis-palette" id="vis-palette">
+                            <button class="tool-btn vis-bucket-btn" id="btn-fill-bucket" data-tool="bucket" title="Pattern Fill Bucket">
+                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M7 11l5-5 7 7-5 5z" />
+                                    <path d="M5 13l6 6" />
+                                    <path d="M14 19c0 1.7 1.3 3 3 3s3-1.3 3-3c0-1.2-.8-2.3-2-3.2-.7-.5-1.1-1.1-1.4-1.8-.2-.3-.7-.3-.9 0-.5 1.1-1.2 1.9-2 2.7-.4.4-.7 1-.7 1.3z" />
+                                </svg>
+                            </button>
                             <!-- Populated by JS -->
                         </div>
                         <div class="canvas-container">
@@ -909,6 +916,41 @@
                     <line x1="3" y1="21" x2="21" y2="3" />
                 </svg>
             </button>
+        </div>
+    </div>
+
+    <div id="fill-bucket-menu" class="context-menu hidden fill-bucket-menu">
+        <div class="menu-header">
+            <span>Pattern Fill Bucket</span>
+            <button id="btn-close-fill-bucket-menu" class="btn btn-icon btn-sm">&times;</button>
+        </div>
+        <div class="menu-body">
+            <div class="form-group-inline">
+                <label>Pattern</label>
+                <select id="sel-fill-pattern">
+                    <option value="lines">Lines</option>
+                    <option value="crosshatch">Cross Hatch</option>
+                    <option value="zigzag">Zigzag</option>
+                    <option value="curves">Curves</option>
+                    <option value="circles">Circles</option>
+                    <option value="topography">Topography</option>
+                </select>
+            </div>
+            <div class="form-group-inline">
+                <label>Spacing</label>
+                <input type="range" id="input-fill-spacing" min="0.2" max="30" step="0.2" value="6">
+                <span id="val-fill-spacing">6</span>
+            </div>
+            <div class="form-group-inline">
+                <label>Angle</label>
+                <input type="range" id="input-fill-angle" min="0" max="180" step="1" value="45">
+                <span id="val-fill-angle">45°</span>
+            </div>
+            <div class="form-group-inline">
+                <label>Pen Layer</label>
+                <select id="sel-fill-pen"></select>
+            </div>
+            <div class="fill-bucket-help">Click inside a closed shape to generate a patterned fill on the selected pen layer.</div>
         </div>
     </div>
 

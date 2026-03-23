@@ -201,7 +201,7 @@ class App {
 
         document.getElementById('btn-simulate-speed').addEventListener('click', (e) => {
             if (!this.canvas.simulationSpeedMultiplier) this.canvas.simulationSpeedMultiplier = 1;
-            const speedSteps = [1, 2, 5, 10];
+            const speedSteps = [1, 2, 5, 10, 20, 50, 100];
             const currentIndex = speedSteps.indexOf(this.canvas.simulationSpeedMultiplier);
             const nextIndex = currentIndex === -1 ? 0 : (currentIndex + 1) % speedSteps.length;
             this.canvas.simulationSpeedMultiplier = speedSteps[nextIndex];

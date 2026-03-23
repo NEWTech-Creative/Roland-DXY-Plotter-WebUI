@@ -3,8 +3,14 @@ class UIController {
         this.app = app;
         this.penColors = ['#1e1e1e', '#e11d48', '#2563eb', '#16a34a', '#eab308', '#9333ea', '#ea580c', '#0ea5e9']; // Default 8 pens
         this.visPenConfig = this.penColors.map(c => ({ color: c, thickness: 0.3 })); // Context configs
-        this.activeTool = 'select'; // select, text, shape
+        this.activeTool = 'select'; // select, text, shape, node, bucket
         this.activeVisualizerPen = 1;
+        this.fillBucketSettings = {
+            pattern: 'lines',
+            spacing: 6,
+            angle: 45,
+            pen: 1
+        };
         this.jogStepSize = 1; // Default Small (1mm)
         this.layoutVersion = 2;
         this.gridBaseColumns = 12;
@@ -55,6 +61,7 @@ class UIController {
         this._bindSettings();
         this._bindJog();
         this._bindPatterns();
+        this._bindFillBucketMenu();
         this._bindSelectionSizeControls();
         this._bindVisualizerToolbarOverflow();
         this._bindPredictedCrosshairToggle();
@@ -64,6 +71,7 @@ class UIController {
         window.addEventListener('click', (e) => {
             const penMenu = document.getElementById('vis-pen-menu');
             const shapeMenu = document.getElementById('shape-type-menu');
+            const fillBucketMenu = document.getElementById('fill-bucket-menu');
             const overflowMenu = document.getElementById('vis-toolbar-overflow-menu');
             const overflowBtn = document.getElementById('btn-vis-toolbar-more');
 
@@ -75,6 +83,11 @@ class UIController {
             if (shapeMenu && !shapeMenu.classList.contains('hidden')) {
                 if (!shapeMenu.contains(e.target) && !e.target.closest('[data-tool="shape"]')) {
                     shapeMenu.classList.add('hidden');
+                }
+            }
+            if (fillBucketMenu && !fillBucketMenu.classList.contains('hidden')) {
+                if (!fillBucketMenu.contains(e.target) && !e.target.closest('[data-tool="bucket"]')) {
+                    fillBucketMenu.classList.add('hidden');
                 }
             }
             if (overflowMenu && overflowBtn && !overflowMenu.classList.contains('hidden')) {
@@ -524,6 +537,7 @@ class UIController {
     updateVisualizerPalette() {
         const visPalette = document.getElementById('vis-palette');
         if (!visPalette) return;
+        const bucketBtn = document.getElementById('btn-fill-bucket');
         visPalette.innerHTML = '';
 
         for (let i = 0; i < 8; i++) {
@@ -556,6 +570,9 @@ class UIController {
 
             visPalette.appendChild(btn);
         }
+
+        if (bucketBtn) visPalette.appendChild(bucketBtn);
+        this.refreshFillBucketPenOptions();
     }
 
     showPenMenu(penIdx, targetBtn) {
@@ -804,8 +821,14 @@ class UIController {
         document.querySelectorAll('.tool-btn').forEach(btn => {
             const tool = btn.dataset.tool;
 
-            btn.onclick = () => {
-                if (tool) this.setTool(tool);
+            btn.onclick = (e) => {
+                if (!tool) return;
+                this.setTool(tool);
+                if (tool === 'bucket') {
+                    const rect = btn.getBoundingClientRect();
+                    this.showFillBucketMenu(rect.right + 8, rect.top);
+                    e.stopPropagation();
+                }
             };
 
             if (tool === 'shape') {
@@ -867,6 +890,72 @@ class UIController {
 
     showShapeMenu(x, y) {
         const menu = document.getElementById('shape-type-menu');
+        if (!menu) return;
+        menu.style.left = `${x}px`;
+        menu.style.top = `${y}px`;
+        menu.classList.remove('hidden');
+    }
+
+    _bindFillBucketMenu() {
+        const menu = document.getElementById('fill-bucket-menu');
+        const btnClose = document.getElementById('btn-close-fill-bucket-menu');
+        const selPattern = document.getElementById('sel-fill-pattern');
+        const inputSpacing = document.getElementById('input-fill-spacing');
+        const valSpacing = document.getElementById('val-fill-spacing');
+        const inputAngle = document.getElementById('input-fill-angle');
+        const valAngle = document.getElementById('val-fill-angle');
+        const selPen = document.getElementById('sel-fill-pen');
+
+        if (!menu) return;
+
+        if (selPattern) {
+            selPattern.value = this.fillBucketSettings.pattern;
+            selPattern.onchange = () => { this.fillBucketSettings.pattern = selPattern.value; };
+        }
+        if (inputSpacing && valSpacing) {
+            inputSpacing.value = this.fillBucketSettings.spacing;
+            valSpacing.textContent = `${this.fillBucketSettings.spacing}`;
+            inputSpacing.oninput = () => {
+                this.fillBucketSettings.spacing = parseFloat(inputSpacing.value);
+                valSpacing.textContent = `${inputSpacing.value}`;
+            };
+        }
+        if (inputAngle && valAngle) {
+            inputAngle.value = this.fillBucketSettings.angle;
+            valAngle.textContent = `${this.fillBucketSettings.angle}°`;
+            inputAngle.oninput = () => {
+                this.fillBucketSettings.angle = parseFloat(inputAngle.value);
+                valAngle.textContent = `${inputAngle.value}°`;
+            };
+        }
+        if (selPen) {
+            this.refreshFillBucketPenOptions();
+            selPen.value = String(this.fillBucketSettings.pen);
+            selPen.onchange = () => {
+                this.fillBucketSettings.pen = parseInt(selPen.value, 10) || 1;
+            };
+        }
+        if (btnClose) btnClose.onclick = () => menu.classList.add('hidden');
+    }
+
+    refreshFillBucketPenOptions() {
+        const selPen = document.getElementById('sel-fill-pen');
+        if (!selPen) return;
+
+        const currentValue = String(this.fillBucketSettings.pen || 1);
+        selPen.innerHTML = '';
+        this.visPenConfig.forEach((config, index) => {
+            const option = document.createElement('option');
+            option.value = String(index + 1);
+            option.textContent = `■ Pen ${index + 1}`;
+            option.style.color = config.color || '#2563eb';
+            selPen.appendChild(option);
+        });
+        selPen.value = currentValue;
+    }
+
+    showFillBucketMenu(x, y) {
+        const menu = document.getElementById('fill-bucket-menu');
         if (!menu) return;
         menu.style.left = `${x}px`;
         menu.style.top = `${y}px`;
