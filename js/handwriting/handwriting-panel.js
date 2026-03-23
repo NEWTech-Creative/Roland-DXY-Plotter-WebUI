@@ -106,17 +106,22 @@ class HandwritingPanel {
 
         const options = this.getOptions();
         const svg = this.engine.export.toSVG(this.lastResult, options);
+        const previewTop = Math.max(0, options.characterHeight || 0);
+        const previewHeight = Math.max(1, (options.pageHeight || 297) - previewTop);
 
         // Add faint baseline guides to SVG for preview
         let guides = '';
         if (this.previewVisible) {
-            for (let y = options.characterHeight * 1.0; y < options.pageHeight; y += options.lineSpacing) {
+            for (let y = previewTop; y < options.pageHeight; y += options.lineSpacing) {
                 guides += `<line x1="0" y1="${y}" x2="${options.pageWidth}" y2="${y}" stroke="#ddd" stroke-dasharray="2,2" />\n`;
             }
         }
 
         const finalSvg = svg
-            .replace('<svg ', '<svg style="border: 1px solid #ccc; box-shadow: 0 4px 12px rgba(0,0,0,0.08);" ')
+            .replace(
+                '<svg ',
+                `<svg preserveAspectRatio="xMinYMin meet" viewBox="0 ${previewTop} ${options.pageWidth} ${previewHeight}" style="display: block; margin: 0; border: 1px solid #ccc; box-shadow: 0 4px 12px rgba(0,0,0,0.08);" `
+            )
             .replace('</svg>', guides + '</svg>');
         previewContainer.innerHTML = finalSvg;
     }

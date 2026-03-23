@@ -18,6 +18,8 @@ class App {
             outputFlipHorizontal: false,
             outputFlipVertical: true,
             showPredictedCrosshair: true,
+            showStartupMessage: true,
+            useInternalCurveEngine: true,
             importResolution: 15,
             simBackgroundOpacity: 0.25,
             panelVisibility: {
@@ -60,6 +62,7 @@ class App {
         this.bindEvents();
         this.initHandwriting();
         this.initImageVector();
+        this.ui.showStartupModal();
     }
 
     loadSettings() {
@@ -198,14 +201,16 @@ class App {
 
         document.getElementById('btn-simulate-speed').addEventListener('click', (e) => {
             if (!this.canvas.simulationSpeedMultiplier) this.canvas.simulationSpeedMultiplier = 1;
+            const speedSteps = [1, 2, 5, 10];
+            const currentIndex = speedSteps.indexOf(this.canvas.simulationSpeedMultiplier);
+            const nextIndex = currentIndex === -1 ? 0 : (currentIndex + 1) % speedSteps.length;
+            this.canvas.simulationSpeedMultiplier = speedSteps[nextIndex];
 
-            if (this.canvas.simulationSpeedMultiplier < 1000) {
-                this.canvas.simulationSpeedMultiplier *= 10;
+            if (this.canvas.simulationSpeedMultiplier > 1) {
                 e.target.style.background = 'var(--accent-blue)';
                 e.target.style.color = 'white';
                 e.target.innerText = `x${this.canvas.simulationSpeedMultiplier}`;
             } else {
-                this.canvas.simulationSpeedMultiplier = 1;
                 e.target.style.background = 'transparent';
                 e.target.style.color = 'var(--text-main)';
                 e.target.innerText = 'x1';

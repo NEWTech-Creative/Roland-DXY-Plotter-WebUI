@@ -60,7 +60,7 @@
     <main class="app-main">
         <div class="grid-stack">
             <!-- Panel A: Connection -->
-            <div class="grid-stack-item" gs-w="4" gs-h="6" gs-x="0" gs-y="0" id="panel-connection">
+            <div class="grid-stack-item" gs-w="2" gs-h="4" gs-x="0" gs-y="0" id="panel-connection">
                 <div class="grid-stack-item-content panel-glass">
                     <div class="panel-header" style="justify-content: space-between;">
                         <h2>Connection</h2>
@@ -101,7 +101,7 @@
             </div>
 
             <!-- Panel D: Machine Controls -->
-            <div class="grid-stack-item" gs-w="4" gs-h="6" gs-x="4" gs-y="0" id="panel-machine-jog">
+            <div class="grid-stack-item" gs-w="2" gs-h="4" gs-x="0" gs-y="4" id="panel-machine-jog">
                 <div class="grid-stack-item-content panel-glass">
                     <div class="panel-header">
                         <h2>Machine & Jog</h2>
@@ -136,11 +136,11 @@
                             <div class="machine-stream-stats">
                                 <div class="stat-item compact">
                                     <span class="stat-label">X</span>
-                                    <span id="stat-pos-x" class="stat-value">0.0</span>
+                                    <span id="stat-pos-x" data-stat="pos-x" class="stat-value">0.0</span>
                                 </div>
                                 <div class="stat-item compact">
                                     <span class="stat-label">Y</span>
-                                    <span id="stat-pos-y" class="stat-value">0.0</span>
+                                    <span id="stat-pos-y" data-stat="pos-y" class="stat-value">0.0</span>
                                 </div>
                                 <div class="stat-item compact">
                                     <span class="stat-label">Lines</span>
@@ -163,7 +163,7 @@
             </div>
 
             <!-- Panel B: Command Log -->
-            <div class="grid-stack-item" gs-w="4" gs-h="6" gs-x="8" gs-y="0" id="panel-console">
+            <div class="grid-stack-item" gs-w="2" gs-h="7" gs-x="0" gs-y="8" id="panel-console">
                 <div class="grid-stack-item-content panel-glass">
                     <div class="panel-header">
                         <h2>Command Log</h2>
@@ -179,6 +179,14 @@
 
                         <div class="transmission-panel">
                             <div class="transmission-stats">
+                                <div class="stat-item">
+                                    <span class="stat-label">X:</span>
+                                    <span id="stat-pos-x-console" data-stat="pos-x" class="stat-value">0.0</span>
+                                </div>
+                                <div class="stat-item">
+                                    <span class="stat-label">Y:</span>
+                                    <span id="stat-pos-y-console" data-stat="pos-y" class="stat-value">0.0</span>
+                                </div>
                                 <div class="stat-item">
                                     <span class="stat-label">Lines:</span>
                                     <span id="stat-lines" data-stat="lines" class="stat-value">0</span>
@@ -200,7 +208,7 @@
             </div>
 
             <!-- Panel C: Visualiser -->
-            <div class="grid-stack-item" gs-w="4" gs-h="6" gs-x="0" gs-y="6" id="panel-visualiser">
+            <div class="grid-stack-item" gs-w="5" gs-h="8" gs-x="2" gs-y="0" id="panel-visualiser">
                 <div class="grid-stack-item-content panel-glass">
                     <div class="panel-header">
                         <h2>Visualiser</h2>
@@ -217,7 +225,7 @@
                                 <button id="btn-simulate" class="btn btn-action" title="Simulate Plotter Movement"
                                     style="height: 24px; line-height: 22px; padding: 0 10px; font-size: 0.75rem; border: none; background: var(--accent-blue); color: white; border-radius: 4px; margin-right: 2px;">Simulate</button>
                                 <button id="btn-simulate-speed" class="btn btn-action" title="Change Simulation Speed"
-                                    style="height: 24px; line-height: 22px; padding: 0 8px; font-size: 0.75rem; border: none; background: transparent; color: var(--text-main); border-radius: 4px;">x10</button>
+                                    style="height: 24px; line-height: 22px; padding: 0 8px; font-size: 0.75rem; border: none; background: transparent; color: var(--text-main); border-radius: 4px;">x1</button>
                             </div>
                             <button class="tool-btn active" id="btn-toggle-predicted-crosshair" title="Toggle Predicted Pen Crosshair">
                                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -334,7 +342,7 @@
             </div>
 
             <!-- Panel E: Patterns -->
-            <div class="grid-stack-item" gs-w="4" gs-h="6" gs-x="4" gs-y="6" id="panel-patterns">
+            <div class="grid-stack-item" gs-w="2" gs-h="7" gs-x="8" gs-y="8" id="panel-patterns">
                 <div class="grid-stack-item-content panel-glass">
                     <div class="panel-header">
                         <h2>Pattern Generator</h2>
@@ -398,23 +406,32 @@
             </div>
 
             <!-- Panel F: Handwriting Generator -->
-            <div class="grid-stack-item" gs-w="4" gs-h="6" gs-x="8" gs-y="6" id="panel-handwriting">
+            <div class="grid-stack-item" gs-w="3" gs-h="7" gs-x="2" gs-y="8" id="panel-handwriting">
                 <div class="grid-stack-item-content panel-glass">
                     <div class="panel-header">
                         <h2>Handwriting Generator</h2>
                     </div>
-                    <div class="panel-body flex-col" style="gap: 15px; overflow: hidden; height: 100%;">
+                    <div class="panel-body flex-col hw-panel-body" style="gap: 15px; overflow: hidden; height: 100%;">
                         <!-- Full-Width Text Input -->
                         <div class="form-group" style="margin-bottom: 5px; flex-shrink: 0;">
                             <label>Text Input</label>
-                            <textarea id="input-hw-text" placeholder="Enter text to generate handwriting..."
+                            <textarea id="input-hw-text" class="hw-textarea" placeholder="Enter text to generate handwriting..."
                                 style="height: 100px; width: 100%; resize: none;"></textarea>
                         </div>
 
-                        <div class="flex-row" style="gap: 20px; flex: 1; min-height: 0; overflow: hidden;">
-                            <!-- Controls Column - Widened to prevent clipping -->
+                        <div class="hw-layout" style="gap: 12px; flex: 1; min-height: 0; overflow: hidden;">
+                            <div class="button-grid hw-button-grid"
+                                style="gap: 8px; flex-shrink: 0;">
+                                <button id="btn-hw-generate" class="btn btn-primary">
+                                    Generate Preview Line
+                                </button>
+                                <button id="btn-hw-add" class="btn btn-action">Add To Bed</button>
+                                <button id="btn-hw-export" class="btn btn-secondary">Export SVG</button>
+                            </div>
+
+                            <!-- Controls Column -->
                             <div class="hw-controls flex-col"
-                                style="gap: 12px; width: 320px; min-width: 320px; flex-shrink: 0; overflow-y: auto; padding-right: 5px;">
+                                style="gap: 12px; width: auto; min-width: 0; flex-shrink: 0; overflow-y: auto; padding-right: 5px;">
                                 <!-- Row 1: Style & Seed -->
                                 <div class="form-row">
                                     <div class="form-group" style="flex: 1 1 0; min-width: 0;">
@@ -437,42 +454,39 @@
                                 </div>
 
                                 <!-- Row 2: Slant & Messiness -->
-                                <div class="form-row">
-                                    <div class="form-group" style="flex: 1 1 0; min-width: 0;">
-                                        <label>Slant: <span id="val-hw-slant">0</span></label>
+                                <div class="form-row hw-slider-row">
+                                    <div class="form-group hw-slider-group" style="flex: 1 1 0; min-width: 0;">
+                                        <label><span>Slant</span><span id="val-hw-slant">0</span></label>
                                         <input type="range" id="input-hw-slant" min="-20" max="20" step="1" value="0"
                                             style="width: 100%;">
                                     </div>
-                                    <div class="form-group" style="flex: 1 1 0; min-width: 0;">
-                                        <label>Mess: <span id="val-hw-messiness">0</span></label>
+                                    <div class="form-group hw-slider-group" style="flex: 1 1 0; min-width: 0;">
+                                        <label><span>Mess</span><span id="val-hw-messiness">0</span></label>
                                         <input type="range" id="input-hw-messiness" min="0" max="5" step="0.1" value="0"
                                             style="width: 100%;">
                                     </div>
                                 </div>
 
                                 <!-- Row 3: Sizes -->
-                                <div class="form-row">
-                                    <div class="form-group" style="flex: 1 1 0; min-width: 0;">
-                                        <label>Height: <span id="val-hw-char-height">6</span>mm</label>
+                                <div class="form-row hw-slider-row">
+                                    <div class="form-group hw-slider-group" style="flex: 1 1 0; min-width: 0;">
+                                        <label><span>Height</span><span><span id="val-hw-char-height">6</span>mm</span></label>
                                         <input type="range" id="input-hw-char-height" min="2" max="20" step="0.5"
                                             value="6" style="width: 100%;">
                                     </div>
-                                    <div class="form-group" style="flex: 1 1 0; min-width: 0;">
-                                        <label>Line Space: <span id="val-hw-line-spacing">10</span>mm</label>
+                                    <div class="form-group hw-slider-group" style="flex: 1 1 0; min-width: 0;">
+                                        <label><span>Line Space</span><span><span id="val-hw-line-spacing">10</span>mm</span></label>
                                         <input type="range" id="input-hw-line-spacing" min="5" max="40" step="1"
                                             value="10" style="width: 100%;">
                                     </div>
                                 </div>
 
                                 <!-- New Row: Character Spacing -->
-                                <div class="form-row">
-                                    <div class="form-group" style="flex: 1 1 0; min-width: 0;">
-                                        <label>Char Spacing: <span id="val-hw-char-spacing">0</span>mm</label>
+                                <div class="form-row hw-slider-row">
+                                    <div class="form-group hw-slider-group hw-slider-group-full" style="flex: 1 1 0; min-width: 0;">
+                                        <label><span>Char Spacing</span><span><span id="val-hw-char-spacing">0</span>mm</span></label>
                                         <input type="range" id="input-hw-char-spacing" min="-2" max="10" step="0.1"
                                             value="0" style="width: 100%;">
-                                    </div>
-                                    <div class="form-group" style="flex: 1 1 0; min-width: 0;">
-                                        <!-- Placeholder or second control if needed later -->
                                     </div>
                                 </div>
 
@@ -489,22 +503,15 @@
                                             style="width: 100%;">
                                     </div>
                                 </div>
-
-                                <div class="button-grid"
-                                    style="grid-template-columns: 1fr 1fr; gap: 8px; margin-top: auto; padding-top: 10px; flex-shrink: 0;">
-                                    <button id="btn-hw-generate" class="btn btn-primary"
-                                        style="grid-column: span 2;">Generate Preview Line</button>
-                                    <button id="btn-hw-add" class="btn btn-action">Add To Bed</button>
-                                    <button id="btn-hw-export" class="btn btn-secondary">Export SVG</button>
-                                </div>
                             </div>
 
-                            <!-- Preview Column -->
+                            <!-- Preview Area -->
                             <div class="hw-preview flex-1"
                                 style="background: rgba(255,255,255,0.05); border: 1px solid var(--border-color); border-radius: 8px; position: relative; overflow: auto; min-width: 0;">
                                 <div id="hw-preview-container"
-                                    style="padding: 15px; background: white; min-height: 100%; display: flex; align-items: flex-start; justify-content: center;">
-                                    <div style="color: #999; margin-top: 50px; text-align: center;">Handwriting Preview
+                                    class="hw-preview-container"
+                                    style="padding: 15px; background: white; display: block;">
+                                    <div class="hw-preview-placeholder" style="color: #999; margin-top: 0; text-align: center;">Handwriting Preview
                                         Area</div>
                                 </div>
                             </div>
@@ -514,7 +521,7 @@
             </div>
 
             <!-- Panel G: Image to Vector -->
-            <div class="grid-stack-item" gs-w="4" gs-h="6" gs-x="4" gs-y="12" id="panel-image-vector">
+            <div class="grid-stack-item" gs-w="3" gs-h="7" gs-x="5" gs-y="8" id="panel-image-vector">
                 <div class="grid-stack-item-content panel-glass">
                     <div class="panel-header">
                         <h2>Image to Vector</h2>
@@ -618,6 +625,58 @@
         </div>
     </main>
 
+    <!-- Startup Welcome Modal -->
+    <div id="startup-modal" class="modal-overlay hidden">
+        <div class="modal-content welcome-modal-content">
+            <div class="modal-header">
+                <h2>Welcome to Roland Plotter Web UI</h2>
+            </div>
+            <div class="modal-body welcome-modal-body">
+                <p class="welcome-intro">
+                    This app brings a modern interface to your Roland DXY plotter via the USB-to-serial CH340 adapter, where you can create and edit artwork, preview motion, and export or stream HPGL code ready for your next creative journey.
+                </p>
+                <div class="welcome-feature-list">
+                    <div class="welcome-feature">Connect to the plotter over USB serial and send manual commands.</div>
+                    <div class="welcome-feature">Draw, import, preview, and simulate plot files before running them.</div>
+                    <div class="welcome-feature">Generate patterns, handwriting, and image-to-vector artwork inside the interface.</div>
+                </div>
+                <div class="welcome-links">
+                    <div class="brand-credit">
+                        <img src="Circle logo lines2.svg" alt="NEWTech Creative logo" class="brand-credit-logo">
+                        <span>Created by NEWTech Creative</span>
+                    </div>
+                    <div class="welcome-link-actions">
+                        <a
+                            class="btn btn-secondary"
+                            href="https://www.youtube.com/@NEWTechCreative"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                        >
+                            YouTube Channel
+                        </a>
+                        <a
+                            class="btn btn-secondary"
+                            href="https://paypal.me/NEWTechCreative"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                        >
+                            Donate
+                        </a>
+                    </div>
+                </div>
+                <label class="panel-toggle-item welcome-toggle">
+                    <input type="checkbox" id="startup-dont-show">
+                    <span>Don't show next time</span>
+                </label>
+            </div>
+            <div class="modal-footer">
+                <div class="settings-footer-actions">
+                    <button id="btn-startup-ok" class="btn btn-primary">OK</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Settings Modal -->
     <div id="settings-modal" class="modal-overlay hidden">
         <div class="modal-content settings-modal-content">
@@ -701,11 +760,11 @@
                                 <label>Plotter Bed Height (mm)</label>
                                 <input type="number" id="input-bed-h" value="297" step="1">
                             </div>
-                            <div class="form-group">
+                            <div class="form-group settings-field-full">
                                 <label>Paper Left Margin Offset (mm)</label>
                                 <input type="number" id="input-margin-x" value="15" step="1">
                             </div>
-                            <div class="form-group">
+                            <div class="form-group settings-field-full">
                                 <label>Paper Bottom Margin Offset (mm)</label>
                                 <input type="number" id="input-margin-y" value="10" step="1">
                             </div>
@@ -717,7 +776,7 @@
                             </div>
                             <div class="form-group">
                                 <label class="panel-toggle-item">
-                                    <input type="checkbox" id="input-output-flip-y" checked>
+                                    <input type="checkbox" id="input-output-flip-y">
                                     <span>Flip Plot Output Vertically</span>
                                 </label>
                             </div>
@@ -727,6 +786,13 @@
                     <section class="settings-section settings-section-wide">
                         <h3>Import & Visuals</h3>
                         <div class="form-group">
+                            <label class="panel-toggle-item">
+                                <input type="checkbox" id="input-use-internal-curve-engine" checked>
+                                <span>Use DXY Internal Curve Function</span>
+                            </label>
+                            <small class="settings-help">On: export preserved curve paths with the DXY's built-in curve command. Off: flatten curves using the Import Curve Resolution setting instead.</small>
+                        </div>
+                        <div class="form-group" id="import-resolution-group">
                             <label>Import Curve Resolution (1-50)</label>
                             <div class="settings-range-row">
                                 <input type="range" id="input-import-resolution" min="1" max="50" step="1" value="15">
@@ -744,8 +810,25 @@
                 </div>
             </div>
             <div class="modal-footer">
-                <button id="btn-reset-settings" class="btn btn-danger">Reset To Defaults</button>
-                <button id="btn-save-settings" class="btn btn-primary">Save & Apply</button>
+                <div class="settings-footer-credit">
+                    <div class="brand-credit">
+                        <img src="Circle logo lines2.svg" alt="NEWTech Creative logo" class="brand-credit-logo">
+                        <span>Created by NEWTech Creative</span>
+                    </div>
+                    <span class="settings-version">v1.2.0</span>
+                    <a
+                        class="btn btn-secondary"
+                        href="https://paypal.me/NEWTechCreative"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                    >
+                        Donate Now
+                    </a>
+                </div>
+                <div class="settings-footer-actions">
+                    <button id="btn-reset-settings" class="btn btn-danger">Reset To Defaults</button>
+                    <button id="btn-save-settings" class="btn btn-primary">Save & Apply</button>
+                </div>
             </div>
         </div>
     </div>

@@ -66,14 +66,18 @@ class CanvasManager {
 
         // Simulation State
         this.simulationActive = false;
-        this.simulationProgress = 0; // index into flattened simulation points
+        this.simulationProgress = 0; // distance travelled along simulation route
         this.simulationPaths = [];
-        this.simulationSpeed = 5; // mm per frame approx
-
+        this.simulationRoute = [];
+        this.simulationRouteLength = 0;
+        this.simulationSpeed = 60; // mm per second base
+        this.simulationMaxSpeedMmPerMin = 10000;
+        this.simulationLastTimestamp = 0;
         this.simulationSpeedMultiplier = 1;
 
         this.patternPreviewPaths = [];
         this.editingPathIdx = -1;
+        this.displayedCrosshairPoint = null;
         this.cursorBlink = true;
         this.drawFramePending = false;
         this.cursorTimer = setInterval(() => { this.cursorBlink = !this.cursorBlink; if (this.editingPathIdx !== -1) this.draw(); }, 500);
@@ -366,7 +370,7 @@ class CanvasManager {
         }, { passive: false });
 
         document.addEventListener('mousedown', (e) => {
-            if (!checkTarget(e)) return;
+            if (!checkTarget(e) && !this.isCreatingShape) return;
 
             const pos = this.getMousePosMM(e);
 
@@ -388,17 +392,18 @@ class CanvasManager {
             // Toggle Panning on Middle Mouse
             if (e.button === 1 || (this.app.ui.activeTool === 'select' || this.app.ui.activeTool === 'node' || this.app.ui.activeTool === 'shape')) {
                 if (this.app.ui.activeTool === 'node' && this.selectedPaths.length >= 1) {
-                    // Check if clicked exactly on a node
+                    // Find the nearest node across all selected paths
                     let clickedPathIdx = -1;
                     let clickedNodeIdx = -1;
+                    let clickedDistance = Infinity;
 
                     for (let i = 0; i < this.selectedPaths.length; i++) {
                         const selIdx = this.selectedPaths[i];
-                        const nIdx = this.hitTestNodes(this.paths[selIdx], pos.xMM, pos.yMM);
-                        if (nIdx > -1) {
+                        const hit = this.hitTestNodesDetailed(this.paths[selIdx], pos.xMM, pos.yMM);
+                        if (hit && hit.distance < clickedDistance) {
                             clickedPathIdx = selIdx;
-                            clickedNodeIdx = nIdx;
-                            break;
+                            clickedNodeIdx = hit.nodeIdx;
+                            clickedDistance = hit.distance;
                         }
                     }
 
@@ -527,10 +532,17 @@ class CanvasManager {
                 } else if (this.app.ui.activeTool === 'shape') {
                     if (this.isCreatingShape) {
                         // Second click - FINALIZE
+                        const finalizedShapeIdx = this.currentShapeIdx;
                         this.isCreatingShape = false;
                         this.currentShapeIdx = -1;
+                        if (finalizedShapeIdx > -1) {
+                            this.selectedPaths = [finalizedShapeIdx];
+                        }
                         this.saveUndoState();
                         this.app.ui.logToConsole('System: Shape finalized.');
+                        if (this.app?.ui?.setTool) {
+                            this.app.ui.setTool('select');
+                        }
                     } else {
                         // First click - START
                         this.isCreatingShape = true;
@@ -740,8 +752,8 @@ class CanvasManager {
                 if (p.type === 'circle') {
                     p.r = Math.sqrt(dx * dx + dy * dy);
                 } else if (p.type === 'rectangle') {
-                    p.x = Math.min(pos.xMM, this.dragStartX);
-                    p.y = Math.min(pos.yMM, this.dragStartY);
+                    p.x = Math.min(clampedX, this.dragStartX);
+                    p.y = Math.min(clampedY, this.dragStartY);
                     p.w = Math.abs(dx);
                     p.h = Math.abs(dy);
                 } else if (p.type === 'line' || p.type === 'polyline') {
@@ -1080,7 +1092,7 @@ class CanvasManager {
 
             if (p.type === 'circle') {
                 const dist = Math.sqrt((xMM - p.x) ** 2 + (yMM - p.y) ** 2);
-                if (Math.abs(dist - p.r) <= tol || dist <= tol) return i;
+                if (Math.abs(dist - p.r) <= tol) return i;
             } else if (p.type === 'line' || p.type === 'polyline' || p.type === 'path') {
                 for (let j = 0; j < p.points.length - 1; j++) {
                     const p1 = p.points[j];
@@ -1089,14 +1101,32 @@ class CanvasManager {
                     if (d <= tol) return i;
                 }
             } else if (p.type === 'text') {
-                const box = this.getBoundingBox(p);
-                if (box && xMM >= box.minX - 2 && xMM <= box.maxX + 2 && yMM >= box.minY - 2 && yMM <= box.maxY + 2) {
-                    return i;
+                const textSegments = this.getVectorTextSegments(p);
+                if (textSegments.length > 0) {
+                    for (let j = 0; j < textSegments.length; j++) {
+                        const segment = textSegments[j];
+                        const d = this.distToSegment(
+                            { x: xMM, y: yMM },
+                            { x: segment.x1, y: segment.y1 },
+                            { x: segment.x2, y: segment.y2 }
+                        );
+                        if (d <= tol) return i;
+                    }
                 }
             } else if (p.type === 'rectangle') {
-                const box = { minX: p.x, minY: p.y, maxX: p.x + (p.w || 0), maxY: p.y + (p.h || 0) };
-                if (xMM >= box.minX - 2 && xMM <= box.maxX + 2 && yMM >= box.minY - 2 && yMM <= box.maxY + 2) {
-                    return i;
+                const x1 = p.x;
+                const y1 = p.y;
+                const x2 = p.x + (p.w || 0);
+                const y2 = p.y + (p.h || 0);
+                const edges = [
+                    [{ x: x1, y: y1 }, { x: x2, y: y1 }],
+                    [{ x: x2, y: y1 }, { x: x2, y: y2 }],
+                    [{ x: x2, y: y2 }, { x: x1, y: y2 }],
+                    [{ x: x1, y: y2 }, { x: x1, y: y1 }]
+                ];
+                for (let j = 0; j < edges.length; j++) {
+                    const d = this.distToSegment({ x: xMM, y: yMM }, edges[j][0], edges[j][1]);
+                    if (d <= tol) return i;
                 }
             }
         }
@@ -1111,27 +1141,43 @@ class CanvasManager {
         return Math.sqrt((p.x - (v.x + t * (w.x - v.x))) ** 2 + (p.y - (v.y + t * (w.y - v.y))) ** 2);
     }
 
-    hitTestNodes(p, xMM, yMM) {
-        const tol = 5; // 5mm tolerance for grabbing nodes
+    hitTestNodesDetailed(p, xMM, yMM) {
+        const tol = 4; // mm tolerance for grabbing nodes
+        let bestNode = -1;
+        let bestDistance = Infinity;
+        const considerNode = (nodeIdx, nx, ny) => {
+            if (!Number.isFinite(nx) || !Number.isFinite(ny)) return;
+            const distance = Math.hypot(nx - xMM, ny - yMM);
+            if (distance <= tol && distance < bestDistance) {
+                bestDistance = distance;
+                bestNode = nodeIdx;
+            }
+        };
+
         if (p.type === 'line' || p.type === 'polyline' || p.type === 'path') {
             if (p.segments) {
                 for (let i = 0; i < p.segments.length; i++) {
                     const s = p.segments[i];
-                    if (s.x !== undefined && Math.abs(s.x - xMM) <= tol && Math.abs(s.y - yMM) <= tol) return i;
-                    if ((s.type === 'Q' || s.type === 'C') && Math.abs(s.x1 - xMM) <= tol && Math.abs(s.y1 - yMM) <= tol) return i + 10000;
-                    if (s.type === 'C' && Math.abs(s.x2 - xMM) <= tol && Math.abs(s.y2 - yMM) <= tol) return i + 20000;
+                    if (s.x !== undefined) considerNode(i, s.x, s.y);
+                    if (s.type === 'Q' || s.type === 'C') considerNode(i + 10000, s.x1, s.y1);
+                    if (s.type === 'C') considerNode(i + 20000, s.x2, s.y2);
                 }
             } else {
                 for (let i = 0; i < p.points.length; i++) {
                     const pt = p.points[i];
-                    if (Math.abs(pt.x - xMM) <= tol && Math.abs(pt.y - yMM) <= tol) return i;
+                    considerNode(i, pt.x, pt.y);
                 }
             }
         } else if (p.type === 'circle') {
-            if (Math.abs(p.x - xMM) <= tol && Math.abs(p.y - yMM) <= tol) return 0; // Center
-            if (Math.abs((p.x + p.r) - xMM) <= tol && Math.abs(p.y - yMM) <= tol) return 1; // Edge
+            considerNode(0, p.x, p.y); // Center
+            considerNode(1, p.x + p.r, p.y); // Radius handle
         }
-        return -1;
+        return bestNode > -1 ? { nodeIdx: bestNode, distance: bestDistance } : null;
+    }
+
+    hitTestNodes(p, xMM, yMM) {
+        const hit = this.hitTestNodesDetailed(p, xMM, yMM);
+        return hit ? hit.nodeIdx : -1;
     }
 
     getBoundingBox(p) {
@@ -1338,7 +1384,8 @@ class CanvasManager {
     }
 
     getSnapPoint(x, y, excludePathIdx, excludeNodeIdx) {
-        let bestDist = this.snapThreshold;
+        const zoomAdjustedThreshold = Math.max(0.25, this.snapThreshold / Math.max(1, this.viewZoom * 4));
+        let bestDist = zoomAdjustedThreshold;
         let snap = null;
 
         this.paths.forEach((p, pIdx) => {
@@ -1574,11 +1621,27 @@ class CanvasManager {
         const predicted = this.app.serial.getEstimatedPosition();
         if (!predicted) return;
 
-        const visualPoint = this.app?.hpgl?.inverseTransformOutputPoint
+        const targetPoint = this.app?.hpgl?.inverseTransformOutputPoint
             ? this.app.hpgl.inverseTransformOutputPoint(predicted.x, predicted.y)
             : { x: predicted.x, y: predicted.y };
-        const x = (visualPoint.x * mmToPx * this.viewZoom) + this.viewOffsetX + horizontalShift;
-        const y = (visualPoint.y * mmToPx * this.viewZoom) + this.viewOffsetY + verticalShift;
+        if (!this.displayedCrosshairPoint) {
+            this.displayedCrosshairPoint = { ...targetPoint };
+        } else {
+            const dx = targetPoint.x - this.displayedCrosshairPoint.x;
+            const dy = targetPoint.y - this.displayedCrosshairPoint.y;
+            const distance = Math.hypot(dx, dy);
+            if (distance < 0.05) {
+                this.displayedCrosshairPoint = { ...targetPoint };
+            } else {
+                const lerp = Math.min(0.35, Math.max(0.12, distance * 0.08));
+                this.displayedCrosshairPoint.x += dx * lerp;
+                this.displayedCrosshairPoint.y += dy * lerp;
+                this.draw();
+            }
+        }
+
+        const x = (this.displayedCrosshairPoint.x * mmToPx * this.viewZoom) + this.viewOffsetX + horizontalShift;
+        const y = (this.displayedCrosshairPoint.y * mmToPx * this.viewZoom) + this.viewOffsetY + verticalShift;
         const size = 10;
 
         this.ctx.save();
@@ -1787,6 +1850,10 @@ class CanvasManager {
                 this.ctx.beginPath();
                 this.ctx.arc(p.x * mmToPx, p.y * mmToPx, p.r * mmToPx, 0, Math.PI * 2);
                 this.ctx.stroke();
+            } else if (p.type === 'rectangle') {
+                this.ctx.strokeRect(p.x * mmToPx, p.y * mmToPx, (p.w || 0.1) * mmToPx, (p.h || 0.1) * mmToPx);
+            } else if (p.type === 'text') {
+                this.drawVectorText(p, mmToPx, false);
             } else if (p.points) {
                 this.ctx.beginPath();
                 if (p.segments && p.segments.length > 0) {
@@ -1812,76 +1879,32 @@ class CanvasManager {
 
         // Draw Simulation Overlay
         if (this.simulationActive) {
-            // Group paths by pen to reflect actual plotter execution order
-            const simPaths = [];
-            const pens = [...new Set(this.paths.map(p => p.pen || 1))].sort((a, b) => a - b);
-            pens.forEach(penID => {
-                this.paths.forEach(p => {
-                    if ((p.pen || 1) === penID) simPaths.push(p);
-                });
-            });
+            let remainingDistance = this.simulationProgress;
+            for (let i = 0; i < this.simulationRoute.length && remainingDistance > 0; i++) {
+                const segment = this.simulationRoute[i];
+                const drawLength = Math.min(remainingDistance, segment.length);
+                const penCfg = this.app.ui.visPenConfig[(segment.pen || 1) - 1] || { color: '#3b82f6', thickness: 0.3 };
 
-            let currentPathIdx = 0;
-            let pointsToDraw = this.simulationProgress;
-
-            while (pointsToDraw > 0 && currentPathIdx < simPaths.length) {
-                const p = simPaths[currentPathIdx];
-                const penCfg = this.app.ui.visPenConfig[(p.pen || 1) - 1] || { color: '#3b82f6', thickness: 0.3 };
-
-                // Skip rendering if layer is toggled off
-                if (penCfg.visible === false) {
-                    currentPathIdx++;
-                    continue;
-                }
+                if (penCfg.visible === false) continue;
 
                 this.ctx.strokeStyle = penCfg.color;
-                this.ctx.fillStyle = penCfg.color;
                 this.ctx.lineWidth = Math.max(0.5, penCfg.thickness * mmToPx);
                 this.ctx.shadowColor = 'transparent';
                 this.ctx.shadowBlur = 0;
+                this.ctx.beginPath();
+                this.ctx.moveTo(segment.x1 * mmToPx, segment.y1 * mmToPx);
 
-                if (p.type === 'circle') {
-                    this.ctx.beginPath();
-                    this.ctx.arc(p.x * mmToPx, p.y * mmToPx, p.r * mmToPx, 0, Math.PI * 2);
-                    this.ctx.stroke();
-                    pointsToDraw -= 32; // estimation
-                } else if (p.type === 'rectangle') {
-                    this.ctx.strokeRect(p.x * mmToPx, p.y * mmToPx, (p.w || 0.1) * mmToPx, (p.h || 0.1) * mmToPx);
-                    pointsToDraw -= 4;
-                } else if (p.type === 'text') {
-                    const textSegments = this.getVectorTextSegments(p);
-                    if (textSegments.length > 0) {
-                        const segmentsToDraw = Math.min(pointsToDraw, textSegments.length);
-                        this.ctx.beginPath();
-                        for (let i = 0; i < segmentsToDraw; i++) {
-                            const segment = textSegments[i];
-                            this.ctx.moveTo(segment.x1 * mmToPx, segment.y1 * mmToPx);
-                            this.ctx.lineTo(segment.x2 * mmToPx, segment.y2 * mmToPx);
-                        }
-                        this.ctx.stroke();
-                        pointsToDraw -= segmentsToDraw;
-                    } else {
-                        const fontSizePx = Math.max(12, (p.fontSize || 10) * mmToPx);
-                        const drawAngle = this.normalizeTextRotation(p.rotation || 0) * (Math.PI / 180);
-                        this.ctx.save();
-                        this.ctx.translate(p.x * mmToPx, p.y * mmToPx);
-                        this.ctx.rotate(drawAngle);
-                        this.ctx.font = `${fontSizePx}px "JetBrains Mono", monospace`;
-                        this.ctx.fillText(p.text, 0, 0);
-                        this.ctx.restore();
-                        pointsToDraw -= 10;
-                    }
-                } else if (p.points && p.points.length >= 2) {
-                    this.ctx.beginPath();
-                    this.ctx.moveTo(p.points[0].x * mmToPx, p.points[0].y * mmToPx);
-                    for (let i = 1; i < p.points.length; i++) {
-                        if (pointsToDraw <= 0) break;
-                        this.ctx.lineTo(p.points[i].x * mmToPx, p.points[i].y * mmToPx);
-                        pointsToDraw--;
-                    }
-                    this.ctx.stroke();
+                if (drawLength >= segment.length) {
+                    this.ctx.lineTo(segment.x2 * mmToPx, segment.y2 * mmToPx);
+                } else {
+                    const t = segment.length > 0 ? drawLength / segment.length : 1;
+                    const x = segment.x1 + ((segment.x2 - segment.x1) * t);
+                    const y = segment.y1 + ((segment.y2 - segment.y1) * t);
+                    this.ctx.lineTo(x * mmToPx, y * mmToPx);
                 }
-                currentPathIdx++;
+
+                this.ctx.stroke();
+                remainingDistance -= drawLength;
             }
         }
 
@@ -2057,31 +2080,55 @@ class CanvasManager {
 
         if (this.simulationActive) {
             this.simulationActive = false;
+            this.simulationLastTimestamp = 0;
             this.draw();
+            return;
+        }
+
+        this.simulationRoute = this.buildSimulationRoute();
+        this.simulationRouteLength = this.simulationRoute.reduce((sum, segment) => sum + segment.length, 0);
+        if (this.simulationRouteLength <= 0) {
+            this.simulationActive = false;
+            this.simulationProgress = 0;
+            this.app.ui.logToConsole('System: No drawable motion found for simulation.', 'error');
             return;
         }
 
         this.simulationActive = true;
         this.simulationProgress = 0;
+        this.simulationLastTimestamp = 0;
+        if (this.simulationRoute[0] && this.app?.serial?.setEstimatedPosition) {
+            this.app.serial.setEstimatedPosition(this.simulationRoute[0].x1, this.simulationRoute[0].y1);
+        }
         this.app.ui.logToConsole('System: Plot simulation started.');
 
-        const tick = () => {
+        const tick = (timestamp) => {
             if (!this.simulationActive) return;
 
-            this.simulationProgress += (0.5 * (this.simulationSpeedMultiplier || 1)); // Slower base speed
-            this.draw();
+            if (!this.simulationLastTimestamp) this.simulationLastTimestamp = timestamp;
+            const deltaSeconds = Math.max(0, (timestamp - this.simulationLastTimestamp) / 1000);
+            this.simulationLastTimestamp = timestamp;
+            const effectiveSpeed = Math.min(
+                this.simulationSpeed * (this.simulationSpeedMultiplier || 1),
+                this.simulationMaxSpeedMmPerMin / 60
+            );
+            this.simulationProgress += effectiveSpeed * deltaSeconds;
 
-            let total = 0;
-            this.paths.forEach(p => {
-                if (p.type === 'circle') total += 32;
-                else if (p.type === 'rectangle') total += 4;
-                else if (p.type === 'text') total += Math.max(10, this.getVectorTextSegments(p).length);
-                else if (p.type === 'line' || p.type === 'polyline' || p.type === 'path') total += (p.points.length - 1);
-            });
+            const currentPos = this.getSimulationPositionAtDistance(this.simulationProgress);
+            if (currentPos && this.app?.serial?.setEstimatedPosition) {
+                this.app.serial.setEstimatedPosition(currentPos.x, currentPos.y);
+            } else {
+                this.draw();
+            }
 
-            if (this.simulationProgress >= total + 20) {
+            if (this.simulationProgress >= this.simulationRouteLength) {
+                const finalSegment = this.simulationRoute[this.simulationRoute.length - 1];
+                if (finalSegment && this.app?.serial?.setEstimatedPosition) {
+                    this.app.serial.setEstimatedPosition(finalSegment.x2, finalSegment.y2);
+                }
                 this.simulationActive = false;
                 this.simulationProgress = 0;
+                this.simulationLastTimestamp = 0;
                 this.draw();
                 this.app.ui.logToConsole('System: Simulation complete.');
             } else {
@@ -2089,6 +2136,128 @@ class CanvasManager {
             }
         };
         requestAnimationFrame(tick);
+    }
+
+    buildSimulationRoute() {
+        const orderedPaths = [];
+        const pens = [...new Set(this.paths.map(p => p.pen || 1))].sort((a, b) => a - b);
+        pens.forEach(penID => {
+            this.paths.forEach(path => {
+                if ((path.pen || 1) === penID) orderedPaths.push(path);
+            });
+        });
+
+        const segments = [];
+        const addSegment = (x1, y1, x2, y2, pen) => {
+            const length = Math.hypot(x2 - x1, y2 - y1);
+            if (!Number.isFinite(length) || length <= 0) return;
+            segments.push({ x1, y1, x2, y2, length, pen: pen || 1 });
+        };
+
+        orderedPaths.forEach(path => {
+            const pen = path.pen || 1;
+            if (path.type === 'circle') {
+                const steps = 96;
+                let prev = null;
+                for (let i = 0; i <= steps; i++) {
+                    const theta = (i / steps) * Math.PI * 2;
+                    const point = {
+                        x: path.x + Math.cos(theta) * path.r,
+                        y: path.y + Math.sin(theta) * path.r
+                    };
+                    if (prev) addSegment(prev.x, prev.y, point.x, point.y, pen);
+                    prev = point;
+                }
+            } else if (path.type === 'rectangle') {
+                const x = path.x;
+                const y = path.y;
+                const w = path.w || 0;
+                const h = path.h || 0;
+                addSegment(x, y, x + w, y, pen);
+                addSegment(x + w, y, x + w, y + h, pen);
+                addSegment(x + w, y + h, x, y + h, pen);
+                addSegment(x, y + h, x, y, pen);
+            } else if (path.type === 'text') {
+                this.getVectorTextSegments(path).forEach(segment => {
+                    addSegment(segment.x1, segment.y1, segment.x2, segment.y2, pen);
+                });
+            } else if (path.type === 'path' && Array.isArray(path.segments) && path.segments.length > 0) {
+                let currentPoint = null;
+                let subpathStart = null;
+
+                const sampleCurve = (pointAt, steps = 24) => {
+                    if (!currentPoint) return;
+                    let prev = { ...currentPoint };
+                    for (let step = 1; step <= steps; step++) {
+                        const t = step / steps;
+                        const next = pointAt(t);
+                        addSegment(prev.x, prev.y, next.x, next.y, pen);
+                        prev = next;
+                    }
+                    currentPoint = prev;
+                };
+
+                path.segments.forEach(segment => {
+                    if (segment.type === 'M') {
+                        currentPoint = { x: segment.x, y: segment.y };
+                        subpathStart = { ...currentPoint };
+                    } else if (segment.type === 'L') {
+                        if (currentPoint) addSegment(currentPoint.x, currentPoint.y, segment.x, segment.y, pen);
+                        currentPoint = { x: segment.x, y: segment.y };
+                    } else if (segment.type === 'C') {
+                        const start = currentPoint ? { ...currentPoint } : { x: segment.x, y: segment.y };
+                        sampleCurve((t) => {
+                            const mt = 1 - t;
+                            return {
+                                x: (mt ** 3) * start.x + 3 * (mt ** 2) * t * segment.x1 + 3 * mt * (t ** 2) * segment.x2 + (t ** 3) * segment.x,
+                                y: (mt ** 3) * start.y + 3 * (mt ** 2) * t * segment.y1 + 3 * mt * (t ** 2) * segment.y2 + (t ** 3) * segment.y
+                            };
+                        }, 28);
+                    } else if (segment.type === 'Q') {
+                        const start = currentPoint ? { ...currentPoint } : { x: segment.x, y: segment.y };
+                        sampleCurve((t) => {
+                            const mt = 1 - t;
+                            return {
+                                x: (mt ** 2) * start.x + 2 * mt * t * segment.x1 + (t ** 2) * segment.x,
+                                y: (mt ** 2) * start.y + 2 * mt * t * segment.y1 + (t ** 2) * segment.y
+                            };
+                        }, 24);
+                    } else if (segment.type === 'A') {
+                        if (currentPoint) addSegment(currentPoint.x, currentPoint.y, segment.x, segment.y, pen);
+                        currentPoint = { x: segment.x, y: segment.y };
+                    } else if (segment.type === 'Z' && currentPoint && subpathStart) {
+                        addSegment(currentPoint.x, currentPoint.y, subpathStart.x, subpathStart.y, pen);
+                        currentPoint = { ...subpathStart };
+                    }
+                });
+            } else if (path.points && path.points.length >= 2) {
+                for (let i = 1; i < path.points.length; i++) {
+                    addSegment(path.points[i - 1].x, path.points[i - 1].y, path.points[i].x, path.points[i].y, pen);
+                }
+            }
+        });
+
+        return segments;
+    }
+
+    getSimulationPositionAtDistance(distance) {
+        if (!this.simulationRoute.length) return null;
+
+        let remaining = Math.max(0, distance);
+        for (let i = 0; i < this.simulationRoute.length; i++) {
+            const segment = this.simulationRoute[i];
+            if (remaining <= segment.length) {
+                const t = segment.length > 0 ? remaining / segment.length : 1;
+                return {
+                    x: segment.x1 + ((segment.x2 - segment.x1) * t),
+                    y: segment.y1 + ((segment.y2 - segment.y1) * t)
+                };
+            }
+            remaining -= segment.length;
+        }
+
+        const lastSegment = this.simulationRoute[this.simulationRoute.length - 1];
+        return lastSegment ? { x: lastSegment.x2, y: lastSegment.y2 } : null;
     }
 
     groupSelectedPaths() {

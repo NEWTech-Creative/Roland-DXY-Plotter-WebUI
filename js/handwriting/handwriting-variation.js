@@ -34,16 +34,17 @@ class HandwritingVariation {
      * @returns {Array} - Transformed strokes
      */
     apply(strokes, options) {
-        const { slant = 0, messiness = 0, characterHeight = 6, style = 'print' } = options;
-        const isCursive = style === 'cursive';
+        const { slant = 0, messiness = 0, characterHeight = 6, style = 'print', glyphChar = '' } = options;
+        const isConnectedScript = style === 'cursive';
+        const preserveSharpForm = isConnectedScript && (glyphChar === 's' || glyphChar === 'S');
 
         // Remap messiness for better control
-        const effectiveSlant = isCursive ? Math.max(-8, Math.min(12, slant)) : slant;
-        const m = (messiness || 0) * (isCursive ? 0.06 : 0.15);
+        const effectiveSlant = isConnectedScript ? Math.max(-7, Math.min(10, slant)) : slant;
+        const m = (messiness || 0) * (isConnectedScript ? 0.055 : 0.15);
 
         // Character-level drift
-        const charDriftX = (this.random() - 0.5) * m * (isCursive ? 0.35 : 0.8);
-        const charDriftY = (this.random() - 0.5) * m * (isCursive ? 0.2 : 0.4);
+        const charDriftX = (this.random() - 0.5) * m * (isConnectedScript ? 0.28 : 0.8);
+        const charDriftY = (this.random() - 0.5) * m * (isConnectedScript ? 0.16 : 0.4);
 
         const processedStrokes = strokes.map(stroke => {
             if (stroke.length === 0) return stroke;
@@ -53,8 +54,8 @@ class HandwritingVariation {
                 // Lean right for positive slant: shift top (y=0) right, baseline (y=1) stays
                 const slantOffset = (1.0 - pt.y) * (effectiveSlant / 45);
 
-                const jitterX = (this.random() - 0.5) * m * (isCursive ? 0.18 : 0.5);
-                const jitterY = (this.random() - 0.5) * m * (isCursive ? 0.14 : 0.5);
+                const jitterX = (this.random() - 0.5) * m * (preserveSharpForm ? 0.08 : (isConnectedScript ? 0.14 : 0.5));
+                const jitterY = (this.random() - 0.5) * m * (preserveSharpForm ? 0.06 : (isConnectedScript ? 0.1 : 0.5));
 
                 return {
                     x: (pt.x + slantOffset + charDriftX + jitterX) * characterHeight,
@@ -64,7 +65,7 @@ class HandwritingVariation {
 
             // 2. Chaikin smoothing to remove angularity
             if (varied.length > 2) {
-                varied = this.smooth(varied, isCursive ? 1 : 2);
+                varied = this.smooth(varied, preserveSharpForm ? 0 : (isConnectedScript ? 1 : 2));
             }
 
             return varied;

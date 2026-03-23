@@ -61,21 +61,24 @@ class HpglParser {
         const r = Math.round(rMM * this.UNITS_PER_MM);
 
         return [
-            `PA${x},${y};`,
-            `CI${r};`
+            `PU${x},${y};`,
+            `CI${r};`,
+            'PU;'
+        ];
+    }
+
+    getRectanglePoints(x1MM, y1MM, x2MM, y2MM) {
+        return [
+            { x: x1MM, y: y1MM },
+            { x: x2MM, y: y1MM },
+            { x: x2MM, y: y2MM },
+            { x: x1MM, y: y2MM },
+            { x: x1MM, y: y1MM }
         ];
     }
 
     generateRectangle(x1MM, y1MM, x2MM, y2MM) {
-        const x1 = Math.round(x1MM * this.UNITS_PER_MM);
-        const y1 = Math.round(y1MM * this.UNITS_PER_MM);
-        const x2 = Math.round(x2MM * this.UNITS_PER_MM);
-        const y2 = Math.round(y2MM * this.UNITS_PER_MM);
-
-        return [
-            `PA${x1},${y1};`,
-            `EA${x2},${y2};`
-        ];
+        return this.generatePolylineCommands(this.getRectanglePoints(x1MM, y1MM, x2MM, y2MM));
     }
 
     generateText(text, xMM, yMM, fontSize = 10, rotation = 0) {
@@ -112,26 +115,181 @@ class HpglParser {
         return [`Y${m},${coords};`];
     }
 
+    pathShouldUseCurve(path) {
+        if (!path || path.type !== 'path' || !Array.isArray(path.segments) || !Array.isArray(path.points)) return false;
+        if (this.app?.settings?.useInternalCurveEngine === false) return false;
+        return path.segments.some(segment => ['C', 'Q'].includes(segment.type));
+    }
+
+    isClosedPath(path) {
+        if (!path) return false;
+        if (Array.isArray(path.segments) && path.segments.some(segment => segment.type === 'Z')) return true;
+        const pts = path.points || [];
+        if (pts.length < 2) return false;
+        const first = pts[0];
+        const last = pts[pts.length - 1];
+        return !!first && !!last && first.x === last.x && first.y === last.y;
+    }
+
     generatePolylineCommands(points) {
         if (!points || points.length < 2) return [];
 
         const transformedPts = this.transformOutputPoints(points);
-        const commands = [];
+        const first = transformedPts[0];
+        const firstX = Math.round(first.x * this.UNITS_PER_MM);
+        const firstY = Math.round(first.y * this.UNITS_PER_MM);
+        const coords = transformedPts
+            .slice(1)
+            .map(point => `${Math.round(point.x * this.UNITS_PER_MM)},${Math.round(point.y * this.UNITS_PER_MM)}`)
+            .join(',');
 
-        for (let i = 0; i < transformedPts.length; i++) {
-            const ux = Math.round(transformedPts[i].x * this.UNITS_PER_MM);
-            const uy = Math.round(transformedPts[i].y * this.UNITS_PER_MM);
+        return [
+            `PU${firstX},${firstY};`,
+            `PD${coords};`,
+            'PU;'
+        ];
+    }
 
-            if (i === 0) {
-                commands.push(`PU${ux},${uy};`);
-                commands.push('PD;');
-            } else {
-                commands.push(`PA${ux},${uy};`);
-            }
+    generatePolylineTraceCommands(points) {
+        if (!points || points.length < 2) return [];
+
+        const transformedPts = this.transformOutputPoints(points);
+        const first = transformedPts[0];
+        const commands = [
+            `PU${Math.round(first.x * this.UNITS_PER_MM)},${Math.round(first.y * this.UNITS_PER_MM)};`
+        ];
+
+        for (let i = 1; i < transformedPts.length; i++) {
+            const point = transformedPts[i];
+            commands.push(`PD${Math.round(point.x * this.UNITS_PER_MM)},${Math.round(point.y * this.UNITS_PER_MM)};`);
         }
 
         commands.push('PU;');
         return commands;
+    }
+
+    generatePolylineStreamCommands(points, maxPairsPerCommand = 8) {
+        if (!points || points.length < 2) return [];
+
+        const transformedPts = this.transformOutputPoints(points);
+        const first = transformedPts[0];
+        const commands = [
+            `PU${Math.round(first.x * this.UNITS_PER_MM)},${Math.round(first.y * this.UNITS_PER_MM)};`
+        ];
+
+        const remaining = transformedPts.slice(1).map(point => ({
+            x: Math.round(point.x * this.UNITS_PER_MM),
+            y: Math.round(point.y * this.UNITS_PER_MM)
+        }));
+
+        for (let i = 0; i < remaining.length; i += maxPairsPerCommand) {
+            const chunk = remaining.slice(i, i + maxPairsPerCommand);
+            if (chunk.length === 0) continue;
+            commands.push(`PD${chunk.map(point => `${point.x},${point.y}`).join(',')};`);
+        }
+
+        commands.push('PU;');
+        return commands;
+    }
+
+    getTracePointsForPath(path) {
+        if (!path) return [];
+        if (path.type !== 'path' || !Array.isArray(path.segments) || path.segments.length === 0) {
+            return Array.isArray(path.points) ? path.points : [];
+        }
+
+        const tracePoints = [];
+        let currentPoint = null;
+        let subpathStart = null;
+
+        const pushPoint = (point) => {
+            if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return;
+            const last = tracePoints[tracePoints.length - 1];
+            if (last && Math.abs(last.x - point.x) < 0.001 && Math.abs(last.y - point.y) < 0.001) return;
+            tracePoints.push({ x: point.x, y: point.y });
+        };
+
+        const sampleCurve = (pointAt, steps = 24) => {
+            if (!currentPoint) return;
+            pushPoint(currentPoint);
+            for (let step = 1; step <= steps; step++) {
+                pushPoint(pointAt(step / steps));
+            }
+        };
+
+        path.segments.forEach(segment => {
+            if (!segment || !segment.type) return;
+
+            if (segment.type === 'M') {
+                currentPoint = { x: segment.x, y: segment.y };
+                subpathStart = { ...currentPoint };
+                pushPoint(currentPoint);
+                return;
+            }
+
+            if (segment.type === 'L') {
+                if (!currentPoint) {
+                    currentPoint = { x: segment.x, y: segment.y };
+                    subpathStart = subpathStart || { ...currentPoint };
+                    pushPoint(currentPoint);
+                    return;
+                }
+                currentPoint = { x: segment.x, y: segment.y };
+                pushPoint(currentPoint);
+                return;
+            }
+
+            if (segment.type === 'C' && currentPoint) {
+                const start = { ...currentPoint };
+                sampleCurve((t) => {
+                    const mt = 1 - t;
+                    return {
+                        x: (mt * mt * mt * start.x) + (3 * mt * mt * t * segment.x1) + (3 * mt * t * t * segment.x2) + (t * t * t * segment.x),
+                        y: (mt * mt * mt * start.y) + (3 * mt * mt * t * segment.y1) + (3 * mt * t * t * segment.y2) + (t * t * t * segment.y)
+                    };
+                }, 24);
+                currentPoint = { x: segment.x, y: segment.y };
+                return;
+            }
+
+            if (segment.type === 'Q' && currentPoint) {
+                const start = { ...currentPoint };
+                sampleCurve((t) => {
+                    const mt = 1 - t;
+                    return {
+                        x: (mt * mt * start.x) + (2 * mt * t * segment.x1) + (t * t * segment.x),
+                        y: (mt * mt * start.y) + (2 * mt * t * segment.y1) + (t * t * segment.y)
+                    };
+                }, 18);
+                currentPoint = { x: segment.x, y: segment.y };
+                return;
+            }
+
+            if (segment.type === 'A') {
+                currentPoint = { x: segment.x, y: segment.y };
+                pushPoint(currentPoint);
+                return;
+            }
+
+            if (segment.type === 'Z' && currentPoint && subpathStart) {
+                currentPoint = { ...subpathStart };
+                pushPoint(currentPoint);
+            }
+        });
+
+        return tracePoints.length >= 2 ? tracePoints : (Array.isArray(path.points) ? path.points : []);
+    }
+
+    pathContainsText(paths = []) {
+        return paths.some(path => path && path.type === 'text');
+    }
+
+    buildHpglHeader(paths = []) {
+        const header = ['IN;'];
+        if (this.pathContainsText(paths)) {
+            header.push('DT\x03;');
+        }
+        return header;
     }
 
     generateVectorText(text, xMM, yMM, fontSize = 10) {
@@ -228,7 +386,7 @@ class HpglParser {
             });
         });
 
-        let hpglCommands = ["IN;DT\x03;"]; // Initialize and set label terminator to ETX (CHR 3)
+        let hpglCommands = this.buildHpglHeader(groupedPaths);
         let lastPen = -1;
 
         groupedPaths.forEach(p => {
@@ -247,20 +405,21 @@ class HpglParser {
 
             if (p.type === 'circle') {
                 hpglCommands = hpglCommands.concat(this.generateCircle(p.x, p.y, p.r));
-                hpglCommands.push('PU;');
             } else if (p.type === 'text') {
                 hpglCommands = hpglCommands.concat(this.generateText(p.text, p.x, p.y, p.fontSize || 10, p.rotation || 0));
-            } else if (p.type === 'line' || p.type === 'polyline' || p.type === 'path' || p.type === 'rectangle') {
-                const pts = p.type === 'rectangle' ? [
-                    { x: p.x, y: p.y },
-                    { x: p.x + (p.w || 0), y: p.y },
-                    { x: p.x + (p.w || 0), y: p.y + (p.h || 0) },
-                    { x: p.x, y: p.y + (p.h || 0) },
-                    { x: p.x, y: p.y }
-                ] : p.points;
-
+            } else if (p.type === 'rectangle') {
+                hpglCommands = hpglCommands.concat(
+                    this.generateRectangle(p.x, p.y, p.x + (p.w || 0), p.y + (p.h || 0))
+                );
+            } else if (p.type === 'line' || p.type === 'polyline' || p.type === 'path') {
+                const pts = p.points;
                 if (pts && pts.length >= 2) {
-                    hpglCommands = hpglCommands.concat(this.generatePolylineCommands(pts));
+                    if (this.pathShouldUseCurve(p)) {
+                        hpglCommands = hpglCommands.concat(this.generateCurve(pts, this.isClosedPath(p)));
+                        hpglCommands.push('PU;');
+                    } else {
+                        hpglCommands = hpglCommands.concat(this.generatePolylineCommands(pts));
+                    }
                 }
             }
         });
@@ -285,7 +444,7 @@ class HpglParser {
             });
         });
 
-        let hpglQueue = ["IN;DT\x03;"]; // Initialize and set label terminator to ETX (CHR 3)
+        let hpglQueue = this.buildHpglHeader(groupedPaths);
         let commandsFound = 0;
         let lastPen = -1;
 
@@ -305,22 +464,21 @@ class HpglParser {
 
             if (p.type === 'circle') {
                 hpglQueue = hpglQueue.concat(this.generateCircle(p.x, p.y, p.r));
-                hpglQueue.push('PU;');
                 commandsFound++;
             } else if (p.type === 'text') {
                 hpglQueue = hpglQueue.concat(this.generateText(p.text, p.x, p.y, p.fontSize || 10, p.rotation || 0));
                 commandsFound++;
-            } else if (p.type === 'line' || p.type === 'polyline' || p.type === 'path' || p.type === 'rectangle') {
-                const pts = p.type === 'rectangle' ? [
-                    { x: p.x, y: p.y },
-                    { x: p.x + (p.w || 0), y: p.y },
-                    { x: p.x + (p.w || 0), y: p.y + (p.h || 0) },
-                    { x: p.x, y: p.y + (p.h || 0) },
-                    { x: p.x, y: p.y }
-                ] : p.points;
-
+            } else if (p.type === 'rectangle') {
+                hpglQueue = hpglQueue.concat(
+                    this.generatePolylineStreamCommands(
+                        this.getRectanglePoints(p.x, p.y, p.x + (p.w || 0), p.y + (p.h || 0))
+                    )
+                );
+                commandsFound++;
+            } else if (p.type === 'line' || p.type === 'polyline' || p.type === 'path') {
+                const pts = this.getTracePointsForPath(p);
                 if (pts && pts.length >= 2) {
-                    hpglQueue = hpglQueue.concat(this.generatePolylineCommands(pts));
+                    hpglQueue = hpglQueue.concat(this.generatePolylineStreamCommands(pts));
                     commandsFound += pts.length;
                 }
             }
@@ -329,6 +487,52 @@ class HpglParser {
         this.app.serial.queueCommands(hpglQueue);
         this.app.ui.logToConsole(`System: Generated ${hpglQueue.length} HPGL commands from Canvas.`);
         return true;
+    }
+
+    normalizeSvgColorValue(colorValue) {
+        if (!colorValue) return null;
+        const raw = String(colorValue).trim();
+        if (!raw || raw.toLowerCase() === 'none' || raw.toLowerCase() === 'transparent') return null;
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return raw.toLowerCase();
+        ctx.fillStyle = '#000000';
+        ctx.fillStyle = raw;
+        return String(ctx.fillStyle || raw).toLowerCase();
+    }
+
+    parseSvgStyleAttribute(styleValue) {
+        const styleMap = {};
+        if (!styleValue) return styleMap;
+        String(styleValue).split(';').forEach(part => {
+            const pieces = part.split(':');
+            if (pieces.length < 2) return;
+            const key = pieces.shift().trim().toLowerCase();
+            const value = pieces.join(':').trim();
+            if (key) styleMap[key] = value;
+        });
+        return styleMap;
+    }
+
+    getSvgElementColor(el, inheritedColor = null) {
+        if (!el || !el.getAttribute) return inheritedColor;
+        const styleMap = this.parseSvgStyleAttribute(el.getAttribute('style'));
+        const stroke = el.getAttribute('stroke') || styleMap.stroke;
+        const fill = el.getAttribute('fill') || styleMap.fill;
+        const color = el.getAttribute('color') || styleMap.color || inheritedColor;
+        return this.normalizeSvgColorValue(stroke)
+            || this.normalizeSvgColorValue(fill)
+            || this.normalizeSvgColorValue(color)
+            || inheritedColor;
+    }
+
+    getPenForImportedColor(colorKey, colorPenMap, fallbackPen = 1) {
+        if (!colorKey) return fallbackPen;
+        if (colorPenMap.has(colorKey)) return colorPenMap.get(colorKey);
+        const penCount = Array.isArray(this.app?.ui?.visPenConfig) ? this.app.ui.visPenConfig.length : 8;
+        const assignedPen = Math.min(penCount, colorPenMap.size + 1);
+        colorPenMap.set(colorKey, assignedPen);
+        return assignedPen;
     }
 
     // Convert an SVG file content into HPGL
@@ -355,9 +559,10 @@ class HpglParser {
         };
 
         // Flatten SVG elements into line segments
-        const processElement = (el) => {
+        const processElement = (el, inheritedColor = null) => {
             let pts = [];
             const tag = el.tagName.toLowerCase();
+            const sourceColor = this.getSvgElementColor(el, inheritedColor);
 
             if (tag === 'path') {
                 const d = el.getAttribute('d');
@@ -404,15 +609,21 @@ class HpglParser {
                 const ptsArr = segment.points || segment;
                 if (ptsArr.length < 2) return;
                 ptsArr.forEach(p => updateBounds(p.x, p.y));
-                allPaths.push(segment);
+                if (segment && typeof segment === 'object' && !Array.isArray(segment)) {
+                    allPaths.push({ ...segment, sourceColor });
+                } else {
+                    allPaths.push({ points: ptsArr, sourceColor });
+                }
             });
+
+            return sourceColor;
         };
 
         // Recursive traversal (basic, ignoring transforms for now but flattened)
-        const walk = (node) => {
+        const walk = (node, inheritedColor = null) => {
             if (node.nodeType !== 1) return;
-            processElement(node);
-            node.childNodes.forEach(walk);
+            const nextInheritedColor = processElement(node, inheritedColor) || inheritedColor;
+            node.childNodes.forEach(child => walk(child, nextInheritedColor));
         };
         walk(svgElement);
 
@@ -438,14 +649,9 @@ class HpglParser {
         const offsetX = (this.app.canvas.bedWidth / 2) - ((svgW * scale) / 2) - (minX * scale);
         const offsetY = (this.app.canvas.bedHeight / 2) - ((svgH * scale) / 2) - (minY * scale);
 
-        const visPen = this.app.ui.activeVisualizerPen || 1;
-
-        // Ensure the active visualiser pen layer is visible so imports don't appear 'blank'
-        if (this.app && this.app.ui && Array.isArray(this.app.ui.visPenConfig) && this.app.ui.visPenConfig[visPen - 1]) {
-            this.app.ui.visPenConfig[visPen - 1].visible = true;
-            this.app.ui.saveWorkspaceState();
-            this.app.ui.updateVisualizerPalette();
-        }
+        const defaultPen = this.app.ui.activeVisualizerPen || 1;
+        const colorPenMap = new Map();
+        const colorGroupMap = new Map();
         let pointsCount = 0;
 
         for (let i = 0; i < allPaths.length; i++) {
@@ -470,11 +676,20 @@ class HpglParser {
                 });
             }
 
+            const colorKey = poly.sourceColor || 'default';
+            const groupId = colorGroupMap.get(colorKey) || `import_color_${colorGroupMap.size + 1}_${Date.now()}`;
+            if (!colorGroupMap.has(colorKey)) {
+                colorGroupMap.set(colorKey, groupId);
+            }
+            const assignedPen = this.getPenForImportedColor(poly.sourceColor, colorPenMap, defaultPen);
+
             this.app.canvas.addPath({
                 type: scaledSegments ? 'path' : 'polyline',
                 points: scaledPoly,
                 segments: scaledSegments,
-                pen: visPen
+                pen: assignedPen,
+                groupId,
+                sourceColor: poly.sourceColor || null
             });
             pointsCount += scaledPoly.length;
 
@@ -486,7 +701,18 @@ class HpglParser {
             }
         }
 
-        this.app.ui.logToConsole(`System: Imported SVG (x${scale.toFixed(2)}). Centered. ${pointsCount} points across ${allPaths.length} paths.`);
+        if (this.app && this.app.ui && Array.isArray(this.app.ui.visPenConfig)) {
+            colorPenMap.forEach((penNumber) => {
+                const penCfg = this.app.ui.visPenConfig[penNumber - 1];
+                if (penCfg) penCfg.visible = true;
+            });
+            const fallbackPenCfg = this.app.ui.visPenConfig[defaultPen - 1];
+            if (fallbackPenCfg) fallbackPenCfg.visible = true;
+            this.app.ui.saveWorkspaceState();
+            this.app.ui.updateVisualizerPalette();
+        }
+
+        this.app.ui.logToConsole(`System: Imported SVG (x${scale.toFixed(2)}). Centered. ${pointsCount} points across ${allPaths.length} paths in ${colorGroupMap.size || 1} colour group(s).`);
     }
 
     // Advanced SVG Path Parser

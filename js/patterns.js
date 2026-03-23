@@ -26,6 +26,7 @@ class PatternGenerator {
 
         // Find bounding box center of source paths for transformation anchor
         const box = this.app.canvas.getGroupBoundingBoxFromPaths(sourcePaths);
+        if (!box) return [];
         const centerX = (box.minX + box.maxX) / 2;
         const centerY = (box.minY + box.maxY) / 2;
 
@@ -84,11 +85,18 @@ class PatternGenerator {
                 clone.x = pt.x;
                 clone.y = pt.y;
                 clone.r *= scale;
+            } else if (clone.type === 'rectangle') {
+                const pt = transformPoint({ x: clone.x, y: clone.y });
+                clone.x = pt.x;
+                clone.y = pt.y;
+                clone.w = Math.max(0.1, (clone.w || 0) * scale);
+                clone.h = Math.max(0.1, (clone.h || 0) * scale);
             } else if (clone.type === 'text') {
                 const pt = transformPoint({ x: clone.x, y: clone.y });
                 clone.x = pt.x;
                 clone.y = pt.y;
                 if (clone.fontSize) clone.fontSize *= scale;
+                clone.rotation = ((clone.rotation || 0) + rotDeg) % 360;
             } else if (clone.points) {
                 clone.points = clone.points.map(pt => transformPoint(pt));
                 if (clone.segments) {

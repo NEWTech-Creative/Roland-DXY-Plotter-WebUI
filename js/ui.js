@@ -21,13 +21,13 @@ class UIController {
             { id: 'panel-image-vector', x: 3, y: 19, w: 6, h: 12 }
         ];
         this.defaultGridLayout = [
-            { id: 'panel-connection', x: 0, y: 0, w: 4, h: 6 },
-            { id: 'panel-machine-jog', x: 4, y: 0, w: 4, h: 6 },
-            { id: 'panel-console', x: 8, y: 0, w: 4, h: 6 },
-            { id: 'panel-visualiser', x: 0, y: 6, w: 4, h: 6 },
-            { id: 'panel-patterns', x: 4, y: 6, w: 4, h: 6 },
-            { id: 'panel-handwriting', x: 8, y: 6, w: 4, h: 6 },
-            { id: 'panel-image-vector', x: 4, y: 12, w: 4, h: 6 }
+            { id: 'panel-connection', x: 0, y: 0, w: 2, h: 4 },
+            { id: 'panel-machine-jog', x: 0, y: 4, w: 2, h: 4 },
+            { id: 'panel-console', x: 0, y: 8, w: 2, h: 7 },
+            { id: 'panel-visualiser', x: 2, y: 0, w: 5, h: 8 },
+            { id: 'panel-handwriting', x: 2, y: 8, w: 3, h: 7 },
+            { id: 'panel-image-vector', x: 5, y: 8, w: 3, h: 7 },
+            { id: 'panel-patterns', x: 8, y: 8, w: 2, h: 7 }
         ];
         this.panelDefinitions = [
             { id: 'panel-connection', label: 'Connection', alwaysVisible: true },
@@ -50,6 +50,7 @@ class UIController {
         this.loadWorkspaceState();
         this._bindInput();
         this._bindTools();
+        this._bindStartupModal();
         this._bindSettings();
         this._bindJog();
         this._bindPatterns();
@@ -628,11 +629,27 @@ class UIController {
         const valSimOpacity = document.getElementById('val-sim-opacity');
         const inputRes = document.getElementById('input-import-resolution');
         const valRes = document.getElementById('val-import-resolution');
+        const inputUseInternalCurveEngine = document.getElementById('input-use-internal-curve-engine');
+        const importResolutionGroup = document.getElementById('import-resolution-group');
         const inputMarginX = document.getElementById('input-margin-x');
         const inputMarginY = document.getElementById('input-margin-y');
         const inputOutputFlipX = document.getElementById('input-output-flip-x');
         const inputOutputFlipY = document.getElementById('input-output-flip-y');
         const panelToggleInputs = Array.from(document.querySelectorAll('[data-panel-toggle]'));
+
+        const updateImportResolutionAvailability = () => {
+            const useInternalCurveEngine = inputUseInternalCurveEngine ? inputUseInternalCurveEngine.checked : true;
+            const isDisabled = useInternalCurveEngine === true;
+            if (inputRes) {
+                inputRes.disabled = isDisabled;
+            }
+            if (valRes) {
+                valRes.classList.toggle('is-disabled', isDisabled);
+            }
+            if (importResolutionGroup) {
+                importResolutionGroup.classList.toggle('settings-control-disabled', isDisabled);
+            }
+        };
 
         btnSettings.onclick = () => {
             selTheme.value = this.app.settings.theme || 'dark-theme';
@@ -648,10 +665,14 @@ class UIController {
                 inputRes.value = this.app.settings.importResolution || 15;
                 if (valRes) valRes.textContent = inputRes.value;
             }
+            if (inputUseInternalCurveEngine) {
+                inputUseInternalCurveEngine.checked = this.app.settings.useInternalCurveEngine !== false;
+            }
+            updateImportResolutionAvailability();
             if (inputMarginX) inputMarginX.value = this.app.settings.marginX || 15;
             if (inputMarginY) inputMarginY.value = this.app.settings.marginY || 10;
             if (inputOutputFlipX) inputOutputFlipX.checked = this.app.settings.outputFlipHorizontal === true;
-            if (inputOutputFlipY) inputOutputFlipY.checked = this.app.settings.outputFlipVertical !== false;
+            if (inputOutputFlipY) inputOutputFlipY.checked = this.app.settings.outputFlipVertical === false;
             const visibility = this._getPanelVisibilitySettings();
             panelToggleInputs.forEach(input => {
                 input.checked = visibility[input.dataset.panelToggle] !== false;
@@ -668,6 +689,12 @@ class UIController {
         if (inputRes) {
             inputRes.oninput = (e) => {
                 if (valRes) valRes.textContent = e.target.value;
+            };
+        }
+
+        if (inputUseInternalCurveEngine) {
+            inputUseInternalCurveEngine.onchange = () => {
+                updateImportResolutionAvailability();
             };
         }
 
@@ -691,10 +718,13 @@ class UIController {
             if (inputRes) {
                 this.app.settings.importResolution = parseInt(inputRes.value, 10);
             }
+            if (inputUseInternalCurveEngine) {
+                this.app.settings.useInternalCurveEngine = inputUseInternalCurveEngine.checked;
+            }
             if (inputMarginX) this.app.settings.marginX = parseFloat(inputMarginX.value);
             if (inputMarginY) this.app.settings.marginY = parseFloat(inputMarginY.value);
             if (inputOutputFlipX) this.app.settings.outputFlipHorizontal = inputOutputFlipX.checked;
-            if (inputOutputFlipY) this.app.settings.outputFlipVertical = inputOutputFlipY.checked;
+            if (inputOutputFlipY) this.app.settings.outputFlipVertical = !inputOutputFlipY.checked;
             this.app.settings.panelVisibility = panelToggleInputs.reduce((acc, input) => {
                 acc[input.dataset.panelToggle] = input.disabled ? true : input.checked;
                 return acc;
@@ -712,6 +742,31 @@ class UIController {
             modal.classList.add('hidden');
             if (this.app.canvas) this.app.canvas.draw();
         };
+    }
+
+    _bindStartupModal() {
+        const modal = document.getElementById('startup-modal');
+        const btnOk = document.getElementById('btn-startup-ok');
+        const inputDontShow = document.getElementById('startup-dont-show');
+
+        if (!modal || !btnOk || !inputDontShow) return;
+
+        btnOk.onclick = () => {
+            this.app.settings.showStartupMessage = !inputDontShow.checked;
+            this.app.saveSettings();
+            modal.classList.add('hidden');
+        };
+    }
+
+    showStartupModal() {
+        const modal = document.getElementById('startup-modal');
+        const inputDontShow = document.getElementById('startup-dont-show');
+
+        if (!modal || !inputDontShow) return;
+        if (this.app?.settings?.showStartupMessage === false) return;
+
+        inputDontShow.checked = false;
+        modal.classList.remove('hidden');
     }
 
     logToConsole(msg, type = 'info') {

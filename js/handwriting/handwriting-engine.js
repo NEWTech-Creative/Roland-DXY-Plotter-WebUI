@@ -27,6 +27,7 @@ class HandwritingEngine {
         if (!this.library) return [];
 
         const style = options.style || 'print';
+        const usesConnectedScript = style === 'cursive';
         const glyphLibrary = this.library[style] || this.library['print'];
         const h = options.characterHeight || 6;
 
@@ -65,7 +66,8 @@ class HandwritingEngine {
                 slant: options.slant,
                 messiness: options.messiness,
                 characterHeight: h,
-                style
+                style,
+                glyphChar: glyph.char
             });
 
             // Offset by glyph position (already in mm)
@@ -74,7 +76,7 @@ class HandwritingEngine {
                 y: glyph.y + pt.y
             })));
 
-            if (style === 'cursive' && absoluteStrokes.length > 0) {
+            if (usesConnectedScript && absoluteStrokes.length > 0) {
                 if ((options.characterSpacing || 0) < 0) {
                     absoluteStrokes[0] = this._compressCursiveEntry(
                         absoluteStrokes[0],
@@ -117,18 +119,18 @@ class HandwritingEngine {
         const next = nextStroke[0];
         const dx = next.x - prev.x;
         const dy = next.y - prev.y;
-        const joinThreshold = characterHeight * 0.9;
+        const joinThreshold = characterHeight * 0.78;
 
         if (dx <= 0 || dx > joinThreshold * 1.8 || Math.abs(dy) > joinThreshold) return [];
 
-        const lift = Math.min(characterHeight * 0.18, Math.abs(dx) * 0.2);
+        const lift = Math.min(characterHeight * 0.16, Math.abs(dx) * 0.18);
         return [
             {
-                x: prev.x + dx * 0.35,
+                x: prev.x + dx * 0.3,
                 y: prev.y - lift
             },
             {
-                x: prev.x + dx * 0.7,
+                x: prev.x + dx * 0.72,
                 y: next.y - lift * 0.45
             }
         ];
@@ -139,8 +141,8 @@ class HandwritingEngine {
 
         const start = stroke[0];
         const overlap = Math.abs(characterSpacing);
-        const joinWindow = Math.max(characterHeight * 0.45, overlap * 2.2);
-        const compression = Math.min(0.85, overlap / Math.max(0.1, characterHeight * 0.55));
+        const joinWindow = Math.max(characterHeight * 0.36, overlap * 1.8);
+        const compression = Math.min(0.6, overlap / Math.max(0.1, characterHeight * 0.8));
 
         return stroke.map((pt, index) => {
             if (index === 0) return pt;
