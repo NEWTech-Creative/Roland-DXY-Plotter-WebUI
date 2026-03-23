@@ -506,6 +506,23 @@ body.olive-theme {
     flex-wrap: wrap;
 }
 
+.welcome-setup-card {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 14px;
+    border: 1px solid var(--panel-border);
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.04);
+}
+
+.welcome-setup-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    color: var(--text-secondary);
+}
+
 .brand-credit {
     display: inline-flex;
     align-items: center;
@@ -739,6 +756,32 @@ body.olive-theme {
     flex-wrap: wrap;
 }
 
+.machine-setup-modal-content {
+    width: min(760px, calc(100vw - 32px));
+    max-width: 760px;
+}
+
+.machine-setup-modal-body {
+    gap: 14px;
+}
+
+.machine-setup-intro {
+    margin: 0;
+    color: var(--text-secondary);
+    line-height: 1.6;
+}
+
+.machine-setup-diagram {
+    width: 100%;
+    max-width: 680px;
+    height: auto;
+    align-self: center;
+    border-radius: 10px;
+    border: 1px solid var(--panel-border);
+    background: rgba(255, 255, 255, 0.04);
+    padding: 10px;
+}
+
 /* =========================================
    Inputs and Buttons
    ========================================= */
@@ -773,6 +816,28 @@ input[type="color"] {
     align-items: center;
     justify-content: center;
     gap: 6px;
+}
+
+.btn-link {
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--accent-primary);
+}
+
+.btn-inline-help {
+    font-size: 0.8rem;
+    font-weight: 600;
+    margin-left: auto;
+    padding-left: 16px;
+}
+
+.form-label-with-action {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 18px;
+    width: 100%;
 }
 
 .btn:disabled {

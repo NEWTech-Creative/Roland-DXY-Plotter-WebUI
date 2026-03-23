@@ -77,7 +77,10 @@
                                 </select>
                             </div>
                             <div class="form-group flex-1">
-                                <label>Baud Rate</label>
+                                <label class="form-label-with-action">
+                                    <span>Baud Rate</span>
+                                    <button id="btn-machine-setup-help" type="button" class="btn btn-link btn-inline-help">Need help?</button>
+                                </label>
                                 <select id="sel-baud">
                                     <option value="9600">9600</option>
                                     <option value="19200">19200</option>
@@ -640,6 +643,14 @@
                     <div class="welcome-feature">Draw, import, preview, and simulate plot files before running them.</div>
                     <div class="welcome-feature">Generate patterns, handwriting, and image-to-vector artwork inside the interface.</div>
                 </div>
+                <div class="welcome-setup-card">
+                    <div class="welcome-setup-copy">
+                        <strong>Machine setup help</strong>
+                        <span>Use this DIP switch setup when configuring the Roland DXY for use with the USB-to-serial CH340 adapter.</span>
+                    </div>
+                    <button id="btn-startup-machine-setup" type="button" class="btn btn-secondary">View DIP Switch Setup</button>
+                    <img src="References/Dip switch setup.svg" alt="Roland DXY dip switch setup compatible with CH340 USB to serial adapter" class="machine-setup-diagram">
+                </div>
                 <div class="welcome-links">
                     <div class="brand-credit">
                         <img src="Circle logo lines2.svg" alt="NEWTech Creative logo" class="brand-credit-logo">
@@ -672,6 +683,24 @@
             <div class="modal-footer">
                 <div class="settings-footer-actions">
                     <button id="btn-startup-ok" class="btn btn-primary">OK</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="machine-setup-modal" class="modal-overlay hidden">
+        <div class="modal-content machine-setup-modal-content">
+            <div class="modal-header">
+                <h2>Machine Setup Help</h2>
+                <button id="btn-close-machine-setup" class="btn btn-icon">&times;</button>
+            </div>
+            <div class="modal-body machine-setup-modal-body">
+                <p class="machine-setup-intro">This DIP switch setup is compatible with the USB-to-serial CH340 adapter and can be used as a quick reference when setting up your Roland DXY machine.</p>
+                <img src="References/Dip switch setup.svg" alt="Roland DXY dip switch setup compatible with CH340 USB to serial adapter" class="machine-setup-diagram">
+            </div>
+            <div class="modal-footer">
+                <div class="settings-footer-actions">
+                    <button id="btn-machine-setup-ok" class="btn btn-primary">OK</button>
                 </div>
             </div>
         </div>

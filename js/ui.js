@@ -51,6 +51,7 @@ class UIController {
         this._bindInput();
         this._bindTools();
         this._bindStartupModal();
+        this._bindMachineSetupHelp();
         this._bindSettings();
         this._bindJog();
         this._bindPatterns();
@@ -756,6 +757,24 @@ class UIController {
             this.app.saveSettings();
             modal.classList.add('hidden');
         };
+    }
+
+    _bindMachineSetupHelp() {
+        const modal = document.getElementById('machine-setup-modal');
+        const btnOpen = document.getElementById('btn-machine-setup-help');
+        const btnOpenFromStartup = document.getElementById('btn-startup-machine-setup');
+        const btnClose = document.getElementById('btn-close-machine-setup');
+        const btnOk = document.getElementById('btn-machine-setup-ok');
+
+        if (!modal) return;
+
+        const openModal = () => modal.classList.remove('hidden');
+        const closeModal = () => modal.classList.add('hidden');
+
+        if (btnOpen) btnOpen.onclick = openModal;
+        if (btnOpenFromStartup) btnOpenFromStartup.onclick = openModal;
+        if (btnClose) btnClose.onclick = closeModal;
+        if (btnOk) btnOk.onclick = closeModal;
     }
 
     showStartupModal() {
