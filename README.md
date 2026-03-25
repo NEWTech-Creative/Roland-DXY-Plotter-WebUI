@@ -4,6 +4,8 @@ Modern browser-based control and creative tooling for Roland DXY plotters.
 
 This project brings a more visual workflow to the Roland DXY series by combining canvas-based drawing tools, HPGL generation, live preview, handwriting generation, image-to-vector conversion, and USB serial streaming in one interface.
 
+![Roland DXY Web Interface](DXY_Web_connect.jpg)
+
 Created by NEWTech Creative.
 
 ## What It Does
@@ -67,18 +69,13 @@ The app also includes a startup/setup help reference for DIP switch configuratio
 
 - [References/Dip switch setup.svg](C:/Users/myles/OneDrive/NEWTech/Roland/WEB interface v2/References/Dip switch setup.svg)
 
-## Running the App
+## Use the App
 
-This project is currently a static browser app.
+The easiest way to use the app is through the live GitHub Pages build:
 
-### Local Use
+[https://newtech-creative.github.io/Roland-DXY-Plotter-WebUI/](https://newtech-creative.github.io/Roland-DXY-Plotter-WebUI/)
 
-1. Clone or download the repository
-2. Open [index.html](C:/Users/myles/OneDrive/NEWTech/Roland/WEB interface v2/index.html) in a Chromium-based browser
-3. Connect your CH340 serial adapter
-4. Use the `Connect USB Serial` button to start a session
-
-For the best experience, use a browser that supports the Web Serial API.
+For the best experience, use a Chromium-based browser with Web Serial support, then connect your CH340 serial adapter and use the `Connect USB Serial` button.
 
 ## Project Structure
 
