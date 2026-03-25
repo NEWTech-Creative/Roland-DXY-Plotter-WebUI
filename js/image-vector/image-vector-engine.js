@@ -168,6 +168,10 @@ class ImageVectorEngine {
         for (let i = 0; i < this.brightnessMap.length; i++) {
             binary[i] = (this.brightnessMap[i] < threshold) ? 1 : 0;
         }
+        const crispArtwork = this._isHighContrastArtwork();
+        const contourOutputStyle = crispArtwork && (params.style || 'curves') === 'curves'
+            ? 'mixed'
+            : (params.style || 'curves');
 
         const visited = new Uint8Array(this.width * this.height);
         for (let y = 1; y < this.height - 1; y++) {
@@ -178,14 +182,16 @@ class ImageVectorEngine {
                         binary[idx - this.width] === 0 || binary[idx + this.width] === 0) {
                         const path = this._traceBoundary(x, y, binary, visited);
                         if (path && path.length > 3) {
-                            let processed = path;
-                            const smoothIters = parseInt(params.smooth || 0);
+                            let processed = crispArtwork ? this._collapsePixelStairSteps(path) : path;
+                            const smoothIters = crispArtwork ? 0 : parseInt(params.smooth || 0);
                             for (let i = 0; i < smoothIters; i++) {
                                 processed = this._smoothPath(processed);
                             }
 
-                            // Base simplification on both simplify slider AND the 'spacing' detail slider
-                            const contourSimplify = Math.max(simplify, (params.spacing || 1) * 0.5);
+                            // Keep crisp logos/text much closer to the source outline.
+                            const contourSimplify = crispArtwork
+                                ? Math.max(0.9, Math.min(1.4, simplify || 0.9))
+                                : Math.max(simplify, (params.spacing || 1) * 0.5);
                             if (contourSimplify > 0) processed = this._simplifyPath(processed, contourSimplify);
 
                             outPaths.push(processed);
@@ -204,7 +210,76 @@ class ImageVectorEngine {
             });
         }
 
-        return outPaths.map(p => this._pointsToSmoothSegments(p, p.forceLineStyle ? 'lines' : (params.style || 'curves')));
+        return outPaths.map(p => this._pointsToSmoothSegments(p, p.forceLineStyle ? 'lines' : contourOutputStyle));
+    }
+
+    _isHighContrastArtwork() {
+        if (!this.brightnessMap || this.brightnessMap.length === 0) return false;
+
+        let dark = 0;
+        let light = 0;
+        let mid = 0;
+        const sampleStep = Math.max(1, Math.floor(this.brightnessMap.length / 12000));
+
+        for (let i = 0; i < this.brightnessMap.length; i += sampleStep) {
+            const b = this.brightnessMap[i];
+            if (b <= 28) dark++;
+            else if (b >= 227) light++;
+            else mid++;
+        }
+
+        const total = dark + light + mid;
+        if (!total) return false;
+
+        const extremeRatio = (dark + light) / total;
+        const midRatio = mid / total;
+        return extremeRatio >= 0.88 && midRatio <= 0.12;
+    }
+
+    _collapsePixelStairSteps(path) {
+        if (!Array.isArray(path) || path.length < 3) return path;
+
+        const cleaned = [path[0]];
+        for (let i = 1; i < path.length; i++) {
+            const prev = cleaned[cleaned.length - 1];
+            const curr = path[i];
+            if (!prev || prev.x !== curr.x || prev.y !== curr.y) {
+                cleaned.push(curr);
+            }
+        }
+
+        if (cleaned.length < 3) return cleaned;
+
+        const collapsed = [cleaned[0]];
+        for (let i = 1; i < cleaned.length - 1; i++) {
+            const a = collapsed[collapsed.length - 1];
+            const b = cleaned[i];
+            const c = cleaned[i + 1];
+            const abx = b.x - a.x;
+            const aby = b.y - a.y;
+            const bcx = c.x - b.x;
+            const bcy = c.y - b.y;
+
+            const collinear = (abx * bcy) === (aby * bcx);
+            if (collinear) {
+                continue;
+            }
+
+            const smallOrthogonalStep =
+                Math.abs(abx) <= 1 && Math.abs(aby) <= 1 &&
+                Math.abs(bcx) <= 1 && Math.abs(bcy) <= 1 &&
+                ((abx === 0 && bcy === 0) || (aby === 0 && bcx === 0));
+
+            const diagonalProgress = Math.abs(c.x - a.x) <= 2 && Math.abs(c.y - a.y) <= 2;
+
+            if (smallOrthogonalStep && diagonalProgress) {
+                continue;
+            }
+
+            collapsed.push(b);
+        }
+        collapsed.push(cleaned[cleaned.length - 1]);
+        return collapsed;
     }
 
     _smoothPath(path) {
@@ -636,27 +711,46 @@ class ImageVectorEngine {
     generateWaves(params) {
         const spacing = params.spacing || 5;
         const amplitude = params.amplitude || 10;
-        const frequency = params.frequency || 0.1;
-        const threshold = params.threshold || 128;
         const paths = [];
-        
         const layerOffset = (spacing / 3) * (this.currentLayerIndex || 0);
+        const rowGap = Math.max(3, spacing);
+        const cellWidth = Math.max(6, spacing * 1.5);
+        const maxCycles = 8;
+        const minCycles = 1;
+        const samplesPerCycle = 10;
 
-        for (let y = layerOffset; y < this.height; y += spacing) {
-            let currentPath = [];
-            for (let x = 0; x < this.width; x += 2) {
-                const b = this.getBrightness(x, y);
-                if (b < threshold) {
-                    const localAmp = amplitude * (1 - b / 255);
-                    const phaseOff = layerOffset * 0.1; 
-                    currentPath.push({ x, y: y + Math.sin(x * frequency + phaseOff) * localAmp });
-                } else {
-                    if (currentPath.length > 1) paths.push(currentPath);
-                    currentPath = [];
+        for (let y = layerOffset; y <= this.height; y += rowGap) {
+            const currentPath = [];
+
+            for (let cellStartX = 0; cellStartX < this.width; cellStartX += cellWidth) {
+                const cellEndX = Math.min(this.width, cellStartX + cellWidth);
+                const sampleX = Math.min(this.width - 1, Math.max(0, Math.round((cellStartX + cellEndX) * 0.5)));
+                const sampleY = Math.min(this.height - 1, Math.max(0, Math.round(y)));
+                const brightness = this.getBrightness(sampleX, sampleY);
+                const darkness = 1 - (brightness / 255);
+                const cycles = Math.max(minCycles, Math.round(minCycles + (darkness * (maxCycles - minCycles))));
+                const localAmplitude = amplitude * darkness;
+                const samples = Math.max(4, cycles * samplesPerCycle);
+
+                for (let i = 0; i <= samples; i++) {
+                    const t = i / samples;
+                    const x = cellStartX + ((cellEndX - cellStartX) * t);
+                    const theta = t * Math.PI * 2 * cycles;
+                    const yOffset = Math.sin(theta) * localAmplitude;
+                    const point = { x, y: y + yOffset };
+
+                    const prev = currentPath[currentPath.length - 1];
+                    if (!prev || Math.abs(prev.x - point.x) > 0.01 || Math.abs(prev.y - point.y) > 0.01) {
+                        currentPath.push(point);
+                    }
                 }
             }
-            if (currentPath.length > 1) paths.push(currentPath);
+
+            if (currentPath.length > 1) {
+                paths.push(currentPath);
+            }
         }
+
         return paths.map(p => this._pointsToSmoothSegments(p, params.style || 'curves'));
     }
 
