@@ -1548,8 +1548,9 @@ h3 {
     backdrop-filter: blur(10px);
     border-right: 1px solid var(--panel-border);
     display: flex;
-    flex-direction: column-reverse;
+    flex-direction: column;
     align-items: center;
+    justify-content: flex-start;
     padding: 10px 0;
     gap: 8px;
     overflow-y: auto;
@@ -1558,9 +1559,16 @@ h3 {
     z-index: 50;
 }
 
+.vis-tool-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    align-items: center;
+}
+
 .vis-bucket-btn {
-    margin-top: auto;
-    margin-bottom: 6px;
+    margin-top: 0;
+    margin-bottom: 0;
     flex-shrink: 0;
     width: 36px;
     height: 36px;
@@ -1570,6 +1578,15 @@ h3 {
 .vis-bucket-btn svg {
     width: 20px;
     height: 20px;
+}
+
+.vis-pen-stack {
+    margin-top: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    align-items: center;
+    width: 100%;
 }
 
 .vis-color-btn {

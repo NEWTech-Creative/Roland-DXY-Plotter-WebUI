@@ -339,6 +339,7 @@ class ImageVectorPanel {
             case 'contour':
                 addS('spacing', 'Path Detail', 1, 10, 2, 0.5);
                 addS('fillSpacing', 'Fill Gap', 2, 25, 8);
+                addS('fillAngle', 'Fill Angle', 0, 180, 45, 1);
                 html += `<div class="form-group iv-compact-group iv-dynamic-group">
                     <label>Path Style</label>
                     <select id="input-iv-style" style="width: 100%;">
@@ -458,6 +459,7 @@ class ImageVectorPanel {
             fill: (document.getElementById('input-iv-fill') || {}).value || 'none',
             style: (document.getElementById('input-iv-style') || {}).value || 'curves',
             fillSpacing: gV('fillSpacing', 8),
+            fillAngle: gV('fillAngle', 45),
             zigzagSize: gV('zigzagSize', 5),
             lineWeight: gV('lineWeight', 30),
             edgeBoost: gV('saSharp', 50)

@@ -9,7 +9,8 @@ class UIController {
             pattern: 'lines',
             spacing: 6,
             angle: 45,
-            pen: 1
+            pen: 1,
+            groupPatterns: true
         };
         this.jogStepSize = 1; // Default Small (1mm)
         this.layoutVersion = 2;
@@ -536,9 +537,15 @@ class UIController {
 
     updateVisualizerPalette() {
         const visPalette = document.getElementById('vis-palette');
-        if (!visPalette) return;
+        const penStack = document.getElementById('vis-pen-stack');
+        if (!visPalette || !penStack) return;
+        const toolStack = document.getElementById('vis-tool-stack');
         const bucketBtn = document.getElementById('btn-fill-bucket');
         visPalette.innerHTML = '';
+        if (toolStack) visPalette.appendChild(toolStack);
+        if (bucketBtn) visPalette.appendChild(bucketBtn);
+        visPalette.appendChild(penStack);
+        penStack.innerHTML = '';
 
         for (let i = 0; i < 8; i++) {
             const btn = document.createElement('div');
@@ -568,10 +575,8 @@ class UIController {
                 this.saveWorkspaceState();
             });
 
-            visPalette.appendChild(btn);
+            penStack.appendChild(btn);
         }
-
-        if (bucketBtn) visPalette.appendChild(bucketBtn);
         this.refreshFillBucketPenOptions();
     }
 
@@ -905,6 +910,7 @@ class UIController {
         const inputAngle = document.getElementById('input-fill-angle');
         const valAngle = document.getElementById('val-fill-angle');
         const selPen = document.getElementById('sel-fill-pen');
+        const inputGroupPatterns = document.getElementById('input-fill-group-patterns');
 
         if (!menu) return;
 
@@ -933,6 +939,12 @@ class UIController {
             selPen.value = String(this.fillBucketSettings.pen);
             selPen.onchange = () => {
                 this.fillBucketSettings.pen = parseInt(selPen.value, 10) || 1;
+            };
+        }
+        if (inputGroupPatterns) {
+            inputGroupPatterns.checked = this.fillBucketSettings.groupPatterns !== false;
+            inputGroupPatterns.onchange = () => {
+                this.fillBucketSettings.groupPatterns = inputGroupPatterns.checked;
             };
         }
         if (btnClose) btnClose.onclick = () => menu.classList.add('hidden');
@@ -1203,6 +1215,7 @@ class UIController {
 
     applyPattern() {
         if (this.app.canvas.patternPreviewPaths.length > 0) {
+            this.app.canvas.ensureUndoCheckpoint();
             this.app.canvas.paths.push(...this.app.canvas.patternPreviewPaths);
             this.app.canvas.patternPreviewPaths = [];
             this.app.canvas.selectedPaths = [];

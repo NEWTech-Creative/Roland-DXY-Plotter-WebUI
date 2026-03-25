@@ -295,32 +295,6 @@
                                 </label>
                             </div>
 
-                            <button class="tool-btn active" title="Select (Escape)" data-tool="select"><svg width="16"
-                                    height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                    <path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z" />
-                                </svg></button>
-                            <button class="tool-btn" title="Add Text" data-tool="text"><svg width="16" height="16"
-                                    viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                    <polyline points="4 7 4 4 20 4 20 7" />
-                                    <line x1="9" y1="20" x2="15" y2="20" />
-                                    <line x1="12" y1="4" x2="12" y2="20" />
-                                </svg></button>
-                            <button class="tool-btn" title="Shapes (Hold to change)" data-tool="shape"
-                                id="btn-draw-shape"><svg width="16" height="16" viewBox="0 0 24 24" fill="none"
-                                    stroke="currentColor" stroke-width="2">
-                                    <circle cx="12" cy="12" r="10" />
-                                </svg></button>
-                            <button class="tool-btn" title="Edit Nodes (Points)" data-tool="node"><svg width="16"
-                                    height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                    <path d="M5 5h4v4H5z" />
-                                    <path d="M15 5h4v4h-4z" />
-                                    <path d="M5 15h4v4H5z" />
-                                    <path d="M15 15h4v4h-4z" />
-                                    <line x1="9" y1="7" x2="15" y2="7" />
-                                    <line x1="9" y1="17" x2="15" y2="17" />
-                                    <line x1="7" y1="9" x2="7" y2="15" />
-                                    <line x1="17" y1="9" x2="17" y2="15" />
-                                </svg></button>
                             <div class="vis-toolbar-overflow">
                                 <button class="tool-btn vis-toolbar-overflow-btn hidden" id="btn-vis-toolbar-more" title="More tools">
                                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -335,6 +309,34 @@
                     </div>
                     <div class="panel-body canvas-wrapper">
                         <div class="vis-palette" id="vis-palette">
+                            <div class="vis-tool-stack" id="vis-tool-stack">
+                                <button class="tool-btn active" title="Select (Escape)" data-tool="select"><svg width="16"
+                                        height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z" />
+                                    </svg></button>
+                                <button class="tool-btn" title="Add Text" data-tool="text"><svg width="16" height="16"
+                                        viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <polyline points="4 7 4 4 20 4 20 7" />
+                                        <line x1="9" y1="20" x2="15" y2="20" />
+                                        <line x1="12" y1="4" x2="12" y2="20" />
+                                    </svg></button>
+                                <button class="tool-btn" title="Shapes (Hold to change)" data-tool="shape"
+                                    id="btn-draw-shape"><svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+                                        stroke="currentColor" stroke-width="2">
+                                        <circle cx="12" cy="12" r="10" />
+                                    </svg></button>
+                                <button class="tool-btn" title="Edit Nodes (Points)" data-tool="node"><svg width="16"
+                                        height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M5 5h4v4H5z" />
+                                        <path d="M15 5h4v4h-4z" />
+                                        <path d="M5 15h4v4H5z" />
+                                        <path d="M15 15h4v4h-4z" />
+                                        <line x1="9" y1="7" x2="15" y2="7" />
+                                        <line x1="9" y1="17" x2="15" y2="17" />
+                                        <line x1="7" y1="9" x2="7" y2="15" />
+                                        <line x1="17" y1="9" x2="17" y2="15" />
+                                    </svg></button>
+                            </div>
                             <button class="tool-btn vis-bucket-btn" id="btn-fill-bucket" data-tool="bucket" title="Pattern Fill Bucket">
                                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                     <path d="M7 11l5-5 7 7-5 5z" />
@@ -342,7 +344,7 @@
                                     <path d="M14 19c0 1.7 1.3 3 3 3s3-1.3 3-3c0-1.2-.8-2.3-2-3.2-.7-.5-1.1-1.1-1.4-1.8-.2-.3-.7-.3-.9 0-.5 1.1-1.2 1.9-2 2.7-.4.4-.7 1-.7 1.3z" />
                                 </svg>
                             </button>
-                            <!-- Populated by JS -->
+                            <div class="vis-pen-stack" id="vis-pen-stack"></div>
                         </div>
                         <div class="canvas-container">
                             <canvas id="plotter-canvas"></canvas>
@@ -851,7 +853,7 @@
                         <img src="Circle logo lines2.svg" alt="NEWTech Creative logo" class="brand-credit-logo">
                         <span>Created by NEWTech Creative</span>
                     </div>
-                    <span class="settings-version">v1.2.0</span>
+                    <span class="settings-version">v1.2.1</span>
                     <a
                         class="btn btn-secondary"
                         href="https://paypal.me/NEWTechCreative"
@@ -930,10 +932,17 @@
                 <select id="sel-fill-pattern">
                     <option value="lines">Lines</option>
                     <option value="crosshatch">Cross Hatch</option>
+                    <option value="worms">Worms</option>
+                    <option value="pixelwave">Pixel Wave</option>
                     <option value="zigzag">Zigzag</option>
                     <option value="curves">Curves</option>
                     <option value="circles">Circles</option>
                     <option value="topography">Topography</option>
+                    <option value="seigaiha">Seigaiha</option>
+                    <option value="asanoha">Asanoha</option>
+                    <option value="samekomon">Same Komon</option>
+                    <option value="sayagata">Sayagata</option>
+                    <option value="kagome">Kagome</option>
                 </select>
             </div>
             <div class="form-group-inline">
@@ -949,6 +958,13 @@
             <div class="form-group-inline">
                 <label>Pen Layer</label>
                 <select id="sel-fill-pen"></select>
+            </div>
+            <div class="form-group-inline">
+                <label>Grouping</label>
+                <label class="panel-toggle-item" style="justify-content: flex-end; gap: 8px; width: 100%;">
+                    <input type="checkbox" id="input-fill-group-patterns" checked>
+                    <span>Group each fill click</span>
+                </label>
             </div>
             <div class="fill-bucket-help">Click inside a closed shape to generate a patterned fill on the selected pen layer.</div>
         </div>

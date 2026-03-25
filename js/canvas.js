@@ -106,6 +106,16 @@ class CanvasManager {
         this.saveCurrentState(); // Also persist to localStorage on edit
     }
 
+    ensureUndoCheckpoint() {
+        const current = JSON.stringify(this.paths);
+        if (this.undoStack.length === 0 || this.undoStack[this.undoStack.length - 1] !== current) {
+            this.undoStack.push(current);
+            this.redoStack = [];
+            if (this.undoStack.length > this.maxUndo) this.undoStack.shift();
+            this.saveCurrentState();
+        }
+    }
+
     saveCurrentState() {
         try {
             localStorage.setItem('canvasBackup', JSON.stringify(this.paths));
@@ -1554,83 +1564,172 @@ class CanvasManager {
         };
     }
 
-    getFillRegion(path, pathIdx = -1) {
-        const baseRegion = this.getBaseFillRegion(path);
-        if (!baseRegion) return null;
-
-        const holes = [];
+    getClosedFillRegions() {
+        const regions = [];
         for (let i = 0; i < this.paths.length; i++) {
-            if (i === pathIdx) continue;
-            const candidate = this.paths[i];
-            if (candidate?.generatedBy === 'bucket-fill') continue;
-            const candidateRegion = this.getBaseFillRegion(candidate);
-            if (!candidateRegion) continue;
+            const path = this.paths[i];
+            if (path?.generatedBy === 'bucket-fill') continue;
+            const region = this.getBaseFillRegion(path);
+            if (region) regions.push({ ...region, pathIdx: i, path });
+        }
+        return regions;
+    }
 
-            const representative = candidateRegion.polygon[0];
-            if (!representative) continue;
-            if (!baseRegion.contains(representative.x, representative.y)) continue;
+    getFillSignatureAt(x, y, regions) {
+        return regions
+            .filter(region => region.contains(x, y))
+            .map(region => region.pathIdx)
+            .sort((a, b) => a - b);
+    }
 
-            const corners = [
-                { x: candidateRegion.box.minX, y: candidateRegion.box.minY },
-                { x: candidateRegion.box.maxX, y: candidateRegion.box.minY },
-                { x: candidateRegion.box.maxX, y: candidateRegion.box.maxY },
-                { x: candidateRegion.box.minX, y: candidateRegion.box.maxY }
-            ];
-            if (corners.every(corner => baseRegion.contains(corner.x, corner.y))) {
-                holes.push(candidateRegion);
-            }
+    getFillSignatureKey(signature) {
+        return Array.isArray(signature) ? signature.join('|') : '';
+    }
+
+    getCompositeFillRegionAt(x, y) {
+        const regions = this.getClosedFillRegions();
+        if (!regions.length) return null;
+
+        const signature = this.getFillSignatureAt(x, y, regions);
+        if (!signature.length) return null;
+
+        const targetKey = this.getFillSignatureKey(signature);
+        const signatureRegions = regions.filter(region => signature.includes(region.pathIdx));
+        const intersectionBox = signatureRegions.reduce((box, region) => {
+            if (!box) return { ...region.box };
+            return {
+                minX: Math.max(box.minX, region.box.minX),
+                minY: Math.max(box.minY, region.box.minY),
+                maxX: Math.min(box.maxX, region.box.maxX),
+                maxY: Math.min(box.maxY, region.box.maxY)
+            };
+        }, null);
+
+        const box = intersectionBox && intersectionBox.minX <= intersectionBox.maxX && intersectionBox.minY <= intersectionBox.maxY
+            ? intersectionBox
+            : { ...signatureRegions[0].box };
+
+        const spacing = this.app?.ui?.fillBucketSettings?.spacing || 6;
+        const zoomFactor = Math.max(1, this.viewZoom || 1);
+        const cellSize = Math.max(0.08, Math.min(1.2, spacing / Math.max(4, zoomFactor * 3)));
+        const cols = Math.max(1, Math.ceil((box.maxX - box.minX) / cellSize));
+        const rows = Math.max(1, Math.ceil((box.maxY - box.minY) / cellSize));
+        const targetCells = new Set();
+        const visited = new Set();
+        const queue = [];
+        const toCellCoord = (px, py) => ({
+            cx: Math.max(0, Math.min(cols - 1, Math.floor((px - box.minX) / cellSize))),
+            cy: Math.max(0, Math.min(rows - 1, Math.floor((py - box.minY) / cellSize)))
+        });
+        const toKey = (cx, cy) => `${cx},${cy}`;
+        const inBounds = (cx, cy) => cx >= 0 && cy >= 0 && cx < cols && cy < rows;
+        const cellCenter = (cx, cy) => ({
+            x: box.minX + ((cx + 0.5) * cellSize),
+            y: box.minY + ((cy + 0.5) * cellSize)
+        });
+        const matchesTarget = (cx, cy) => {
+            const center = cellCenter(cx, cy);
+            return this.getFillSignatureKey(this.getFillSignatureAt(center.x, center.y, regions)) === targetKey;
+        };
+
+        const startCell = toCellCoord(x, y);
+        if (!matchesTarget(startCell.cx, startCell.cy)) return null;
+        queue.push(startCell);
+
+        while (queue.length > 0) {
+            const { cx, cy } = queue.shift();
+            const key = toKey(cx, cy);
+            if (visited.has(key)) continue;
+            visited.add(key);
+            if (!matchesTarget(cx, cy)) continue;
+
+            targetCells.add(key);
+
+            [
+                { cx: cx + 1, cy },
+                { cx: cx - 1, cy },
+                { cx, cy: cy + 1 },
+                { cx, cy: cy - 1 }
+            ].forEach(next => {
+                if (!inBounds(next.cx, next.cy)) return;
+                const nextKey = toKey(next.cx, next.cy);
+                if (!visited.has(nextKey)) queue.push(next);
+            });
         }
 
+        if (!targetCells.size) return null;
+
+        let minCellX = cols - 1;
+        let maxCellX = 0;
+        let minCellY = rows - 1;
+        let maxCellY = 0;
+        targetCells.forEach(key => {
+            const [cxRaw, cyRaw] = key.split(',');
+            const cx = parseInt(cxRaw, 10);
+            const cy = parseInt(cyRaw, 10);
+            if (cx < minCellX) minCellX = cx;
+            if (cx > maxCellX) maxCellX = cx;
+            if (cy < minCellY) minCellY = cy;
+            if (cy > maxCellY) maxCellY = cy;
+        });
+
         return {
-            ...baseRegion,
-            holes,
-            contains: (x, y) => {
-                if (!baseRegion.contains(x, y)) return false;
-                return !holes.some(hole => hole.contains(x, y));
+            box: {
+                minX: box.minX + (minCellX * cellSize),
+                minY: box.minY + (minCellY * cellSize),
+                maxX: box.minX + ((maxCellX + 1) * cellSize),
+                maxY: box.minY + ((maxCellY + 1) * cellSize)
+            },
+            gridOriginX: box.minX,
+            gridOriginY: box.minY,
+            signature,
+            signatureKey: targetKey,
+            primaryPathIdx: signature[signature.length - 1],
+            cellSize,
+            fillCells: targetCells,
+            contains: (px, py) => {
+                if (px < box.minX || px > box.maxX || py < box.minY || py > box.maxY) return false;
+                const { cx, cy } = toCellCoord(px, py);
+                return targetCells.has(toKey(cx, cy));
             }
         };
     }
 
     getFillTargetAt(xMM, yMM) {
-        for (let i = this.paths.length - 1; i >= 0; i--) {
-            const path = this.paths[i];
-            const region = this.getFillRegion(path, i);
-            if (!region) continue;
-            if (region.contains(xMM, yMM)) return { path, pathIdx: i, region };
-        }
-        return null;
+        const region = this.getCompositeFillRegionAt(xMM, yMM);
+        if (!region) return null;
+        const pathIdx = region.primaryPathIdx;
+        return {
+            pathIdx,
+            path: pathIdx > -1 ? this.paths[pathIdx] : null,
+            region
+        };
     }
 
     drawBucketHoverPreview(mmToPx) {
-        if (!this.bucketHoverRegion || !Array.isArray(this.bucketHoverRegion.polygon) || this.bucketHoverRegion.polygon.length < 3) return;
-
         this.ctx.save();
         this.ctx.fillStyle = 'rgba(96, 165, 250, 0.18)';
         this.ctx.strokeStyle = 'rgba(96, 165, 250, 0.65)';
         this.ctx.lineWidth = 1.5 / this.viewZoom;
 
-        this.ctx.beginPath();
-        this.ctx.moveTo(this.bucketHoverRegion.polygon[0].x * mmToPx, this.bucketHoverRegion.polygon[0].y * mmToPx);
-        for (let i = 1; i < this.bucketHoverRegion.polygon.length; i++) {
-            const pt = this.bucketHoverRegion.polygon[i];
-            this.ctx.lineTo(pt.x * mmToPx, pt.y * mmToPx);
-        }
-        this.ctx.closePath();
-
-        if (Array.isArray(this.bucketHoverRegion.holes)) {
-            this.bucketHoverRegion.holes.forEach(hole => {
-                if (!Array.isArray(hole.polygon) || hole.polygon.length < 3) return;
-                this.ctx.moveTo(hole.polygon[0].x * mmToPx, hole.polygon[0].y * mmToPx);
-                for (let i = 1; i < hole.polygon.length; i++) {
-                    const pt = hole.polygon[i];
-                    this.ctx.lineTo(pt.x * mmToPx, pt.y * mmToPx);
-                }
-                this.ctx.closePath();
+        if (this.bucketHoverRegion?.fillCells && this.bucketHoverRegion?.cellSize) {
+            const cellSize = this.bucketHoverRegion.cellSize;
+            this.bucketHoverRegion.fillCells.forEach(key => {
+                const [cxRaw, cyRaw] = key.split(',');
+                const cx = parseInt(cxRaw, 10);
+                const cy = parseInt(cyRaw, 10);
+                const x = this.bucketHoverRegion.gridOriginX + (cx * cellSize);
+                const y = this.bucketHoverRegion.gridOriginY + (cy * cellSize);
+                this.ctx.fillRect(x * mmToPx, y * mmToPx, cellSize * mmToPx, cellSize * mmToPx);
             });
+        } else if (this.bucketHoverRegion?.box) {
+            this.ctx.fillRect(
+                this.bucketHoverRegion.box.minX * mmToPx,
+                this.bucketHoverRegion.box.minY * mmToPx,
+                (this.bucketHoverRegion.box.maxX - this.bucketHoverRegion.box.minX) * mmToPx,
+                (this.bucketHoverRegion.box.maxY - this.bucketHoverRegion.box.minY) * mmToPx
+            );
         }
-
-        this.ctx.fill('evenodd');
-        this.ctx.stroke();
         this.ctx.restore();
     }
 
@@ -1655,16 +1754,79 @@ class CanvasManager {
         const sampleStep = Math.max(0.6, Math.min(1.5, spacing / 3));
         const created = [];
 
+        if (variant === 'worms') {
+            const period = Math.max(spacing * 1.6, 1.6);
+            const amplitude = spacing * 0.55;
+            const unitGap = Math.max(0.2, period * 0.18);
+            for (let v = minV; v <= maxV; v += spacing) {
+                let u = minU;
+                let toggle = false;
+                while (u < maxU) {
+                    const startU = u;
+                    const endU = Math.min(maxU, startU + period - unitGap);
+                    const midU = startU + ((endU - startU) * 0.5);
+                    const targetV = toggle ? (v - amplitude) : (v + amplitude);
+                    const points = [
+                        toWorld(startU, v),
+                        toWorld(midU, v),
+                        toWorld(midU, targetV),
+                        toWorld(endU, targetV)
+                    ];
+                    created.push(...this.clipPolylineToRegion(points, region, options.pen || 1, 'worms'));
+                    toggle = !toggle;
+                    u += period;
+                }
+            }
+            return created;
+        }
+
+        if (variant === 'pixelwave') {
+            const period = Math.max(spacing * 1.4, 1.4);
+            const amplitude = spacing * 0.38;
+            let rowIndex = 0;
+            for (let v = minV; v <= maxV; v += spacing, rowIndex++) {
+                const points = [];
+                let u = minU + ((rowIndex % 2) * (period * 0.5));
+                let currentV = v;
+                let toggle = rowIndex % 2 === 1;
+                points.push(toWorld(u, currentV));
+                while (u < maxU) {
+                    const nextU = Math.min(maxU, u + period);
+                    points.push(toWorld(nextU, currentV));
+                    if (nextU >= maxU) break;
+                    currentV = toggle ? (v - amplitude) : (v + amplitude);
+                    points.push(toWorld(nextU, currentV));
+                    toggle = !toggle;
+                    u = nextU;
+                }
+                created.push(...this.clipPolylineToRegion(points, region, options.pen || 1, 'pixelwave'));
+            }
+            return created;
+        }
+
+        if (variant === 'zigzag') {
+            const stepX = Math.max(0.8, spacing);
+            const amplitude = Math.max(0.4, stepX * 0.5);
+            for (let v = minV - amplitude; v <= maxV + amplitude; v += spacing) {
+                const points = [];
+                let zig = true;
+                for (let u = minU; u <= maxU; u += stepX) {
+                    const pointV = zig ? (v - amplitude) : (v + amplitude);
+                    points.push(toWorld(u, pointV));
+                    zig = !zig;
+                }
+                if (points.length >= 2) {
+                    created.push(...this.clipPolylineToRegion(points, region, options.pen || 1, 'zigzag'));
+                }
+            }
+            return created;
+        }
+
         for (let v = minV; v <= maxV; v += spacing) {
             let run = [];
             for (let u = minU; u <= maxU; u += sampleStep) {
                 let offsetV = v;
-                if (variant === 'zigzag') {
-                    const period = Math.max(spacing * 1.6, 2);
-                    const wave = ((u / period) % 1 + 1) % 1;
-                    const triangle = wave < 0.5 ? (wave * 2) : (2 - wave * 2);
-                    offsetV = v + ((triangle - 0.5) * spacing * 0.7);
-                } else if (variant === 'curves') {
+                if (variant === 'curves') {
                     offsetV = v + Math.sin(u / Math.max(spacing * 1.8, 1)) * spacing * 0.35;
                 } else if (variant === 'topography') {
                     offsetV = v + Math.sin((u / Math.max(spacing * 2.8, 1)) + (v / Math.max(spacing * 2.4, 1))) * spacing * 0.28;
@@ -1722,6 +1884,340 @@ class CanvasManager {
         return created;
     }
 
+    findRegionBoundaryPoint(region, insidePoint, outsidePoint, iterations = 12) {
+        let inside = { ...insidePoint };
+        let outside = { ...outsidePoint };
+        for (let i = 0; i < iterations; i++) {
+            const mid = {
+                x: (inside.x + outside.x) / 2,
+                y: (inside.y + outside.y) / 2
+            };
+            if (region.contains(mid.x, mid.y)) {
+                inside = mid;
+            } else {
+                outside = mid;
+            }
+        }
+        return inside;
+    }
+
+    densifyPolyline(points, maxStep = 1) {
+        if (!Array.isArray(points) || points.length < 2) return points || [];
+        const dense = [points[0]];
+        for (let i = 1; i < points.length; i++) {
+            const prev = points[i - 1];
+            const next = points[i];
+            const distance = Math.hypot(next.x - prev.x, next.y - prev.y);
+            const steps = Math.max(1, Math.ceil(distance / Math.max(0.2, maxStep)));
+            for (let step = 1; step <= steps; step++) {
+                const t = step / steps;
+                dense.push({
+                    x: prev.x + ((next.x - prev.x) * t),
+                    y: prev.y + ((next.y - prev.y) * t)
+                });
+            }
+        }
+        return dense;
+    }
+
+    clipPolylineToRegion(points, region, pen, patternName) {
+        const source = this.densifyPolyline(points, Math.max(0.5, Math.min(2, (region?.cellSize || 1))));
+        if (!Array.isArray(source) || source.length < 2) return [];
+        const runs = [];
+        let run = region.contains(source[0].x, source[0].y) ? [{ ...source[0] }] : [];
+
+        for (let i = 1; i < source.length; i++) {
+            const prev = source[i - 1];
+            const curr = source[i];
+            const prevInside = region.contains(prev.x, prev.y);
+            const currInside = region.contains(curr.x, curr.y);
+
+            if (prevInside && currInside) {
+                run.push({ ...curr });
+                continue;
+            }
+
+            if (prevInside && !currInside) {
+                run.push(this.findRegionBoundaryPoint(region, prev, curr));
+                if (run.length >= 2) {
+                    runs.push({
+                        type: 'polyline',
+                        points: run,
+                        pen: pen || 1,
+                        generatedBy: 'bucket-fill',
+                        fillPattern: patternName
+                    });
+                }
+                run = [];
+                continue;
+            }
+
+            if (!prevInside && currInside) {
+                const entry = this.findRegionBoundaryPoint(region, curr, prev);
+                run = [entry, { ...curr }];
+                continue;
+            }
+        }
+
+        if (run.length >= 2) {
+            runs.push({
+                type: 'polyline',
+                points: run,
+                pen: pen || 1,
+                generatedBy: 'bucket-fill',
+                fillPattern: patternName
+            });
+        }
+        return runs;
+    }
+
+    createSeededNoise2D(seed = 1) {
+        const hash = (x, y) => {
+            const n = Math.sin((x * 127.1) + (y * 311.7) + (seed * 74.7)) * 43758.5453123;
+            return n - Math.floor(n);
+        };
+        const smooth = (t) => t * t * (3 - 2 * t);
+        return (x, y) => {
+            const x0 = Math.floor(x);
+            const y0 = Math.floor(y);
+            const x1 = x0 + 1;
+            const y1 = y0 + 1;
+            const sx = smooth(x - x0);
+            const sy = smooth(y - y0);
+            const n00 = hash(x0, y0);
+            const n10 = hash(x1, y0);
+            const n01 = hash(x0, y1);
+            const n11 = hash(x1, y1);
+            const ix0 = n00 + ((n10 - n00) * sx);
+            const ix1 = n01 + ((n11 - n01) * sx);
+            return ix0 + ((ix1 - ix0) * sy);
+        };
+    }
+
+    generateTopographyFillPaths(region, options) {
+        const spacing = Math.max(0.2, options.spacing || 6);
+        const gridStep = Math.max(0.35, Math.min(2.2, spacing * 0.5));
+        const width = region.box.maxX - region.box.minX;
+        const height = region.box.maxY - region.box.minY;
+        const cols = Math.max(4, Math.ceil(width / gridStep));
+        const rows = Math.max(4, Math.ceil(height / gridStep));
+        const noise = this.createSeededNoise2D(((region.signatureKey || '').length + 1) * 13);
+        const field = Array.from({ length: rows + 1 }, (_, y) =>
+            Array.from({ length: cols + 1 }, (_, x) => {
+                const nx = x / Math.max(1, cols);
+                const ny = y / Math.max(1, rows);
+                const base = noise(nx * 3.8, ny * 3.8);
+                const detail = noise((nx * 9.5) + 17.2, (ny * 9.5) + 11.4) * 0.28;
+                return Math.max(0, Math.min(1, base * 0.82 + detail));
+            })
+        );
+        const levels = [];
+        const levelCount = Math.max(6, Math.min(80, Math.round(Math.max(width, height) / Math.max(spacing * 1.6, 0.35))));
+        for (let i = 1; i <= levelCount; i++) levels.push(i / (levelCount + 1));
+
+        const interpolate = (p1, p2, v1, v2, level) => {
+            const denom = (v2 - v1) || 0.000001;
+            const t = (level - v1) / denom;
+            return {
+                x: p1.x + ((p2.x - p1.x) * t),
+                y: p1.y + ((p2.y - p1.y) * t)
+            };
+        };
+
+        const created = [];
+        levels.forEach(level => {
+            for (let y = 0; y < rows; y++) {
+                for (let x = 0; x < cols; x++) {
+                    const x0 = region.box.minX + (x * gridStep);
+                    const y0 = region.box.minY + (y * gridStep);
+                    const x1 = Math.min(region.box.maxX, x0 + gridStep);
+                    const y1 = Math.min(region.box.maxY, y0 + gridStep);
+                    const corners = [
+                        { x: x0, y: y0, v: field[y][x] },
+                        { x: x1, y: y0, v: field[y][x + 1] },
+                        { x: x1, y: y1, v: field[y + 1][x + 1] },
+                        { x: x0, y: y1, v: field[y + 1][x] }
+                    ];
+                    const edgePairs = [
+                        [corners[0], corners[1]],
+                        [corners[1], corners[2]],
+                        [corners[2], corners[3]],
+                        [corners[3], corners[0]]
+                    ];
+                    const intersections = [];
+                    edgePairs.forEach(([a, b]) => {
+                        if ((a.v < level && b.v >= level) || (a.v >= level && b.v < level)) {
+                            intersections.push(interpolate(a, b, a.v, b.v, level));
+                        }
+                    });
+                    if (intersections.length === 2) {
+                        const mid = {
+                            x: (intersections[0].x + intersections[1].x) / 2,
+                            y: (intersections[0].y + intersections[1].y) / 2
+                        };
+                        if (region.contains(mid.x, mid.y)) {
+                            created.push({
+                                type: 'polyline',
+                                points: intersections,
+                                pen: options.pen || 1,
+                                generatedBy: 'bucket-fill',
+                                fillPattern: 'topography'
+                            });
+                        }
+                    } else if (intersections.length === 4) {
+                        const pairs = [
+                            [intersections[0], intersections[1]],
+                            [intersections[2], intersections[3]]
+                        ];
+                        pairs.forEach(pair => {
+                            const mid = {
+                                x: (pair[0].x + pair[1].x) / 2,
+                                y: (pair[0].y + pair[1].y) / 2
+                            };
+                            if (region.contains(mid.x, mid.y)) {
+                                created.push({
+                                    type: 'polyline',
+                                    points: pair,
+                                    pen: options.pen || 1,
+                                    generatedBy: 'bucket-fill',
+                                    fillPattern: 'topography'
+                                });
+                            }
+                        });
+                    }
+                }
+            }
+        });
+
+        return created;
+    }
+
+    generateArcPatternFill(region, options, patternName) {
+        const spacing = Math.max(1.2, options.spacing || 6);
+        const radius = spacing;
+        const stepX = radius * 2;
+        const stepY = radius * 0.9;
+        const created = [];
+        for (let row = 0, y = region.box.minY; y <= region.box.maxY + radius; row++, y += stepY) {
+            const offset = row % 2 === 0 ? 0 : radius;
+            for (let x = region.box.minX - radius; x <= region.box.maxX + radius; x += stepX) {
+                for (let ring = 1; ring <= 3; ring++) {
+                    const ringRadius = (radius * ring) / 3;
+                    const points = [];
+                    for (let i = 0; i <= 18; i++) {
+                        const theta = Math.PI - ((i / 18) * Math.PI);
+                        points.push({
+                            x: x + offset + Math.cos(theta) * ringRadius,
+                            y: y + Math.sin(theta) * ringRadius
+                        });
+                    }
+                    created.push(...this.clipPolylineToRegion(points, region, options.pen || 1, patternName));
+                }
+            }
+        }
+        return created;
+    }
+
+    generateAsanohaFill(region, options) {
+        const spacing = Math.max(3, options.spacing || 6);
+        const size = spacing * 0.72;
+        const created = [];
+        for (let row = 0, y = region.box.minY; y <= region.box.maxY + spacing; row++, y += spacing * 1.5) {
+            const offset = row % 2 === 0 ? 0 : spacing * 0.86;
+            for (let x = region.box.minX; x <= region.box.maxX + spacing; x += spacing * 1.72) {
+                const cx = x + offset;
+                const cy = y;
+                const points = [];
+                for (let i = 0; i < 6; i++) {
+                    const angle = (-Math.PI / 2) + (i * Math.PI / 3);
+                    points.push({ x: cx + Math.cos(angle) * size, y: cy + Math.sin(angle) * size });
+                }
+                for (let i = 0; i < 6; i++) {
+                    const a = points[i];
+                    const b = points[(i + 1) % 6];
+                    const c = points[(i + 2) % 6];
+                    created.push(...this.clipPolylineToRegion([a, b, c], region, options.pen || 1, 'asanoha'));
+                    created.push(...this.clipPolylineToRegion([{ x: cx, y: cy }, b], region, options.pen || 1, 'asanoha'));
+                }
+            }
+        }
+        return created;
+    }
+
+    generateSameKomonFill(region, options) {
+        const spacing = Math.max(1.4, options.spacing || 6);
+        const radius = Math.max(0.25, spacing * 0.16);
+        const created = [];
+        for (let row = 0, y = region.box.minY + spacing / 2; y <= region.box.maxY - spacing / 2; row++, y += spacing * 0.95) {
+            const offset = row % 2 === 0 ? 0 : spacing * 0.5;
+            for (let x = region.box.minX + spacing / 2; x <= region.box.maxX - spacing / 2; x += spacing) {
+                const cx = x + offset;
+                if (!region.contains(cx, y)) continue;
+                created.push({
+                    type: 'circle',
+                    x: cx,
+                    y,
+                    r: radius,
+                    pen: options.pen || 1,
+                    generatedBy: 'bucket-fill',
+                    fillPattern: 'samekomon'
+                });
+            }
+        }
+        return created;
+    }
+
+    generateSayagataFill(region, options) {
+        const spacing = Math.max(3, options.spacing || 6);
+        const cell = spacing * 1.2;
+        const created = [];
+        for (let y = region.box.minY - cell; y <= region.box.maxY + cell; y += cell * 2) {
+            for (let x = region.box.minX - cell; x <= region.box.maxX + cell; x += cell * 2) {
+                const pts = [
+                    { x, y: y + cell },
+                    { x: x + cell, y: y + cell },
+                    { x: x + cell, y },
+                    { x: x + (cell * 2), y },
+                    { x: x + (cell * 2), y: y + cell },
+                    { x: x + cell, y: y + cell },
+                    { x: x + cell, y: y + (cell * 2) },
+                    { x, y: y + (cell * 2) }
+                ];
+                created.push(...this.clipPolylineToRegion(pts, region, options.pen || 1, 'sayagata'));
+            }
+        }
+        return created;
+    }
+
+    generateKagomeFill(region, options) {
+        const spacing = Math.max(3, options.spacing || 6);
+        const size = spacing * 0.9;
+        const stepX = size * Math.sqrt(3);
+        const stepY = size * 1.5;
+        const created = [];
+        for (let row = 0, y = region.box.minY - size; y <= region.box.maxY + size; row++, y += stepY) {
+            const offset = row % 2 === 0 ? 0 : stepX / 2;
+            for (let x = region.box.minX - stepX; x <= region.box.maxX + stepX; x += stepX) {
+                const cx = x + offset;
+                const up = [
+                    { x: cx, y: y - size },
+                    { x: cx - (stepX / 2), y: y + (size / 2) },
+                    { x: cx + (stepX / 2), y: y + (size / 2) },
+                    { x: cx, y: y - size }
+                ];
+                const down = [
+                    { x: cx, y: y + size },
+                    { x: cx - (stepX / 2), y: y - (size / 2) },
+                    { x: cx + (stepX / 2), y: y - (size / 2) },
+                    { x: cx, y: y + size }
+                ];
+                created.push(...this.clipPolylineToRegion(up, region, options.pen || 1, 'kagome'));
+                created.push(...this.clipPolylineToRegion(down, region, options.pen || 1, 'kagome'));
+            }
+        }
+        return created;
+    }
+
     generateBucketFillPaths(region, options) {
         switch (options.pattern) {
             case 'crosshatch':
@@ -1729,6 +2225,10 @@ class CanvasManager {
                     ...this.generateAngledFillPaths(region, options, 'lines'),
                     ...this.generateAngledFillPaths(region, { ...options, angle: (options.angle || 0) + 90 }, 'lines')
                 ];
+            case 'worms':
+                return this.generateAngledFillPaths(region, options, 'worms');
+            case 'pixelwave':
+                return this.generateAngledFillPaths(region, options, 'pixelwave');
             case 'zigzag':
                 return this.generateAngledFillPaths(region, options, 'zigzag');
             case 'curves':
@@ -1736,7 +2236,17 @@ class CanvasManager {
             case 'circles':
                 return this.generateCircleFillPaths(region, options);
             case 'topography':
-                return this.generateAngledFillPaths(region, options, 'topography');
+                return this.generateTopographyFillPaths(region, options);
+            case 'seigaiha':
+                return this.generateArcPatternFill(region, options, 'seigaiha');
+            case 'asanoha':
+                return this.generateAsanohaFill(region, options);
+            case 'samekomon':
+                return this.generateSameKomonFill(region, options);
+            case 'sayagata':
+                return this.generateSayagataFill(region, options);
+            case 'kagome':
+                return this.generateKagomeFill(region, options);
             case 'lines':
             default:
                 return this.generateAngledFillPaths(region, options, 'lines');
@@ -1750,17 +2260,19 @@ class CanvasManager {
             return false;
         }
 
-        const options = this.app?.ui?.fillBucketSettings || { pattern: 'lines', spacing: 6, angle: 45, pen: 1 };
+        const options = this.app?.ui?.fillBucketSettings || { pattern: 'lines', spacing: 6, angle: 45, pen: 1, groupPatterns: true };
         const fillPaths = this.generateBucketFillPaths(target.region, options);
         if (!Array.isArray(fillPaths) || fillPaths.length === 0) {
             if (this.app?.ui) this.app.ui.logToConsole('System: No fill paths were generated for that area.');
             return false;
         }
 
-        const groupId = `fill_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+        this.ensureUndoCheckpoint();
+        const groupId = options.groupPatterns === false ? null : `fill_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
         fillPaths.forEach(path => {
-            path.groupId = groupId;
-            path.parentGroupId = target.path.groupId || null;
+            if (groupId) path.groupId = groupId;
+            else delete path.groupId;
+            delete path.parentGroupId;
             this.paths.push(path);
         });
         this.selectedPaths = fillPaths.map((_, index) => this.paths.length - fillPaths.length + index);

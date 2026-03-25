@@ -196,7 +196,7 @@ class ImageVectorEngine {
         }
 
         if (fill !== 'none') {
-            const fillPaths = this._generateFillPatterns(binary, fill, fillSpacing, params.zigzagSize);
+            const fillPaths = this._generateFillPatterns(binary, fill, fillSpacing, params.zigzagSize, params.fillAngle || 45);
             fillPaths.forEach(p => {
                 let processed = p;
                 if (simplify > 0 && !p.forceLineStyle) processed = this._simplifyPath(processed, simplify);
@@ -325,17 +325,85 @@ class ImageVectorEngine {
         return Math.sqrt((p.x - (v.x + t * (w.x - v.x))) ** 2 + (p.y - (v.y + t * (w.y - v.y))) ** 2);
     }
 
-    _generateFillPatterns(binary, type, spacing, zigzagSize = 5) {
+    _generateFillPatterns(binary, type, spacing, zigzagSize = 5, fillAngle = 45) {
         const paths = [];
         const step = 2; // Point-to-point step in lines
 
         // Use a grid-based approach to fill the binary 1 areas
-        if (type === 'lines' || type === 'hatch' || type === 'zigzag') {
-            const angles = [45];
-            if (type === 'hatch') angles.push(-45);
+        if (type === 'zigzag') {
+            const rowGap = Math.max(1, spacing);
+            const stepX = Math.max(1, zigzagSize);
+            const amplitude = Math.max(1, zigzagSize * 0.5);
+            const layerOffset = (rowGap / 3) * (this.currentLayerIndex || 0);
+            const angleRad = fillAngle * Math.PI / 180;
+            const dirX = Math.cos(angleRad);
+            const dirY = Math.sin(angleRad);
+            const normalX = -dirY;
+            const normalY = dirX;
+            const centerX = this.width / 2;
+            const centerY = this.height / 2;
+            const maxDistance = Math.ceil(Math.hypot(this.width, this.height));
 
-            // Zigzag needs its own precise stepping to guarantee 90 degree sharp segments at exactly zigzagSize intervals.
-            const zStep = type === 'zigzag' ? zigzagSize : step;
+            for (let offset = -maxDistance + layerOffset; offset <= maxDistance; offset += rowGap) {
+                let runStartT = null;
+                let runEndT = null;
+
+                for (let t = -maxDistance; t <= maxDistance; t += 1) {
+                    const baseX = centerX + (dirX * t) + (normalX * offset);
+                    const baseY = centerY + (dirY * t) + (normalY * offset);
+                    const x = Math.round(baseX);
+                    const y = Math.round(baseY);
+                    const inside = x >= 0 && x < this.width && y >= 0 && y < this.height && binary[y * this.width + x];
+
+                    if (inside) {
+                        if (runStartT === null) runStartT = t;
+                        runEndT = t;
+                        continue;
+                    }
+
+                    if (runStartT !== null && runEndT !== null && (runEndT - runStartT) >= stepX) {
+                        const points = [];
+                        const alignedStartT = Math.ceil(runStartT / stepX) * stepX;
+                        for (let sampleT = alignedStartT; sampleT <= runEndT; sampleT += stepX) {
+                            const zig = (Math.round(sampleT / stepX) % 2) === 0;
+                            const baseX = centerX + (dirX * sampleT) + (normalX * offset);
+                            const baseY = centerY + (dirY * sampleT) + (normalY * offset);
+                            points.push({
+                                x: baseX + (normalX * (zig ? -amplitude : amplitude)),
+                                y: baseY + (normalY * (zig ? -amplitude : amplitude))
+                            });
+                        }
+                        if (points.length >= 2) {
+                            points.forceLineStyle = true;
+                            paths.push(points);
+                        }
+                    }
+                    runStartT = null;
+                    runEndT = null;
+                }
+
+                if (runStartT !== null && runEndT !== null && (runEndT - runStartT) >= stepX) {
+                    const points = [];
+                    const alignedStartT = Math.ceil(runStartT / stepX) * stepX;
+                    for (let sampleT = alignedStartT; sampleT <= runEndT; sampleT += stepX) {
+                        const zig = (Math.round(sampleT / stepX) % 2) === 0;
+                        const baseX = centerX + (dirX * sampleT) + (normalX * offset);
+                        const baseY = centerY + (dirY * sampleT) + (normalY * offset);
+                        points.push({
+                            x: baseX + (normalX * (zig ? -amplitude : amplitude)),
+                            y: baseY + (normalY * (zig ? -amplitude : amplitude))
+                        });
+                    }
+                    if (points.length >= 2) {
+                        points.forceLineStyle = true;
+                        paths.push(points);
+                    }
+                }
+            }
+        } else if (type === 'lines' || type === 'hatch') {
+            const angles = [fillAngle];
+            if (type === 'hatch') angles.push(fillAngle + 90);
+
             for (const angle of angles) {
                 const cos = Math.cos(angle * Math.PI / 180);
                 const sin = Math.sin(angle * Math.PI / 180);
@@ -345,70 +413,30 @@ class ImageVectorEngine {
 
                 for (let d = -this.width - this.height; d < this.width + this.height; d += spacing) {
                     let currentPath = [];
-                    let zigToggle = 1;
-                    let prevBasePoint = null;
-                    let prevShiftedPoint = null;
-                    let prevZigToggle = 1;
-                    for (let t = -this.width - this.height; t < this.width + this.height; t += zStep) {
+                    for (let t = -this.width - this.height; t < this.width + this.height; t += step) {
                         const dOffset = d + layerOffset;
-                        const x = Math.floor(dOffset * cos - t * sin);
-                        const y = Math.floor(dOffset * sin + t * cos);
+                        const baseX = dOffset * cos - t * sin;
+                        const baseY = dOffset * sin + t * cos;
+                        const x = Math.floor(baseX);
+                        const y = Math.floor(baseY);
 
                         if (x >= 0 && x < this.width && y >= 0 && y < this.height && binary[y * this.width + x]) {
-                            if (type === 'zigzag') {
-                                // Build a true orthogonal staircase: along the scan direction,
-                                // then across, then along again. This preserves 90-degree corners.
-                                const offset = zigzagSize / 2;
-                                const shiftedPoint = {
-                                    x: x + (-sin * offset * zigToggle),
-                                    y: y + (cos * offset * zigToggle)
-                                };
-
-                                if (currentPath.length === 0) {
-                                    currentPath.push(shiftedPoint);
-                                } else if (prevBasePoint && prevShiftedPoint) {
-                                    const midBaseX = (prevBasePoint.x + x) / 2;
-                                    const midBaseY = (prevBasePoint.y + y) / 2;
-
-                                    currentPath.push({
-                                        x: midBaseX + (-sin * offset * prevZigToggle),
-                                        y: midBaseY + (cos * offset * prevZigToggle)
-                                    });
-                                    currentPath.push({
-                                        x: midBaseX + (-sin * offset * zigToggle),
-                                        y: midBaseY + (cos * offset * zigToggle)
-                                    });
-                                    currentPath.push(shiftedPoint);
-                                }
-
-                                prevBasePoint = { x, y };
-                                prevShiftedPoint = shiftedPoint;
-                                prevZigToggle = zigToggle;
-                                zigToggle *= -1;
-                            } else {
-                                currentPath.push({ x, y });
-                            }
+                            currentPath.push({ x, y });
                         } else {
                             if (currentPath.length > 1) {
                                 // Efficient perfectly straight lines. Just start and end!
-                                if (type !== 'zigzag' && type !== 'curly') {
+                                if (type !== 'curly') {
                                     currentPath = [currentPath[0], currentPath[currentPath.length - 1]];
                                 }
-                                if (type === 'zigzag') currentPath.forceLineStyle = true;
                                 paths.push(currentPath);
+                                currentPath = [];
                             }
-                            currentPath = [];
-                            prevBasePoint = null;
-                            prevShiftedPoint = null;
-                            prevZigToggle = 1;
-                            zigToggle = 1;
                         }
                     }
                     if (currentPath.length > 1) {
-                        if (type !== 'zigzag' && type !== 'curly') {
+                        if (type !== 'curly') {
                             currentPath = [currentPath[0], currentPath[currentPath.length - 1]];
                         }
-                        if (type === 'zigzag') currentPath.forceLineStyle = true;
                         paths.push(currentPath);
                     }
                 }
