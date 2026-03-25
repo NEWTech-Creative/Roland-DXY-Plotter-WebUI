@@ -36,11 +36,12 @@ class HandwritingVariation {
     apply(strokes, options) {
         const { slant = 0, messiness = 0, characterHeight = 6, style = 'print', glyphChar = '' } = options;
         const isConnectedScript = style === 'cursive';
-        const preserveSharpForm = isConnectedScript && (glyphChar === 's' || glyphChar === 'S');
+        const preserveSharpGlyphs = new Set(['i', 'r', 's', 'v', 'w', 'z', 'I', 'R', 'S', 'V', 'W', 'Z']);
+        const preserveSharpForm = isConnectedScript && preserveSharpGlyphs.has(glyphChar);
 
         // Remap messiness for better control
         const effectiveSlant = isConnectedScript ? Math.max(-7, Math.min(10, slant)) : slant;
-        const m = (messiness || 0) * (isConnectedScript ? 0.055 : 0.15);
+        const m = (messiness || 0) * (isConnectedScript ? 0.03 : 0.15);
 
         // Character-level drift
         const charDriftX = (this.random() - 0.5) * m * (isConnectedScript ? 0.28 : 0.8);
@@ -54,8 +55,8 @@ class HandwritingVariation {
                 // Lean right for positive slant: shift top (y=0) right, baseline (y=1) stays
                 const slantOffset = (1.0 - pt.y) * (effectiveSlant / 45);
 
-                const jitterX = (this.random() - 0.5) * m * (preserveSharpForm ? 0.08 : (isConnectedScript ? 0.14 : 0.5));
-                const jitterY = (this.random() - 0.5) * m * (preserveSharpForm ? 0.06 : (isConnectedScript ? 0.1 : 0.5));
+                const jitterX = (this.random() - 0.5) * m * (preserveSharpForm ? 0.03 : (isConnectedScript ? 0.08 : 0.5));
+                const jitterY = (this.random() - 0.5) * m * (preserveSharpForm ? 0.025 : (isConnectedScript ? 0.06 : 0.5));
 
                 return {
                     x: (pt.x + slantOffset + charDriftX + jitterX) * characterHeight,

@@ -119,19 +119,19 @@ class HandwritingEngine {
         const next = nextStroke[0];
         const dx = next.x - prev.x;
         const dy = next.y - prev.y;
-        const joinThreshold = characterHeight * 0.78;
+        const joinThreshold = characterHeight * 0.62;
 
-        if (dx <= 0 || dx > joinThreshold * 1.8 || Math.abs(dy) > joinThreshold) return [];
+        if (dx <= 0 || dx > joinThreshold * 1.45 || Math.abs(dy) > joinThreshold * 0.7) return [];
 
-        const lift = Math.min(characterHeight * 0.16, Math.abs(dx) * 0.18);
+        const lift = Math.min(characterHeight * 0.09, Math.abs(dx) * 0.1);
         return [
             {
-                x: prev.x + dx * 0.3,
+                x: prev.x + dx * 0.35,
                 y: prev.y - lift
             },
             {
-                x: prev.x + dx * 0.72,
-                y: next.y - lift * 0.45
+                x: prev.x + dx * 0.7,
+                y: next.y - lift * 0.2
             }
         ];
     }
