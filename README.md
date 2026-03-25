@@ -1,14 +1,14 @@
-# Roland DXY Web Interface
+# Roland DXY Plotter Web UI
 
-Modern browser-based control and creative tooling for Roland DXY plotters.
+Browser-based Roland DXY plotter controller and creative HPGL workflow for the Roland DXY-1100, DXY-1200, and DXY-1300 series.
 
-This project brings a more visual workflow to the Roland DXY series by combining canvas-based drawing tools, HPGL generation, live preview, handwriting generation, image-to-vector conversion, and USB serial streaming in one interface.
+This project is a modern Roland DXY controller that combines drawing tools, HPGL generation, live preview, motion simulation, handwriting generation, image-to-vector conversion, and USB serial streaming in one web interface. It is designed for people searching for a Roland DXY web UI, Roland DXY controller, HPGL plotter software, or a browser-based pen plotter workflow using a CH340 USB-to-serial adapter.
 
 ![Roland DXY Web Interface](DXY_Web_connect.jpg)
 
 Created by NEWTech Creative.
 
-## What It Does
+## Roland DXY Controller Features
 
 - Connects to a Roland DXY plotter through a USB-to-serial CH340 adapter
 - Creates and edits vector artwork directly in the browser
@@ -21,7 +21,7 @@ Created by NEWTech Creative.
 
 ## Main Features
 
-### Plotter Control
+### Roland Plotter Control
 
 - Roland DXY connection panel with baud-rate setup
 - Machine jog controls
@@ -54,7 +54,7 @@ Created by NEWTech Creative.
 - Path style controls for curves or straight-line output
 - SVG and raster-based creative vector conversion options
 
-### Preview and Output
+### HPGL Preview and Output
 
 - Visualiser with pen layers and crosshair preview
 - Motion simulation with multiple speed multipliers
@@ -63,19 +63,34 @@ Created by NEWTech Creative.
 
 ## Hardware Notes
 
-This interface is designed around Roland DXY plotters and is intended to work with a USB-to-serial CH340 adapter.
+This interface is designed around Roland DXY pen plotters and is intended to work with a USB-to-serial CH340 adapter.
+
+Compatible search terms and hardware phrases people commonly use include:
+
+- Roland DXY controller
+- Roland DXY-1100 controller
+- Roland DXY-1200 controller
+- Roland DXY-1300 controller
+- Roland DXY plotter software
+- HPGL plotter controller
+- pen plotter web interface
+- CH340 Roland DXY adapter
 
 The app also includes a startup/setup help reference for DIP switch configuration in:
 
 - [References/Dip switch setup.svg](C:/Users/myles/OneDrive/NEWTech/Roland/WEB interface v2/References/Dip switch setup.svg)
 
-## Use the App
+## Use the Roland DXY Web UI
 
 The easiest way to use the app is through the live GitHub Pages build:
 
 [https://newtech-creative.github.io/Roland-DXY-Plotter-WebUI/](https://newtech-creative.github.io/Roland-DXY-Plotter-WebUI/)
 
 For the best experience, use a Chromium-based browser with Web Serial support, then connect your CH340 serial adapter and use the `Connect USB Serial` button.
+
+## Search-Friendly Summary
+
+If you want a modern Roland DXY controller in the browser, this project provides a web-based HPGL workflow for Roland DXY plotters. It is useful for controlling older Roland DXY machines, creating pen plotter artwork, importing logos and vector graphics, generating handwriting, and sending HPGL through a CH340 USB serial connection.
 
 ## Project Structure
 
@@ -102,7 +117,10 @@ For the best experience, use a Chromium-based browser with Web Serial support, t
 
 Built primarily for:
 
-- Roland DXY series plotters
+- Roland DXY-1100
+- Roland DXY-1200
+- Roland DXY-1300
+- Other Roland DXY series plotters
 - Web Serial capable desktop browsers
 - Creative plotting workflows using HPGL
 
