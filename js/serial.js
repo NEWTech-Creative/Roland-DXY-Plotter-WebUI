@@ -79,8 +79,8 @@ class SerialManager {
             this.readLoopPromise = this._startReading();
             this.writer = this.port.writable.getWriter();
 
-            // Initialize plotter
-            this.sendManualCommand('IN;');
+            // Initialize machine
+            await this.sendManualCommand('IN;');
 
         } catch (err) {
             this.app.ui.logToConsole(`Error: ${err.message}`, 'error');
@@ -528,6 +528,18 @@ class SerialManager {
 
         const encoder = new TextEncoder();
         await this.writer.write(encoder.encode(out + '\r\n'));
+    }
+
+    async sendPenUpCommand() {
+        if (!this.writer) return false;
+        await this.sendManualCommand('PU;');
+        return true;
+    }
+
+    async sendPenDownCommand() {
+        if (!this.writer) return false;
+        await this.sendManualCommand('PD;');
+        return true;
     }
 
     // Queue management

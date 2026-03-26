@@ -192,6 +192,18 @@ class HpglParser {
         return commands;
     }
 
+    generateCirclePoints(xMM, yMM, rMM, steps = 72) {
+        const points = [];
+        for (let i = 0; i <= steps; i++) {
+            const angle = (i / steps) * Math.PI * 2;
+            points.push({
+                x: xMM + (Math.cos(angle) * rMM),
+                y: yMM + (Math.sin(angle) * rMM)
+            });
+        }
+        return points;
+    }
+
     getTracePointsForPath(path) {
         if (!path) return [];
         if (path.type !== 'path' || !Array.isArray(path.segments) || path.segments.length === 0) {
@@ -426,6 +438,122 @@ class HpglParser {
 
         hpglCommands.push("SP0;"); // Pen home
         return hpglCommands.join("\n");
+    }
+
+    getExportTracePointsForPath(path) {
+        if (!path) return [];
+        if (path.type === 'circle') {
+            return this.generateCirclePoints(path.x, path.y, path.r);
+        }
+        if (path.type === 'rectangle') {
+            return this.getRectanglePoints(path.x, path.y, path.x + (path.w || 0), path.y + (path.h || 0));
+        }
+        if (path.type === 'text') {
+            return [];
+        }
+        return this.getTracePointsForPath(path);
+    }
+
+    exportGCode(paths) {
+        if (!paths || paths.length === 0) {
+            this.app.ui.logToConsole('System: No paths to export.');
+            return '';
+        }
+
+        const zUp = 5;
+        const zDown = 0;
+        const travelFeed = 3000;
+        const drawFeed = 1200;
+        const plungeFeed = 600;
+        const commands = [
+            'G21',
+            'G90',
+            `G0 Z${zUp}`
+        ];
+
+        paths.forEach(path => {
+            const penCfg = this.app?.ui?.visPenConfig?.[(path.pen || 1) - 1];
+            if (penCfg && penCfg.visible === false) return;
+
+            const tracePoints = this.getExportTracePointsForPath(path);
+            if (!tracePoints || tracePoints.length < 2) return;
+
+            const transformedPoints = this.transformOutputPoints(tracePoints);
+            const first = transformedPoints[0];
+            commands.push(`G0 X${first.x.toFixed(3)} Y${first.y.toFixed(3)} F${travelFeed}`);
+            commands.push(`G1 Z${zDown} F${plungeFeed}`);
+
+            for (let i = 1; i < transformedPoints.length; i++) {
+                const point = transformedPoints[i];
+                commands.push(`G1 X${point.x.toFixed(3)} Y${point.y.toFixed(3)} F${drawFeed}`);
+            }
+
+            commands.push(`G0 Z${zUp}`);
+        });
+
+        commands.push('G0 X0 Y0');
+        return commands.join('\n');
+    }
+
+    exportSVG(paths) {
+        if (!paths || paths.length === 0) {
+            this.app.ui.logToConsole('System: No paths to export.');
+            return '';
+        }
+
+        const bedWidth = this.app?.settings?.bedWidth || this.app?.canvas?.bedWidth || 432;
+        const bedHeight = this.app?.settings?.bedHeight || this.app?.canvas?.bedHeight || 297;
+        const elements = [];
+
+        paths.forEach(path => {
+            const pen = path.pen || 1;
+            const penCfg = this.app?.ui?.visPenConfig?.[pen - 1];
+            if (penCfg && penCfg.visible === false) return;
+
+            const stroke = penCfg?.color || '#000000';
+            const strokeWidth = Math.max(0.1, penCfg?.thickness || 0.3);
+
+            if (path.type === 'circle') {
+                const center = this.transformOutputPoint(path.x, path.y);
+                elements.push(`<circle cx="${center.x.toFixed(3)}" cy="${center.y.toFixed(3)}" r="${(path.r || 0).toFixed(3)}" fill="none" stroke="${stroke}" stroke-width="${strokeWidth.toFixed(3)}" />`);
+                return;
+            }
+
+            if (path.type === 'rectangle') {
+                const points = this.transformOutputPoints(this.getRectanglePoints(path.x, path.y, path.x + (path.w || 0), path.y + (path.h || 0)));
+                elements.push(`<polyline points="${points.map(point => `${point.x.toFixed(3)},${point.y.toFixed(3)}`).join(' ')}" fill="none" stroke="${stroke}" stroke-width="${strokeWidth.toFixed(3)}" />`);
+                return;
+            }
+
+            if (path.type === 'text') {
+                const point = this.transformOutputPoint(path.x, path.y);
+                const safeText = String(path.text || '')
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;')
+                    .replace(/"/g, '&quot;');
+                const rotation = this.transformOutputRotation(path.rotation || 0);
+                elements.push(`<text x="${point.x.toFixed(3)}" y="${point.y.toFixed(3)}" font-size="${(path.fontSize || 10).toFixed(3)}" fill="none" stroke="${stroke}" stroke-width="${Math.max(0.1, strokeWidth * 0.35).toFixed(3)}" transform="rotate(${rotation} ${point.x.toFixed(3)} ${point.y.toFixed(3)})">${safeText}</text>`);
+                return;
+            }
+
+            const points = this.getExportTracePointsForPath(path);
+            if (!points || points.length < 2) return;
+            const transformedPoints = this.transformOutputPoints(points);
+            elements.push(`<polyline points="${transformedPoints.map(point => `${point.x.toFixed(3)},${point.y.toFixed(3)}`).join(' ')}" fill="none" stroke="${stroke}" stroke-width="${strokeWidth.toFixed(3)}" />`);
+        });
+
+        if (elements.length === 0) {
+            this.app.ui.logToConsole('System: No visible geometry to export.');
+            return '';
+        }
+
+        return [
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            `<svg xmlns="http://www.w3.org/2000/svg" version="1.1" viewBox="0 0 ${bedWidth} ${bedHeight}" width="${bedWidth}mm" height="${bedHeight}mm">`,
+            ...elements,
+            '</svg>'
+        ].join('\n');
     }
 
     // Generate HPGL from abstract paths and send to Serial Queue

@@ -582,10 +582,14 @@ body.olive-theme {
 .hw-panel-body {
     gap: 12px !important;
     padding: 12px;
+    overflow: hidden;
+    height: 100%;
 }
 
 .hw-textarea {
     height: 78px !important;
+    width: 100%;
+    resize: vertical;
 }
 
 .hw-layout {
@@ -600,10 +604,7 @@ body.olive-theme {
     flex: 0 0 auto;
     width: auto !important;
     min-width: 0 !important;
-    padding: 12px !important;
-    border: 1px solid var(--panel-border);
-    border-radius: 10px;
-    background: rgba(255, 255, 255, 0.03);
+    gap: 10px;
     overflow: visible !important;
 }
 
@@ -683,12 +684,16 @@ body.olive-theme {
     display: block !important;
     box-sizing: border-box;
     min-height: 100%;
+    padding: 14px;
+    background: #fff;
 }
 
 .hw-preview-placeholder {
     margin-top: 0 !important;
     padding-top: 8px;
     width: 100%;
+    color: #999;
+    text-align: center;
 }
 
 .hw-preview-container svg {
@@ -1223,6 +1228,120 @@ input[type="color"] {
     flex: 1;
     padding: 15px;
     overflow-y: auto;
+}
+
+.compact-tool-panel {
+    gap: 10px;
+    padding: 10px;
+}
+
+.compact-section {
+    margin-bottom: 0;
+    padding: 10px 12px;
+    border-radius: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    background: rgba(255, 255, 255, 0.035);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+.compact-section-soft {
+    background: rgba(255, 255, 255, 0.025);
+}
+
+.compact-divider {
+    margin: 8px 0 12px !important;
+    opacity: 0.55;
+}
+
+.compact-button-row {
+    gap: 8px !important;
+}
+
+.compact-button-row .btn {
+    min-height: 38px;
+}
+
+.compact-preview-shell {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    position: relative;
+    overflow: auto;
+    min-width: 0;
+}
+
+.pattern-panel-body {
+    gap: 10px;
+}
+
+#pattern-controls {
+    padding-top: 8px;
+}
+
+.pattern-panel-body .button-group {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.hw-text-section {
+    padding-bottom: 8px;
+}
+
+.hw-seed-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 6px;
+}
+
+.hw-seed-row .btn {
+    white-space: nowrap;
+    padding: 0 10px;
+}
+
+.iv-panel-body {
+    gap: 10px !important;
+    padding: 10px !important;
+    overflow: hidden;
+    height: 100%;
+}
+
+.iv-controls-section {
+    padding: 10px !important;
+    gap: 10px !important;
+    flex-shrink: 0;
+}
+
+.iv-controls-section > .flex-row:first-child {
+    gap: 8px !important;
+    align-items: end;
+    flex-wrap: wrap;
+}
+
+.iv-controls-section .form-group[style*="margin-bottom: 0"] {
+    margin-bottom: 0 !important;
+}
+
+.iv-action-row .btn {
+    min-height: 38px;
+}
+
+.iv-slider-panel {
+    gap: 6px;
+    padding: 6px;
+    background: rgba(255, 255, 255, 0.025);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 10px;
+}
+
+.iv-compact-group {
+    padding: 6px 8px 5px;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.iv-preview-viewport {
+    border-radius: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 @media (max-width: 900px) {
@@ -2087,6 +2206,11 @@ input[type="range"]::-webkit-slider-thumb:hover {
     .iv-static-params,
     .iv-dynamic-params {
         grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
+    }
+
+    .hw-button-grid,
+    .pattern-panel-body .button-group {
+        grid-template-columns: 1fr !important;
     }
 }
 

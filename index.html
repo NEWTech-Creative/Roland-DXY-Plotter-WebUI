@@ -97,7 +97,12 @@
                             <button id="btn-new" class="btn btn-action">New</button>
                             <button id="btn-upload" class="btn btn-action">Load</button>
                             <button id="btn-save" class="btn btn-action">Save</button>
-                            <button id="btn-export" class="btn btn-action">Export HPGL</button>
+                            <select id="sel-export-format" class="btn btn-action">
+                                <option value="" selected>Export...</option>
+                                <option value="hpgl">Export HPGL</option>
+                                <option value="gcode">Export GCODE</option>
+                                <option value="svg">Export SVG</option>
+                            </select>
                         </div>
                     </div>
                 </div>
@@ -359,21 +364,24 @@
                     <div class="panel-header">
                         <h2>Pattern Generator</h2>
                     </div>
-                    <div class="panel-body">
-                        <div class="form-group">
+                    <div class="panel-body compact-tool-panel pattern-panel-body">
+                        <div class="form-group compact-section">
                             <label>Pattern Type</label>
-                            <select id="sel-pattern-type" disabled>
-                                <option value="none">None (Select an object)</option>
+                            <select id="sel-pattern-type">
+                                <option value="none">None</option>
                                 <option value="radial">Radial Pattern</option>
                                 <option value="grid">Repeat Square (Grid)</option>
                                 <option value="spiral">Spiral Pattern</option>
                                 <option value="staggered">Staggered Repeats</option>
                                 <option value="geometric">Geometric / Symmetrical</option>
+                                <option value="continuousContour">Continuous Contour Loops</option>
                             </select>
                         </div>
 
-                        <div id="pattern-controls" class="hidden">
-                            <hr class="divider" style="margin: 10px 0;">
+                        <div id="pattern-controls" class="hidden compact-section compact-section-soft">
+                            <hr class="divider compact-divider">
+
+                            <div id="pattern-standard-controls">
 
                             <div class="form-group">
                                 <label>How Many: <span id="val-pattern-count">1</span></label>
@@ -408,7 +416,60 @@
                                     value="1.0">
                             </div>
 
-                            <div class="button-group" style="margin-top: 15px;">
+                            </div>
+
+                            <div id="pattern-contour-controls" class="hidden">
+                                <div class="form-group">
+                                    <label>Contour Source</label>
+                                    <select id="sel-pattern-contour-source">
+                                        <option value="preset">Preset Shape</option>
+                                        <option value="selected">Selected Shape</option>
+                                    </select>
+                                </div>
+
+                                <div class="form-group" id="group-pattern-contour-shape">
+                                    <label>Contour Shape</label>
+                                    <select id="sel-pattern-contour-shape">
+                                        <option value="circle">Circle</option>
+                                        <option value="polygon">Polygon</option>
+                                        <option value="star">Star</option>
+                                        <option value="rose">Rose</option>
+                                        <option value="heart">Heart</option>
+                                    </select>
+                                </div>
+
+                                <div class="form-group" id="group-pattern-contour-size">
+                                    <label>Shape Size (mm): <span id="val-pattern-contour-size">120</span></label>
+                                    <input type="range" id="input-pattern-contour-size" min="20" max="320" step="1" value="120">
+                                </div>
+
+                                <div class="form-group">
+                                    <label>Loops: <span id="val-pattern-contour-loops">18</span></label>
+                                    <input type="range" id="input-pattern-contour-loops" min="2" max="120" step="1" value="18">
+                                </div>
+
+                                <div class="form-group">
+                                    <label>Scale Per Loop (%): <span id="val-pattern-contour-scale">6</span></label>
+                                    <input type="range" id="input-pattern-contour-scale" min="-20" max="25" step="1" value="6">
+                                </div>
+
+                                <div class="form-group">
+                                    <label>Spin Per Loop: <span id="val-pattern-contour-spin">12</span>Â°</label>
+                                    <input type="range" id="input-pattern-contour-spin" min="-90" max="90" step="1" value="12">
+                                </div>
+
+                                <div class="form-group">
+                                    <label id="label-pattern-contour-detail">Shape Detail: <span id="val-pattern-contour-detail">6</span></label>
+                                    <input type="range" id="input-pattern-contour-detail" min="3" max="16" step="1" value="6">
+                                </div>
+
+                                <div class="form-group">
+                                    <label id="label-pattern-contour-variation">Shape Variation: <span id="val-pattern-contour-variation">2</span></label>
+                                    <input type="range" id="input-pattern-contour-variation" min="1" max="8" step="1" value="2">
+                                </div>
+                            </div>
+
+                            <div class="button-group compact-button-row">
                                 <button id="btn-apply-pattern" class="btn btn-primary">Apply Pattern</button>
                                 <button id="btn-cancel-pattern" class="btn btn-secondary">Clear Preview</button>
                             </div>
@@ -423,17 +484,15 @@
                     <div class="panel-header">
                         <h2>Handwriting Generator</h2>
                     </div>
-                    <div class="panel-body flex-col hw-panel-body" style="gap: 15px; overflow: hidden; height: 100%;">
+                    <div class="panel-body flex-col hw-panel-body compact-tool-panel">
                         <!-- Full-Width Text Input -->
-                        <div class="form-group" style="margin-bottom: 5px; flex-shrink: 0;">
+                        <div class="form-group compact-section hw-text-section">
                             <label>Text Input</label>
-                            <textarea id="input-hw-text" class="hw-textarea" placeholder="Enter text to generate handwriting..."
-                                style="height: 100px; width: 100%; resize: none;"></textarea>
+                            <textarea id="input-hw-text" class="hw-textarea" placeholder="Enter text to generate handwriting..."></textarea>
                         </div>
 
-                        <div class="hw-layout" style="gap: 12px; flex: 1; min-height: 0; overflow: hidden;">
-                            <div class="button-grid hw-button-grid"
-                                style="gap: 8px; flex-shrink: 0;">
+                        <div class="hw-layout">
+                            <div class="button-grid hw-button-grid compact-button-row">
                                 <button id="btn-hw-generate" class="btn btn-primary">
                                     Generate Preview Line
                                 </button>
@@ -442,13 +501,12 @@
                             </div>
 
                             <!-- Controls Column -->
-                            <div class="hw-controls flex-col"
-                                style="gap: 12px; width: auto; min-width: 0; flex-shrink: 0; overflow-y: auto; padding-right: 5px;">
+                            <div class="hw-controls flex-col compact-section compact-section-soft">
                                 <!-- Row 1: Style & Seed -->
                                 <div class="form-row">
                                     <div class="form-group" style="flex: 1 1 0; min-width: 0;">
                                         <label>Style</label>
-                                        <select id="sel-hw-style" style="width: 100%;">
+                                        <select id="sel-hw-style">
                                             <option value="print">Print</option>
                                             <option value="cursive">Cursive</option>
                                             <option value="architect">Architect</option>
@@ -456,11 +514,9 @@
                                     </div>
                                     <div class="form-group" style="flex: 1 1 0; min-width: 0;">
                                         <label>Seed</label>
-                                        <div style="display: flex; gap: 4px;">
-                                            <input type="number" id="input-hw-seed" value="1234"
-                                                style="flex: 1; min-width: 0;">
-                                            <button id="btn-hw-regenerate" class="btn btn-secondary"
-                                                style="padding: 0 8px;">🎲</button>
+                                        <div class="hw-seed-row">
+                                            <input type="number" id="input-hw-seed" value="1234">
+                                            <button id="btn-hw-regenerate" class="btn btn-secondary">Re-roll</button>
                                         </div>
                                     </div>
                                 </div>
@@ -469,13 +525,11 @@
                                 <div class="form-row hw-slider-row">
                                     <div class="form-group hw-slider-group" style="flex: 1 1 0; min-width: 0;">
                                         <label><span>Slant</span><span id="val-hw-slant">0</span></label>
-                                        <input type="range" id="input-hw-slant" min="-20" max="20" step="1" value="0"
-                                            style="width: 100%;">
+                                        <input type="range" id="input-hw-slant" min="-20" max="20" step="1" value="0">
                                     </div>
                                     <div class="form-group hw-slider-group" style="flex: 1 1 0; min-width: 0;">
                                         <label><span>Mess</span><span id="val-hw-messiness">0</span></label>
-                                        <input type="range" id="input-hw-messiness" min="0" max="5" step="0.1" value="0"
-                                            style="width: 100%;">
+                                        <input type="range" id="input-hw-messiness" min="0" max="5" step="0.1" value="0">
                                     </div>
                                 </div>
 
@@ -484,12 +538,12 @@
                                     <div class="form-group hw-slider-group" style="flex: 1 1 0; min-width: 0;">
                                         <label><span>Height</span><span><span id="val-hw-char-height">6</span>mm</span></label>
                                         <input type="range" id="input-hw-char-height" min="2" max="20" step="0.5"
-                                            value="6" style="width: 100%;">
+                                            value="6">
                                     </div>
                                     <div class="form-group hw-slider-group" style="flex: 1 1 0; min-width: 0;">
                                         <label><span>Line Space</span><span><span id="val-hw-line-spacing">10</span>mm</span></label>
                                         <input type="range" id="input-hw-line-spacing" min="5" max="40" step="1"
-                                            value="10" style="width: 100%;">
+                                            value="10">
                                     </div>
                                 </div>
 
@@ -498,7 +552,7 @@
                                     <div class="form-group hw-slider-group hw-slider-group-full" style="flex: 1 1 0; min-width: 0;">
                                         <label><span>Char Spacing</span><span><span id="val-hw-char-spacing">0</span>mm</span></label>
                                         <input type="range" id="input-hw-char-spacing" min="-2" max="10" step="0.1"
-                                            value="0" style="width: 100%;">
+                                            value="0">
                                     </div>
                                 </div>
 
@@ -506,24 +560,20 @@
                                 <div class="form-row">
                                     <div class="form-group" style="flex: 1 1 0; min-width: 0;">
                                         <label>Page W (mm)</label>
-                                        <input type="number" id="input-hw-width" value="210" step="1"
-                                            style="width: 100%;">
+                                        <input type="number" id="input-hw-width" value="210" step="1">
                                     </div>
                                     <div class="form-group" style="flex: 1 1 0; min-width: 0;">
                                         <label>Page H (mm)</label>
-                                        <input type="number" id="input-hw-height" value="297" step="1"
-                                            style="width: 100%;">
+                                        <input type="number" id="input-hw-height" value="297" step="1">
                                     </div>
                                 </div>
                             </div>
 
                             <!-- Preview Area -->
-                            <div class="hw-preview flex-1"
-                                style="background: rgba(255,255,255,0.05); border: 1px solid var(--border-color); border-radius: 8px; position: relative; overflow: auto; min-width: 0;">
+                            <div class="hw-preview flex-1 compact-preview-shell">
                                 <div id="hw-preview-container"
-                                    class="hw-preview-container"
-                                    style="padding: 15px; background: white; display: block;">
-                                    <div class="hw-preview-placeholder" style="color: #999; margin-top: 0; text-align: center;">Handwriting Preview
+                                    class="hw-preview-container">
+                                    <div class="hw-preview-placeholder">Handwriting Preview
                                         Area</div>
                                 </div>
                             </div>
@@ -538,10 +588,9 @@
                     <div class="panel-header">
                         <h2>Image to Vector</h2>
                     </div>
-                    <div class="panel-body flex-col" style="gap: 0; overflow: hidden; height: 100%; padding: 0;">
+                    <div class="panel-body flex-col compact-tool-panel iv-panel-body">
                         <!-- Controls Section (Top) -->
-                        <div class="iv-controls-section flex-col"
-                            style="padding: 12px; gap: 12px; flex-shrink: 0; border-bottom: 1px solid var(--panel-border); background: rgba(255,255,255,0.02);">
+                        <div class="iv-controls-section flex-col compact-section compact-section-soft">
 
                             <!-- Row 1: Actions & Method -->
                             <div class="flex-row" style="gap: 10px; align-items: flex-end; flex-wrap: wrap;">
@@ -1040,3 +1089,4 @@
 </body>
 
 </html>
+

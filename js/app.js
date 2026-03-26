@@ -48,12 +48,19 @@ class App {
         const modelSelect = document.getElementById('sel-model');
         if (modelSelect) {
             modelSelect.value = this.settings.model || '1200';
+            if (!modelSelect.value) {
+                modelSelect.value = '1200';
+                this.settings.model = '1200';
+            }
         }
+
+        this.applyMachineProfile(false);
+        this.refreshMachineUI();
 
         // Sync canvas with loaded settings
         if (this.settings) {
-            this.canvas.bedWidth = this.settings.bedWidth || 432;
-            this.canvas.bedHeight = this.settings.bedHeight || 297;
+            this.canvas.bedWidth = this.settings.bedWidth || this.getMachineProfile().bedWidth;
+            this.canvas.bedHeight = this.settings.bedHeight || this.getMachineProfile().bedHeight;
             if (this.serial) this.serial.setSpeedDelay(this.settings.speed || 'fast');
         }
 
@@ -71,6 +78,11 @@ class App {
             if (saved) {
                 this.settings = { ...this.settings, ...JSON.parse(saved) };
             }
+            if (!['1100', '1200', '1300'].includes(this.settings.model)) {
+                this.settings.model = '1200';
+                this.settings.bedWidth = 432;
+                this.settings.bedHeight = 297;
+            }
             document.body.className = this.settings.theme;
         } catch (e) {
             // Settings fail
@@ -86,22 +98,83 @@ class App {
         }
     }
 
+    getMachineProfile(model = this.settings.model) {
+        const profiles = {
+            '1100': {
+                id: '1100',
+                label: 'DXY 1100',
+                bedWidth: 432,
+                bedHeight: 297,
+                importExtensions: ['.svg', '.dxf', '.hpgl', '.dxyweb'],
+                commandPlaceholder: 'Enter HPGL command (e.g. PU;)...'
+            },
+            '1200': {
+                id: '1200',
+                label: 'DXY 1200',
+                bedWidth: 432,
+                bedHeight: 297,
+                importExtensions: ['.svg', '.dxf', '.hpgl', '.dxyweb'],
+                commandPlaceholder: 'Enter HPGL command (e.g. PU;)...'
+            },
+            '1300': {
+                id: '1300',
+                label: 'DXY 1300',
+                bedWidth: 432,
+                bedHeight: 297,
+                importExtensions: ['.svg', '.dxf', '.hpgl', '.dxyweb'],
+                commandPlaceholder: 'Enter HPGL command (e.g. PU;)...'
+            }
+        };
+
+        return profiles[model] || profiles['1200'];
+    }
+
+    applyMachineProfile(resetWorkArea = true) {
+        const profile = this.getMachineProfile();
+        if (resetWorkArea) {
+            this.settings.bedWidth = profile.bedWidth;
+            this.settings.bedHeight = profile.bedHeight;
+        } else {
+            if (!Number.isFinite(this.settings.bedWidth)) this.settings.bedWidth = profile.bedWidth;
+            if (!Number.isFinite(this.settings.bedHeight)) this.settings.bedHeight = profile.bedHeight;
+        }
+
+        if (this.canvas) {
+            this.canvas.bedWidth = this.settings.bedWidth;
+            this.canvas.bedHeight = this.settings.bedHeight;
+        }
+    }
+
+    refreshMachineUI() {
+        const profile = this.getMachineProfile();
+        const input = document.getElementById('hpgl-input');
+        const penUpBtn = document.getElementById('btn-pen-up');
+        const penDownBtn = document.getElementById('btn-pen-down');
+
+        if (input) input.placeholder = profile.commandPlaceholder;
+        if (penUpBtn) {
+            penUpBtn.textContent = 'Pen Up';
+            penUpBtn.title = 'Send PU; command';
+        }
+        if (penDownBtn) {
+            penDownBtn.textContent = 'Pen Down';
+            penDownBtn.title = 'Send PD; command';
+        }
+    }
+
     bindEvents() {
         const modelSelect = document.getElementById('sel-model');
         if (modelSelect) {
             modelSelect.addEventListener('change', () => {
                 this.settings.model = modelSelect.value || '1200';
-                // All current DXY profiles default to the same working envelope.
-                this.settings.bedWidth = 432;
-                this.settings.bedHeight = 297;
+                this.applyMachineProfile(true);
+                this.refreshMachineUI();
                 this.saveSettings();
                 if (this.canvas) {
-                    this.canvas.bedWidth = 432;
-                    this.canvas.bedHeight = 297;
                     this.canvas.resize();
                     this.canvas.draw(true);
                 }
-                this.ui.logToConsole(`System: ${this.settings.model} workspace set to 432 x 297 mm.`);
+                this.ui.logToConsole(`System: ${this.getMachineProfile().label} workspace set to ${this.settings.bedWidth} x ${this.settings.bedHeight} mm.`);
             });
         }
 
@@ -116,7 +189,7 @@ class App {
 
         document.getElementById('btn-pen-up').addEventListener('click', () => {
             if (this.serial && this.serial.isConnected) {
-                this.serial.sendManualCommand('PU;');
+                this.serial.sendPenUpCommand();
             } else {
                 this.ui.logToConsole('Error: Printer not connected.', 'error');
             }
@@ -124,7 +197,7 @@ class App {
 
         document.getElementById('btn-pen-down').addEventListener('click', () => {
             if (this.serial && this.serial.isConnected) {
-                this.serial.sendManualCommand('PD;');
+                this.serial.sendPenDownCommand();
             } else {
                 this.ui.logToConsole('Error: Printer not connected.', 'error');
             }
@@ -143,9 +216,10 @@ class App {
 
         // File Loading / Import
         document.getElementById('btn-upload').addEventListener('click', () => {
+            const profile = this.getMachineProfile();
             const input = document.createElement('input');
             input.type = 'file';
-            input.accept = '.svg,.dxf,.hpgl,.dxyweb';
+            input.accept = profile.importExtensions.join(',');
             input.onchange = e => {
                 const file = e.target.files[0];
                 if (!file) return;
@@ -181,19 +255,45 @@ class App {
             input.click();
         });
 
-        document.getElementById('btn-export').addEventListener('click', () => {
-            const hpgl = this.hpgl.exportHPGL(this.canvas.paths);
-            if (hpgl) {
-                const blob = new Blob([hpgl], { type: 'text/plain' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = `plotter_export_${new Date().getTime()}.hpgl`;
-                a.click();
-                URL.revokeObjectURL(url);
-                this.ui.logToConsole('System: HPGL file exported successfully.');
-            }
-        });
+        const exportFormatSelect = document.getElementById('sel-export-format');
+        if (exportFormatSelect) {
+            exportFormatSelect.addEventListener('change', () => {
+                const exportFormat = exportFormatSelect.value;
+                if (!exportFormat) return;
+
+                const exporters = {
+                    hpgl: () => ({
+                        content: this.hpgl.exportHPGL(this.canvas.paths),
+                        extension: 'hpgl',
+                        label: 'HPGL'
+                    }),
+                    gcode: () => ({
+                        content: this.hpgl.exportGCode(this.canvas.paths),
+                        extension: 'gcode',
+                        label: 'GCODE'
+                    }),
+                    svg: () => ({
+                        content: this.hpgl.exportSVG(this.canvas.paths),
+                        extension: 'svg',
+                        label: 'SVG'
+                    })
+                };
+                const exporter = exporters[exportFormat] || exporters.hpgl;
+                const output = exporter();
+                if (output && output.content) {
+                    const mimeType = output.extension === 'svg' ? 'image/svg+xml' : 'text/plain';
+                    const blob = new Blob([output.content], { type: mimeType });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `plotter_export_${new Date().getTime()}.${output.extension}`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                    this.ui.logToConsole(`System: ${output.label} file exported successfully.`);
+                }
+                exportFormatSelect.value = '';
+            });
+        }
 
         document.getElementById('btn-simulate').addEventListener('click', () => {
             this.canvas.startSimulation();
@@ -312,12 +412,19 @@ class App {
 
                 if (data.settings) {
                     this.settings = { ...this.settings, ...data.settings };
+                    if (!['1100', '1200', '1300'].includes(this.settings.model)) {
+                        this.settings.model = '1200';
+                        this.settings.bedWidth = 432;
+                        this.settings.bedHeight = 297;
+                    }
+                    this.applyMachineProfile(false);
                     this.saveSettings();
 
                     // Apply immediate settings
+                    this.refreshMachineUI();
                     if (this.canvas) {
-                        this.canvas.bedWidth = this.settings.bedWidth || 432;
-                        this.canvas.bedHeight = this.settings.bedHeight || 297;
+                        this.canvas.bedWidth = this.settings.bedWidth || this.getMachineProfile().bedWidth;
+                        this.canvas.bedHeight = this.settings.bedHeight || this.getMachineProfile().bedHeight;
                         this.canvas.resize();
                     }
                 }

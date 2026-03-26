@@ -632,6 +632,10 @@ class UIController {
         };
         document.getElementById('btn-pen-goto').onclick = () => {
             if (this.app.serial.isConnected) {
+                if (this.app.isGrblMachine && this.app.isGrblMachine()) {
+                    this.logToConsole('System: Pen slot selection is only used for HPGL pen changers.');
+                    return;
+                }
                 this.app.serial.sendManualCommand(`SP${penIdx};`);
             }
         };
@@ -678,8 +682,8 @@ class UIController {
             selTheme.value = this.app.settings.theme || 'dark-theme';
             if (selHandshake) selHandshake.value = this.app.settings.handshake || 'normal';
             if (selSpeed) selSpeed.value = this.app.settings.speed || 'fast';
-            if (inputBedW) inputBedW.value = this.app.settings.bedWidth || 432;
-            if (inputBedH) inputBedH.value = this.app.settings.bedHeight || 297;
+            if (inputBedW) inputBedW.value = this.app.settings.bedWidth || this.app.getMachineProfile().bedWidth;
+            if (inputBedH) inputBedH.value = this.app.settings.bedHeight || this.app.getMachineProfile().bedHeight;
             if (inputSimOpacity) {
                 inputSimOpacity.value = this.app.settings.simBackgroundOpacity || 0.25;
                 if (valSimOpacity) valSimOpacity.textContent = inputSimOpacity.value;
@@ -758,8 +762,8 @@ class UIController {
             this.forceLayoutSave();
             if (this.app.serial) this.app.serial.setSpeedDelay(this.app.settings.speed || 'fast');
             if (this.app.canvas) {
-                this.app.canvas.bedWidth = this.app.settings.bedWidth || 432;
-                this.app.canvas.bedHeight = this.app.settings.bedHeight || 297;
+                this.app.canvas.bedWidth = this.app.settings.bedWidth || this.app.getMachineProfile().bedWidth;
+                this.app.canvas.bedHeight = this.app.settings.bedHeight || this.app.getMachineProfile().bedHeight;
                 this.app.canvas.resize();
             }
             modal.classList.add('hidden');
@@ -1043,11 +1047,29 @@ class UIController {
     _bindPatterns() {
         const selType = document.getElementById('sel-pattern-type');
         const controls = document.getElementById('pattern-controls');
-        const inputs = ['input-pattern-count', 'input-pattern-spacing', 'input-pattern-direction', 'input-pattern-angle', 'input-pattern-growth', 'input-pattern-spacing-angle'];
+        const inputs = [
+            'input-pattern-count',
+            'input-pattern-spacing',
+            'input-pattern-direction',
+            'input-pattern-angle',
+            'input-pattern-growth',
+            'input-pattern-spacing-angle',
+            'input-pattern-contour-size',
+            'input-pattern-contour-loops',
+            'input-pattern-contour-scale',
+            'input-pattern-contour-spin',
+            'input-pattern-contour-detail',
+            'input-pattern-contour-variation'
+        ];
+        const selects = [
+            'sel-pattern-contour-source',
+            'sel-pattern-contour-shape'
+        ];
 
         selType.onchange = () => {
             if (selType.value === 'none') controls.classList.add('hidden');
             else controls.classList.remove('hidden');
+            this.updatePatternControlVisibility();
             this.updatePatternPreview();
         };
 
@@ -1061,8 +1083,66 @@ class UIController {
             };
         });
 
+        selects.forEach(id => {
+            const el = document.getElementById(id);
+            if (!el) return;
+            el.onchange = () => {
+                this.updatePatternControlVisibility();
+                this.updatePatternPreview();
+            };
+        });
+
         document.getElementById('btn-apply-pattern').onclick = () => this.applyPattern();
         document.getElementById('btn-cancel-pattern').onclick = () => this.clearPatternPreview();
+        this.updatePatternControlVisibility();
+    }
+
+    updatePatternControlVisibility() {
+        const type = document.getElementById('sel-pattern-type')?.value || 'none';
+        const standardControls = document.getElementById('pattern-standard-controls');
+        const contourControls = document.getElementById('pattern-contour-controls');
+        const contourSource = document.getElementById('sel-pattern-contour-source')?.value || 'preset';
+        const shapeGroup = document.getElementById('group-pattern-contour-shape');
+        const sizeGroup = document.getElementById('group-pattern-contour-size');
+        const detailLabel = document.getElementById('label-pattern-contour-detail');
+        const variationLabel = document.getElementById('label-pattern-contour-variation');
+        const shape = document.getElementById('sel-pattern-contour-shape')?.value || 'circle';
+        const detailInput = document.getElementById('input-pattern-contour-detail');
+        const variationInput = document.getElementById('input-pattern-contour-variation');
+
+        if (standardControls) standardControls.classList.toggle('hidden', type === 'continuousContour');
+        if (contourControls) contourControls.classList.toggle('hidden', type !== 'continuousContour');
+        if (shapeGroup) shapeGroup.classList.toggle('hidden', type !== 'continuousContour' || contourSource === 'selected');
+        if (sizeGroup) sizeGroup.classList.toggle('hidden', type !== 'continuousContour' || contourSource === 'selected');
+
+        if (!detailLabel || !variationLabel || !detailInput || !variationInput) return;
+
+        if (shape === 'polygon') {
+            detailLabel.innerHTML = 'Sides: <span id="val-pattern-contour-detail">' + detailInput.value + '</span>';
+            variationLabel.innerHTML = 'Corner Style: <span id="val-pattern-contour-variation">' + variationInput.value + '</span>';
+            variationInput.min = '1';
+            variationInput.max = '8';
+        } else if (shape === 'star') {
+            detailLabel.innerHTML = 'Points: <span id="val-pattern-contour-detail">' + detailInput.value + '</span>';
+            variationLabel.innerHTML = 'Inner Ratio: <span id="val-pattern-contour-variation">' + variationInput.value + '</span>';
+            variationInput.min = '1';
+            variationInput.max = '8';
+        } else if (shape === 'rose') {
+            detailLabel.innerHTML = 'Petals Numerator: <span id="val-pattern-contour-detail">' + detailInput.value + '</span>';
+            variationLabel.innerHTML = 'Petals Denominator: <span id="val-pattern-contour-variation">' + variationInput.value + '</span>';
+            variationInput.min = '1';
+            variationInput.max = '8';
+        } else if (shape === 'heart') {
+            detailLabel.innerHTML = 'Heart Detail: <span id="val-pattern-contour-detail">' + detailInput.value + '</span>';
+            variationLabel.innerHTML = 'Heart Variation: <span id="val-pattern-contour-variation">' + variationInput.value + '</span>';
+            variationInput.min = '1';
+            variationInput.max = '8';
+        } else {
+            detailLabel.innerHTML = 'Lobes / Detail: <span id="val-pattern-contour-detail">' + detailInput.value + '</span>';
+            variationLabel.innerHTML = 'Shape Variation: <span id="val-pattern-contour-variation">' + variationInput.value + '</span>';
+            variationInput.min = '1';
+            variationInput.max = '8';
+        }
     }
 
     _bindPredictedCrosshairToggle() {
@@ -1194,11 +1274,24 @@ class UIController {
 
     updatePatternPreview() {
         const type = document.getElementById('sel-pattern-type').value;
-        if (type === 'none' || this.app.canvas.selectedPaths.length === 0) {
+        if (type === 'none') {
             this.app.canvas.patternPreviewPaths = [];
             this.app.canvas.draw();
             return;
         }
+
+        const contourSource = document.getElementById('sel-pattern-contour-source')?.value || 'preset';
+        if (type !== 'continuousContour' && this.app.canvas.selectedPaths.length === 0) {
+            this.app.canvas.patternPreviewPaths = [];
+            this.app.canvas.draw();
+            return;
+        }
+        if (type === 'continuousContour' && contourSource === 'selected' && this.app.canvas.selectedPaths.length === 0) {
+            this.app.canvas.patternPreviewPaths = [];
+            this.app.canvas.draw();
+            return;
+        }
+
         const params = {
             type,
             count: parseInt(document.getElementById('input-pattern-count').value),
@@ -1206,7 +1299,15 @@ class UIController {
             direction: parseFloat(document.getElementById('input-pattern-direction').value),
             angle: parseFloat(document.getElementById('input-pattern-angle').value),
             growth: parseFloat(document.getElementById('input-pattern-growth').value),
-            spacingAngle: parseFloat(document.getElementById('input-pattern-spacing-angle').value)
+            spacingAngle: parseFloat(document.getElementById('input-pattern-spacing-angle').value),
+            contourSource,
+            contourShape: document.getElementById('sel-pattern-contour-shape')?.value || 'circle',
+            contourSize: parseFloat(document.getElementById('input-pattern-contour-size')?.value || '120'),
+            contourLoops: parseInt(document.getElementById('input-pattern-contour-loops')?.value || '18', 10),
+            contourScale: parseFloat(document.getElementById('input-pattern-contour-scale')?.value || '6'),
+            contourSpin: parseFloat(document.getElementById('input-pattern-contour-spin')?.value || '12'),
+            contourDetail: parseInt(document.getElementById('input-pattern-contour-detail')?.value || '6', 10),
+            contourVariation: parseInt(document.getElementById('input-pattern-contour-variation')?.value || '2', 10)
         };
         const sourcePaths = this.app.canvas.selectedPaths.map(idx => this.app.canvas.paths[idx]);
         this.app.canvas.patternPreviewPaths = this.app.patterns.generate(sourcePaths, params);
@@ -1234,13 +1335,18 @@ class UIController {
     updatePatternPanelState() {
         const selType = document.getElementById('sel-pattern-type');
         const hasSelection = this.app.canvas.selectedPaths.length > 0;
-        selType.disabled = !hasSelection;
+        const contourSource = document.getElementById('sel-pattern-contour-source')?.value || 'preset';
+        selType.disabled = false;
         this.updateSelectionSizeControls();
-        if (!hasSelection) {
+        if (!hasSelection && selType.value !== 'continuousContour') {
             selType.value = 'none';
             document.getElementById('pattern-controls').classList.add('hidden');
             this.app.canvas.patternPreviewPaths = [];
         }
+        if (!hasSelection && selType.value === 'continuousContour' && contourSource === 'selected') {
+            this.app.canvas.patternPreviewPaths = [];
+        }
+        this.updatePatternControlVisibility();
     }
 
     enableRunControls() {
