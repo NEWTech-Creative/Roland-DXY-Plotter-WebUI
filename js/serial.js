@@ -651,7 +651,7 @@ class SerialManager {
             if (!this.isTestMode()) {
                 const ready = await this.waitForTransmitReady();
                 if (!ready) break;
-                await this.writer.write(encoder.encode(part + '\r\n'));
+                await this.writer.write(encoder.encode(part));
             }
             if (options.updateEstimatedFromCommand === true) {
                 this._updateEstimatedPositionFromCommand(part);
