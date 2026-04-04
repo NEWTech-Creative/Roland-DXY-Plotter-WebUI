@@ -169,7 +169,7 @@ class HpglParser {
         return commands;
     }
 
-    generatePolylineStreamCommands(points, maxPairsPerCommand = 8) {
+    generatePolylineStreamCommands(points, maxPairsPerCommand = 4) {
         if (!points || points.length < 2) return [];
 
         const transformedPts = this.transformOutputPoints(points);

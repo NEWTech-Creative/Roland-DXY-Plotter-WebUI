@@ -21,6 +21,7 @@ class SerialManager {
         this.isStreaming = false;
         this.isHold = false;
         this.runPromise = null;
+        this.abortRequested = false;
         this.previewMotionQueue = [];
         this.previewMotionCurrent = null;
         this.previewMotionFrame = null;
@@ -615,24 +616,55 @@ class SerialManager {
             .map(part => `${part};`);
     }
 
-    async _writePartWithFlowControl(part, encoder) {
-        while (this.isConnected && !this.isHold) {
-            const ready = await this.waitForTransmitReady();
-            if (!ready) return false;
+    getTransmitChunkSize() {
+        const baudRateStr = document.getElementById('sel-baud')?.value;
+        const baudRate = parseInt(baudRateStr, 10) || 9600;
+        if (baudRate <= 9600) return 12;
+        if (baudRate <= 19200) return 18;
+        return 24;
+    }
 
-            // Re-check software flow immediately at the write boundary so every
-            // command part pauses if an XOFF was processed while awaiting readiness.
-            if (this.softwareFlowPaused) {
-                this.setTrafficLight('orange');
-                await this.waitForSoftwareFlowResume();
-                continue;
+    getInterChunkDelayMs(chunkLength = 1) {
+        const baudRateStr = document.getElementById('sel-baud')?.value;
+        const baudRate = parseInt(baudRateStr, 10) || 9600;
+        const msPerByte = (10 / baudRate) * 1000;
+        return Math.max(2, Math.ceil(msPerByte * Math.max(1, chunkLength) * 0.75));
+    }
+
+    async _writePartWithFlowControl(part, encoder) {
+        const bytes = encoder.encode(part);
+        const chunkSize = this.getTransmitChunkSize();
+
+        for (let offset = 0; offset < bytes.length;) {
+            while (this.isConnected && !this.isHold) {
+                const ready = await this.waitForTransmitReady();
+                if (!ready) return false;
+
+                // Re-check software flow immediately at the write boundary so every
+                // sub-chunk pauses if an XOFF was processed while awaiting readiness.
+                if (this.softwareFlowPaused) {
+                    this.setTrafficLight('orange');
+                    await this.waitForSoftwareFlowResume();
+                    continue;
+                }
+
+                const end = Math.min(bytes.length, offset + chunkSize);
+                const chunk = bytes.slice(offset, end);
+                await this.writer.write(chunk);
+                offset = end;
+
+                if (offset < bytes.length) {
+                    await new Promise(resolve => setTimeout(resolve, this.getInterChunkDelayMs(chunk.length)));
+                }
+                break;
             }
 
-            await this.writer.write(encoder.encode(part));
-            return true;
+            if (!this.isConnected || this.isHold) {
+                return false;
+            }
         }
 
-        return false;
+        return true;
     }
 
     _updateEstimatedPositionFromCommand(command) {
@@ -755,6 +787,55 @@ class SerialManager {
         return true;
     }
 
+    async _sendRawImmediate(data) {
+        if (!this.writer || this.isTestMode()) return false;
+        try {
+            const encoder = new TextEncoder();
+            await this.writer.write(encoder.encode(data));
+            return true;
+        } catch (error) {
+            this.app.ui.logToConsole(`System Warning: Failed to send abort sequence. ${error.message}`, 'warning');
+            return false;
+        }
+    }
+
+    async sendAbortSequence() {
+        if (!this.writer) return false;
+
+        this.abortRequested = true;
+        this.isStreaming = false;
+        this.isHold = true;
+        this.queue = [];
+        this.softwareFlowPaused = false;
+        this.hardwareFlowPaused = false;
+        this._flushResumeWaiters();
+        this.updateStats();
+        this.clearPreviewMotion(false);
+
+        const activeRun = this.runPromise;
+        if (activeRun) {
+            await activeRun;
+        }
+
+        if (this.isTestMode()) {
+            this.setEstimatedPosition(this.estimatedPosition.x, this.estimatedPosition.y);
+            this.app.ui.logToConsole('System: Test-mode cancel issued. Stream stopped and pen state reset.');
+            return true;
+        }
+
+        // Try a layered abort so the plotter stops buffered motion instead of
+        // only halting the browser-side queue.
+        await this._sendRawImmediate('\x1B.K');
+        await this._sendRawImmediate('\x03');
+        await this._sendRawImmediate('PU;IN;');
+
+        this.abortRequested = false;
+        this.isHold = false;
+        this.setTrafficLight('green');
+        this.app.ui.logToConsole('System: Emergency cancel sent. Pen-up and reset sequence issued.', 'warning');
+        return true;
+    }
+
     // Queue management
     queueCommands(cmds) {
         this.queue = this.queue.concat(cmds);
@@ -788,6 +869,7 @@ class SerialManager {
             this.runPromise = (async () => {
                 this.isStreaming = true;
                 this.isHold = false;
+                this.abortRequested = false;
                 this.hardwareFlowPaused = false;
                 this.setTrafficLight('green');
 
@@ -869,16 +951,11 @@ class SerialManager {
                         this.isStreaming = false;
                         this.isHold = false;
                         this.app.liveTracker.handleCancel();
-                        if (this.writer) {
-                            await this.sendManualCommand('PU;', { preview: false, updateEstimatedFromCommand: true });
-                        }
+                        await this.sendAbortSequence();
                         this.setTrafficLight('green');
                         return;
                     }
-                    await this.stopStream(true);
-                    if (this.writer) {
-                        await this.sendManualCommand('PU;', { preview: false, updateEstimatedFromCommand: true });
-                    }
+                    await this.sendAbortSequence();
                     this.setTrafficLight('green'); // Ready again
                     this.app.ui.logToConsole('System: Stream cancelled.');
                 }
