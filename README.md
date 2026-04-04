@@ -4,6 +4,8 @@ Browser-based Roland DXY plotter controller and creative HPGL workflow for the R
 
 This project is a modern Roland DXY controller that combines drawing tools, HPGL generation, live preview, motion simulation, handwriting generation, image-to-vector conversion, and USB serial streaming in one web interface. It is designed for people searching for a Roland DXY web UI, Roland DXY controller, HPGL plotter software, or a browser-based pen plotter workflow using a CH340 USB-to-serial adapter.
 
+Live site: [Click here](https://newtech-creative.github.io/Roland-DXY-Plotter-WebUI/)
+
 ![Roland DXY Web Interface](DXY_Web_connect.jpg)
 
 Created by NEWTech Creative.
