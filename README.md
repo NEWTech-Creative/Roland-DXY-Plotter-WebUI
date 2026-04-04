@@ -126,5 +126,4 @@ Current focus:
 Created by NEWTech Creative
 
 - YouTube: https://www.youtube.com/@NEWTechCreative  
-- Support: https://paypal.me/NEWTechCreative
 - Support: [https://paypal.me/NEWTechCreative](https://paypal.me/NEWTechCreative)
