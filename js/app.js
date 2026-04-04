@@ -5,6 +5,7 @@ class App {
         this.canvas = new CanvasManager(this);
         this.patterns = new PatternGenerator(this);
         this.hpgl = new HpglParser(this);
+        this.liveTracker = new LiveTrackerController(this);
 
         this.settings = {
             model: '1200',
@@ -29,8 +30,10 @@ class App {
                 'panel-visualiser': true,
                 'panel-patterns': true,
                 'panel-handwriting': true,
-                'panel-image-vector': true
-            }
+                'panel-image-vector': true,
+                'panel-live-tracker': true
+            },
+            liveTracker: {}
         };
 
         this.loadSettings();
@@ -69,6 +72,7 @@ class App {
         this.bindEvents();
         this.initHandwriting();
         this.initImageVector();
+        this.liveTracker.init();
         this.ui.showStartupModal();
     }
 
@@ -78,7 +82,7 @@ class App {
             if (saved) {
                 this.settings = { ...this.settings, ...JSON.parse(saved) };
             }
-            if (!['1100', '1200', '1300'].includes(this.settings.model)) {
+            if (!['test', '1100', '1200', '1300'].includes(this.settings.model)) {
                 this.settings.model = '1200';
                 this.settings.bedWidth = 432;
                 this.settings.bedHeight = 297;
@@ -100,6 +104,14 @@ class App {
 
     getMachineProfile(model = this.settings.model) {
         const profiles = {
+            'test': {
+                id: 'test',
+                label: 'Test / Null Plotter',
+                bedWidth: 432,
+                bedHeight: 297,
+                importExtensions: ['.svg', '.dxf', '.hpgl', '.dxyweb'],
+                commandPlaceholder: 'Enter HPGL command for test output (e.g. PU;)...'
+            },
             '1100': {
                 id: '1100',
                 label: 'DXY 1100',
@@ -206,6 +218,7 @@ class App {
         // Layout events
         document.getElementById('btn-new').addEventListener('click', () => {
             if (confirm('Are you sure you want to clear the canvas?')) {
+                this.liveTracker?.stopCameraAndOverlay?.();
                 this.canvas.clear();
                 this.ui.logToConsole('System: Canvas cleared.');
             }
@@ -323,6 +336,25 @@ class App {
         });
     }
 
+    clearWorkspaceForLiveTracker() {
+        if (this.serial) {
+            this.serial.queue = [];
+            this.serial.updateStats?.();
+        }
+        if (this.canvas) {
+            this.canvas.clearForLiveTracker?.();
+        }
+        if (this.ui) {
+            this.ui.clearPatternPreview?.();
+        }
+    }
+
+    isWorkspaceEmptyForLiveTracker() {
+        if (!this.canvas) return true;
+        return this.canvas.isWorkspaceEmptyForLiveTracker?.() !== false
+            && (!this.serial || (this.serial.queue?.length || 0) === 0);
+    }
+
     // Global State Updates
     updateConnectionState(isConnected) {
         const btn = document.getElementById('btn-connect');
@@ -412,7 +444,7 @@ class App {
 
                 if (data.settings) {
                     this.settings = { ...this.settings, ...data.settings };
-                    if (!['1100', '1200', '1300'].includes(this.settings.model)) {
+                    if (!['test', '1100', '1200', '1300'].includes(this.settings.model)) {
                         this.settings.model = '1200';
                         this.settings.bedWidth = 432;
                         this.settings.bedHeight = 297;

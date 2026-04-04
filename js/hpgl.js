@@ -9,6 +9,7 @@ class HpglParser {
 
     setCurrentPen(penNumber) {
         this.currentPen = penNumber;
+        this.app.ui?.setActiveVisualizerPen?.(penNumber);
         this.app.ui.logToConsole(`System: Active Pen set to P${penNumber}`);
     }
 

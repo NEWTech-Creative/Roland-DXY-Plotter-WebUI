@@ -71,6 +71,7 @@
                             <div class="form-group flex-1">
                                 <label>Plotter Model</label>
                                 <select id="sel-model">
+                                    <option value="test">Test / Null Plotter</option>
                                     <option value="1100">DXY 1100</option>
                                     <option value="1200" selected>DXY 1200</option>
                                     <option value="1300">DXY 1300</option>
@@ -353,6 +354,26 @@
                         </div>
                         <div class="canvas-container">
                             <canvas id="plotter-canvas"></canvas>
+                            <div id="live-tracker-overlay-host" class="live-tracker-overlay-host hidden">
+                                <div id="live-tracker-video-shell" class="live-tracker-video-shell">
+                                    <div id="live-tracker-video-header" class="live-tracker-video-header">
+                                        <span>Live Camera</span>
+                                        <span id="live-tracker-overlay-status">Idle</span>
+                                    </div>
+                                    <div class="live-tracker-video-stage">
+                                        <video id="live-tracker-video" autoplay playsinline muted></video>
+                                        <canvas id="live-tracker-video-canvas"></canvas>
+                                    </div>
+                                    <button type="button" class="live-tracker-resize-handle handle-nw" data-live-tracker-resize="nw" aria-label="Resize top left"></button>
+                                    <button type="button" class="live-tracker-resize-handle handle-n" data-live-tracker-resize="n" aria-label="Resize top"></button>
+                                    <button type="button" class="live-tracker-resize-handle handle-ne" data-live-tracker-resize="ne" aria-label="Resize top right"></button>
+                                    <button type="button" class="live-tracker-resize-handle handle-e" data-live-tracker-resize="e" aria-label="Resize right"></button>
+                                    <button type="button" class="live-tracker-resize-handle handle-se" data-live-tracker-resize="se" aria-label="Resize bottom right"></button>
+                                    <button type="button" class="live-tracker-resize-handle handle-s" data-live-tracker-resize="s" aria-label="Resize bottom"></button>
+                                    <button type="button" class="live-tracker-resize-handle handle-sw" data-live-tracker-resize="sw" aria-label="Resize bottom left"></button>
+                                    <button type="button" class="live-tracker-resize-handle handle-w" data-live-tracker-resize="w" aria-label="Resize left"></button>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -683,6 +704,131 @@
                 </div>
             </div>
 
+            <div class="grid-stack-item" gs-w="2" gs-h="7" gs-x="8" gs-y="0" id="panel-live-tracker">
+                <div class="grid-stack-item-content panel-glass">
+                    <div class="panel-header">
+                        <h2>Live Finger Tracker</h2>
+                    </div>
+                    <div class="panel-body flex-col compact-tool-panel live-tracker-panel-body">
+                        <div class="live-tracker-top-actions">
+                            <button id="btn-live-tracker-camera" class="btn btn-primary">Start Camera</button>
+                            <button id="btn-live-tracker-clear" class="btn btn-secondary">Clear Canvas</button>
+                        </div>
+
+                        <div class="compact-section compact-section-soft">
+                            <div class="live-tracker-settings-grid">
+                                <div class="form-group">
+                                    <label>Camera</label>
+                                    <div id="live-tracker-camera-name" class="input-like-readout">Default Camera</div>
+                                </div>
+                                <div class="form-group">
+                                    <label>&nbsp;</label>
+                                    <button id="btn-live-tracker-next-camera" class="btn btn-secondary" type="button">Next Camera</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="compact-section compact-section-soft live-tracker-status-card">
+                            <div class="live-tracker-status-row">
+                                <span>Tracker Mode</span>
+                                <label class="panel-toggle-item">
+                                    <input type="checkbox" id="input-live-tracker-enabled">
+                                    <span>Enabled</span>
+                                </label>
+                            </div>
+                            <div class="live-tracker-status-row">
+                                <span>Tracking Status</span>
+                                <strong id="live-tracker-status-text">Camera idle</strong>
+                            </div>
+                            <div class="live-tracker-status-row">
+                                <span>Speed</span>
+                                <div class="live-tracker-speed-wrap">
+                                    <div id="live-tracker-speed-light" class="traffic-light red"></div>
+                                    <span id="live-tracker-speed-text">No motion</span>
+                                </div>
+                            </div>
+                            <div id="live-tracker-validation" class="live-tracker-validation hidden"></div>
+                        </div>
+
+                        <div class="compact-section compact-section-soft">
+                            <div class="live-tracker-settings-grid">
+                                <div class="form-group">
+                                    <label>Movement Source</label>
+                                    <select id="sel-live-tracker-movement-source">
+                                        <option value="index">Index Finger Tip</option>
+                                        <option value="wrist">Wrist</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label>Gesture Hold Time (ms)</label>
+                                    <input id="input-live-tracker-gesture-hold" type="number" min="100" max="500" step="10" value="180">
+                                </div>
+                                <div class="form-group">
+                                    <label>Smoothing Amount</label>
+                                    <input id="input-live-tracker-smoothing" type="range" min="0" max="0.95" step="0.05" value="0.45">
+                                </div>
+                                <div class="form-group">
+                                    <label>Minimum Move Threshold (mm)</label>
+                                    <input id="input-live-tracker-min-move" type="number" min="0.1" max="20" step="0.1" value="1.2">
+                                </div>
+                                <div class="form-group">
+                                    <label>Max Move Speed (mm/s)</label>
+                                    <input id="input-live-tracker-max-speed" type="number" min="5" max="400" step="1" value="65">
+                                </div>
+                                <div class="form-group">
+                                    <label>Output Interval (ms)</label>
+                                    <input id="input-live-tracker-output-interval" type="number" min="10" max="200" step="1" value="33">
+                                    <small>Lower = smoother but more commands. Higher = fewer commands, more segmented lines.</small>
+                                </div>
+                            </div>
+                            <label class="panel-toggle-item">
+                                <input type="checkbox" id="input-live-tracker-pen-gesture-enable" checked>
+                                <span>Pen Up / Down Enable</span>
+                            </label>
+                        </div>
+
+                        <div class="compact-section compact-section-soft">
+                            <div class="live-tracker-settings-grid">
+                                <div class="form-group">
+                                    <label>Video Opacity</label>
+                                    <input id="input-live-tracker-video-opacity" type="range" min="0" max="100" step="1" value="60">
+                                </div>
+                                <div class="form-group">
+                                    <label>Video Size (%)</label>
+                                    <input id="input-live-tracker-video-size" type="range" min="25" max="100" step="1" value="48">
+                                </div>
+                            </div>
+                            <div class="live-tracker-toggle-grid">
+                                <label class="panel-toggle-item">
+                                    <input type="checkbox" id="input-live-tracker-mirror" checked>
+                                    <span>Mirror Camera</span>
+                                </label>
+                                <label class="panel-toggle-item">
+                                    <input type="checkbox" id="input-live-tracker-show-debug">
+                                    <span>Show Finger Debug</span>
+                                </label>
+                                <label class="panel-toggle-item">
+                                    <input type="checkbox" id="input-live-tracker-show-labels" checked>
+                                    <span>Show Finger Labels</span>
+                                </label>
+                                <label class="panel-toggle-item">
+                                    <input type="checkbox" id="input-live-tracker-highlight-point" checked>
+                                    <span>Highlight Active Movement Point</span>
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="compact-section compact-section-soft">
+                            <div class="live-tracker-pen-header">
+                                <strong>Finger-to-Pen Assignment</strong>
+                                <span>Exact gesture matching only</span>
+                            </div>
+                            <div id="live-tracker-pen-settings" class="live-tracker-pen-settings"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
         </div>
     </main>
 
@@ -816,6 +962,10 @@
                                 <label class="panel-toggle-item">
                                     <input type="checkbox" data-panel-toggle="panel-image-vector" checked>
                                     <span>Image to Vector</span>
+                                </label>
+                                <label class="panel-toggle-item">
+                                    <input type="checkbox" data-panel-toggle="panel-live-tracker" checked>
+                                    <span>Live Finger Tracker</span>
                                 </label>
                             </div>
                         </div>
@@ -1084,6 +1234,11 @@
     <!-- Image to Vector Scripts -->
     <script src="js/image-vector/image-vector-engine.js"></script>
     <script src="js/image-vector/image-vector-panel.js"></script>
+    <script src="js/live-tracker-map.js"></script>
+    <script src="js/live-tracker-hpgl.js"></script>
+    <script src="js/live-tracker-vision.js"></script>
+    <script src="js/live-tracker-ui.js"></script>
+    <script src="js/live-tracker.js"></script>
 
     <script src="js/app.js"></script>
 </body>

@@ -76,6 +76,8 @@ class CanvasManager {
         this.simulationSpeedMultiplier = 1;
 
         this.patternPreviewPaths = [];
+        this.liveTrackerOverlay = null;
+        this.liveTrackerStrokeIndex = -1;
         this.bucketHoverRegion = null;
         this.bucketHoverPathIdx = -1;
         this.editingPathIdx = -1;
@@ -89,6 +91,9 @@ class CanvasManager {
         this.paths = []; // Array of path objects
         this.selectedPaths = [];
         this.draggingNodeIndex = -1;
+        this.patternPreviewPaths = [];
+        this.liveTrackerOverlay = null;
+        this.liveTrackerStrokeIndex = -1;
 
         // Panning and Zooming State
         this.viewOffsetX = 0;
@@ -96,6 +101,74 @@ class CanvasManager {
         this.viewZoom = 1;
 
         this.saveUndoState();
+        this.draw();
+    }
+
+    clearForLiveTracker() {
+        this.paths = [];
+        this.patternPreviewPaths = [];
+        this.selectedPaths = [];
+        this.selectedNodes = [];
+        this.liveTrackerStrokeIndex = -1;
+        this.liveTrackerOverlay = null;
+        this.draw();
+        this.saveUndoState();
+    }
+
+    isWorkspaceEmptyForLiveTracker() {
+        return this.paths.length === 0
+            && this.patternPreviewPaths.length === 0
+            && this.selectedPaths.length === 0
+            && this.selectedNodes.length === 0;
+    }
+
+    startLiveTrackerSession() {
+        this.liveTrackerStrokeIndex = -1;
+        this.liveTrackerOverlay = null;
+        this.draw();
+    }
+
+    finishLiveTrackerStroke() {
+        const path = this.liveTrackerStrokeIndex >= 0 ? this.paths[this.liveTrackerStrokeIndex] : null;
+        if (path && Array.isArray(path.points) && path.points.length >= 3) {
+            const first = path.points[0];
+            const last = path.points[path.points.length - 1];
+            const closeDistance = Math.hypot((last.x || 0) - (first.x || 0), (last.y || 0) - (first.y || 0));
+            const closeThreshold = 4;
+            if (closeDistance <= closeThreshold) {
+                path.points[path.points.length - 1] = { x: first.x, y: first.y };
+                path.closed = true;
+                this.saveCurrentState();
+                this.draw();
+            }
+        }
+        this.liveTrackerStrokeIndex = -1;
+    }
+
+    appendLiveTrackerPoint(point, pen = 1) {
+        if (!point) return;
+        const currentPath = this.liveTrackerStrokeIndex >= 0 ? this.paths[this.liveTrackerStrokeIndex] : null;
+        if (!currentPath || currentPath.pen !== pen || !Array.isArray(currentPath.points)) {
+            this.paths.push({
+                type: 'polyline',
+                points: [{ x: point.x, y: point.y }],
+                pen,
+                liveTrackerGenerated: true
+            });
+            this.liveTrackerStrokeIndex = this.paths.length - 1;
+            this.draw();
+            return;
+        }
+
+        const lastPoint = currentPath.points[currentPath.points.length - 1];
+        if (lastPoint && Math.hypot(lastPoint.x - point.x, lastPoint.y - point.y) < 0.01) return;
+        currentPath.points.push({ x: point.x, y: point.y });
+        this.saveCurrentState();
+        this.draw();
+    }
+
+    setLiveTrackerOverlay(overlay) {
+        this.liveTrackerOverlay = overlay;
         this.draw();
     }
 
@@ -1080,6 +1153,12 @@ class CanvasManager {
         const rect = this.canvas.getBoundingClientRect();
         const px = e.clientX - rect.left;
         const py = e.clientY - rect.top;
+        return this.canvasPxToMM(px, py);
+    }
+
+    canvasPxToMM(px, py) {
+        const safePx = Number.isFinite(px) ? px : 0;
+        const safePy = Number.isFinite(py) ? py : 0;
 
         // Centering logic (same as in draw)
         const mmToPx = this.scale;
@@ -1087,8 +1166,8 @@ class CanvasManager {
         const verticalShift = Math.max(0, this.pixelH - (this.bedHeight * mmToPx));
 
         // Reverse translate and zoom
-        const transformedPx = (px - this.viewOffsetX - horizontalShift) / this.viewZoom;
-        const transformedPy = (py - this.viewOffsetY - verticalShift) / this.viewZoom;
+        const transformedPx = (safePx - this.viewOffsetX - horizontalShift) / this.viewZoom;
+        const transformedPy = (safePy - this.viewOffsetY - verticalShift) / this.viewZoom;
 
         const xMM = transformedPx / this.scale;
         const yMM = transformedPy / this.scale;
@@ -1444,6 +1523,7 @@ class CanvasManager {
 
     isPathClosed(path) {
         if (!path) return false;
+        if (path.closed === true) return true;
         if (path.type === 'rectangle' || path.type === 'circle') return true;
         if (Array.isArray(path.segments) && path.segments.some(segment => segment.type === 'Z')) return true;
         if (Array.isArray(path.points) && path.points.length >= 3) {
@@ -1564,6 +1644,73 @@ class CanvasManager {
         };
     }
 
+    getPolygonBox(points = []) {
+        if (!Array.isArray(points) || points.length < 3) return null;
+        return points.reduce((box, point) => ({
+            minX: Math.min(box.minX, point.x),
+            minY: Math.min(box.minY, point.y),
+            maxX: Math.max(box.maxX, point.x),
+            maxY: Math.max(box.maxY, point.y)
+        }), {
+            minX: Infinity,
+            minY: Infinity,
+            maxX: -Infinity,
+            maxY: -Infinity
+        });
+    }
+
+    getPolygonArea(points = []) {
+        if (!Array.isArray(points) || points.length < 3) return 0;
+        let area = 0;
+        for (let i = 0; i < points.length; i++) {
+            const a = points[i];
+            const b = points[(i + 1) % points.length];
+            area += ((a.x || 0) * (b.y || 0)) - ((b.x || 0) * (a.y || 0));
+        }
+        return Math.abs(area) * 0.5;
+    }
+
+    getEmbeddedLoopFillRegions(path, pathIdx) {
+        if (!path || !Array.isArray(path.points) || path.points.length < 6) return [];
+        const source = path.points.map(point => ({ x: point.x, y: point.y }));
+        const loops = [];
+        const seen = new Set();
+        const closeThreshold = path.liveTrackerGenerated ? 4.5 : 2.5;
+
+        for (let start = 0; start < source.length - 4; start++) {
+            for (let end = start + 4; end < source.length; end++) {
+                const startPoint = source[start];
+                const endPoint = source[end];
+                if (Math.hypot((endPoint.x || 0) - (startPoint.x || 0), (endPoint.y || 0) - (startPoint.y || 0)) > closeThreshold) {
+                    continue;
+                }
+
+                const polygon = source.slice(start, end + 1).map(point => ({ x: point.x, y: point.y }));
+                polygon[polygon.length - 1] = { x: startPoint.x, y: startPoint.y };
+                const area = this.getPolygonArea(polygon);
+                if (area < 4) continue;
+
+                const signature = `${start}:${end}:${Math.round(area * 10)}`;
+                if (seen.has(signature)) continue;
+                seen.add(signature);
+
+                const box = this.getPolygonBox(polygon);
+                if (!box) continue;
+
+                loops.push({
+                    box,
+                    polygon,
+                    pathIdx,
+                    path,
+                    isEmbeddedLoop: true,
+                    contains: (x, y) => this.pointInPolygon(x, y, polygon)
+                });
+            }
+        }
+
+        return loops;
+    }
+
     getClosedFillRegions() {
         const regions = [];
         for (let i = 0; i < this.paths.length; i++) {
@@ -1571,8 +1718,21 @@ class CanvasManager {
             if (path?.generatedBy === 'bucket-fill') continue;
             const region = this.getBaseFillRegion(path);
             if (region) regions.push({ ...region, pathIdx: i, path });
+            this.getEmbeddedLoopFillRegions(path, i).forEach(loopRegion => regions.push(loopRegion));
         }
         return regions;
+    }
+
+    getRegionArea(region) {
+        if (!region) return Infinity;
+        if (Array.isArray(region.polygon) && region.polygon.length >= 3) {
+            const polygonArea = this.getPolygonArea(region.polygon);
+            if (polygonArea > 0) return polygonArea;
+        }
+        if (region.box) {
+            return Math.max(0, (region.box.maxX - region.box.minX) * (region.box.maxY - region.box.minY));
+        }
+        return Infinity;
     }
 
     getFillSignatureAt(x, y, regions) {
@@ -1611,7 +1771,17 @@ class CanvasManager {
 
         const spacing = this.app?.ui?.fillBucketSettings?.spacing || 6;
         const zoomFactor = Math.max(1, this.viewZoom || 1);
-        const cellSize = Math.max(0.08, Math.min(1.2, spacing / Math.max(4, zoomFactor * 3)));
+        const regionWidth = Math.max(0.1, box.maxX - box.minX);
+        const regionHeight = Math.max(0.1, box.maxY - box.minY);
+        const smallestDimension = Math.max(0.1, Math.min(regionWidth, regionHeight));
+        const cellSize = Math.max(
+            0.04,
+            Math.min(
+                0.45,
+                spacing / Math.max(6, zoomFactor * 5),
+                smallestDimension / 24
+            )
+        );
         const cols = Math.max(1, Math.ceil((box.maxX - box.minX) / cellSize));
         const rows = Math.max(1, Math.ceil((box.maxY - box.minY) / cellSize));
         const targetCells = new Set();
@@ -1649,7 +1819,11 @@ class CanvasManager {
                 { cx: cx + 1, cy },
                 { cx: cx - 1, cy },
                 { cx, cy: cy + 1 },
-                { cx, cy: cy - 1 }
+                { cx, cy: cy - 1 },
+                { cx: cx + 1, cy: cy + 1 },
+                { cx: cx + 1, cy: cy - 1 },
+                { cx: cx - 1, cy: cy + 1 },
+                { cx: cx - 1, cy: cy - 1 }
             ].forEach(next => {
                 if (!inBounds(next.cx, next.cy)) return;
                 const nextKey = toKey(next.cx, next.cy);
@@ -1696,9 +1870,19 @@ class CanvasManager {
     }
 
     getFillTargetAt(xMM, yMM) {
-        const region = this.getCompositeFillRegionAt(xMM, yMM);
+        const allRegions = this.getClosedFillRegions();
+        const containingRegions = allRegions.filter(region => region.contains(xMM, yMM));
+        if (!containingRegions.length) return null;
+
+        containingRegions.sort((a, b) => {
+            if (!!a.isEmbeddedLoop !== !!b.isEmbeddedLoop) return a.isEmbeddedLoop ? -1 : 1;
+            return this.getRegionArea(a) - this.getRegionArea(b);
+        });
+
+        const directRegion = containingRegions[0];
+        const region = directRegion || this.getCompositeFillRegionAt(xMM, yMM);
         if (!region) return null;
-        const pathIdx = region.primaryPathIdx;
+        const pathIdx = Number.isInteger(region.primaryPathIdx) ? region.primaryPathIdx : directRegion?.pathIdx;
         return {
             pathIdx,
             path: pathIdx > -1 ? this.paths[pathIdx] : null,
@@ -1712,7 +1896,17 @@ class CanvasManager {
         this.ctx.strokeStyle = 'rgba(96, 165, 250, 0.65)';
         this.ctx.lineWidth = 1.5 / this.viewZoom;
 
-        if (this.bucketHoverRegion?.fillCells && this.bucketHoverRegion?.cellSize) {
+        if (Array.isArray(this.bucketHoverRegion?.polygon) && this.bucketHoverRegion.polygon.length >= 3) {
+            this.ctx.beginPath();
+            this.ctx.moveTo(this.bucketHoverRegion.polygon[0].x * mmToPx, this.bucketHoverRegion.polygon[0].y * mmToPx);
+            for (let i = 1; i < this.bucketHoverRegion.polygon.length; i++) {
+                const point = this.bucketHoverRegion.polygon[i];
+                this.ctx.lineTo(point.x * mmToPx, point.y * mmToPx);
+            }
+            this.ctx.closePath();
+            this.ctx.fill();
+            this.ctx.stroke();
+        } else if (this.bucketHoverRegion?.fillCells && this.bucketHoverRegion?.cellSize) {
             const cellSize = this.bucketHoverRegion.cellSize;
             this.bucketHoverRegion.fillCells.forEach(key => {
                 const [cxRaw, cyRaw] = key.split(',');
@@ -2482,11 +2676,33 @@ class CanvasManager {
         }
 
         this.ctx.restore(); // CRITICAL: Stop transformation accumulation
+        this.drawLiveTrackerOverlay(mmToPx, horizontalShift, verticalShift);
         this.drawPredictedCrosshair(mmToPx, horizontalShift, verticalShift);
         const isInteracting = this.isDragging || this.isRotating || this.isPanning || this.isMarqueeSelecting || this.isCreatingShape;
         if (!isInteracting && this.app.ui && this.app.ui.updateSelectionSizeControls) {
             this.app.ui.updateSelectionSizeControls();
         }
+    }
+
+    drawLiveTrackerOverlay(mmToPx, horizontalShift = 0, verticalShift = 0) {
+        if (!this.liveTrackerOverlay || !this.liveTrackerOverlay.targetPoint) return;
+        const point = this.liveTrackerOverlay.targetPoint;
+        const x = (point.x * mmToPx * this.viewZoom) + this.viewOffsetX + horizontalShift;
+        const y = (point.y * mmToPx * this.viewZoom) + this.viewOffsetY + verticalShift;
+        const label = this.liveTrackerOverlay.activePen ? `Pen ${this.liveTrackerOverlay.activePen}` : 'Pen Up';
+
+        this.ctx.save();
+        this.ctx.beginPath();
+        this.ctx.arc(x, y, 7, 0, Math.PI * 2);
+        this.ctx.fillStyle = this.liveTrackerOverlay.activePen ? 'rgba(16, 185, 129, 0.95)' : 'rgba(245, 158, 11, 0.95)';
+        this.ctx.fill();
+        this.ctx.lineWidth = 2;
+        this.ctx.strokeStyle = '#f8fafc';
+        this.ctx.stroke();
+        this.ctx.font = '12px Outfit, sans-serif';
+        this.ctx.fillStyle = '#f8fafc';
+        this.ctx.fillText(`${label} ${this.liveTrackerOverlay.label || ''}`.trim(), x + 12, y - 10);
+        this.ctx.restore();
     }
 
     drawPredictedCrosshair(mmToPx, horizontalShift = 0, verticalShift = 0) {

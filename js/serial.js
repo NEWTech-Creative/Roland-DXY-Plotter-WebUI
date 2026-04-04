@@ -10,6 +10,10 @@ class SerialManager {
         this.rxLineBuffer = '';
         this.softwareFlowPaused = false;
         this.resumeWaiters = [];
+        this.hardwareFlowPaused = false;
+        this.hardwareFlowSupported = false;
+        this.lastSignals = null;
+        this.hardwareFlowPollMs = 25;
         this.estimatedPosition = { x: 0, y: 0 };
         this.estimatedAbsoluteMode = true;
 
@@ -33,7 +37,35 @@ class SerialManager {
         this.updatePredictedPositionReadout();
     }
 
+    isTestMode() {
+        return this.app?.settings?.model === 'test';
+    }
+
     async connect() {
+        if (this.isTestMode()) {
+            this.port = null;
+            this.reader = null;
+            this.readLoopPromise = null;
+            this.writer = {
+                write: async () => { },
+                releaseLock: () => { }
+            };
+            this.isConnected = true;
+            this.softwareFlowPaused = false;
+            this.hardwareFlowPaused = false;
+            this.hardwareFlowSupported = false;
+            this.lastSignals = null;
+            this.rxLineBuffer = '';
+            this.estimatedPosition = { x: 0, y: 0 };
+            this.estimatedAbsoluteMode = true;
+            this.clearPreviewMotion(false);
+            this.app.updateConnectionState(true);
+            this.app.ui.logToConsole('Connected to Test / Null Plotter. Commands will not be sent to hardware.');
+            this.setTrafficLight('green');
+            await this.sendManualCommand('IN;', { preview: false, updateEstimatedFromCommand: true });
+            return;
+        }
+
         if (!('serial' in navigator)) {
             this.app.ui.logToConsole('Web Serial API not supported in this browser.', 'error');
             return;
@@ -63,6 +95,10 @@ class SerialManager {
                 } catch (e) {
                     this.app.ui.logToConsole('System Warning: Failed to set DTR/RTS signals manually. ' + e.message, 'warning');
                 }
+            }
+
+            if (handshake === 'normal') {
+                await this._primeHardwareFlowControl();
             }
 
             this.isConnected = true;
@@ -97,6 +133,11 @@ class SerialManager {
         this.updateStats();
 
         try {
+            if (this.isTestMode()) {
+                this.app.ui.logToConsole('Disconnected from Test / Null Plotter.');
+                return;
+            }
+
             if (this.reader) {
                 await this.reader.cancel();
             }
@@ -128,6 +169,9 @@ class SerialManager {
             this.port = null;
             this.rxLineBuffer = '';
             this.softwareFlowPaused = false;
+            this.hardwareFlowPaused = false;
+            this.hardwareFlowSupported = false;
+            this.lastSignals = null;
             this.estimatedPosition = { x: 0, y: 0 };
             this.estimatedAbsoluteMode = true;
             this.clearPreviewMotion(false);
@@ -225,6 +269,84 @@ class SerialManager {
         return new Promise(resolve => {
             this.resumeWaiters.push(resolve);
         });
+    }
+
+    isHardwareHandshakeEnabled() {
+        return (this.app?.settings?.handshake || 'normal') === 'normal' && !this.isTestMode();
+    }
+
+    async _readSignals() {
+        if (!this.port || typeof this.port.getSignals !== 'function') return null;
+        try {
+            const signals = await this.port.getSignals();
+            this.lastSignals = signals;
+            return signals;
+        } catch (error) {
+            if (this.hardwareFlowSupported) {
+                this.app.ui.logToConsole(`System Warning: Unable to read serial modem signals. ${error.message}`, 'warning');
+            }
+            this.hardwareFlowSupported = false;
+            this.lastSignals = null;
+            return null;
+        }
+    }
+
+    async _primeHardwareFlowControl() {
+        const signals = await this._readSignals();
+        if (!signals || typeof signals.clearToSend !== 'boolean') {
+            this.hardwareFlowSupported = false;
+            this.hardwareFlowPaused = false;
+            this.app.ui.logToConsole('System: CTS status not exposed by this serial driver/browser. Falling back to paced writes only.', 'warning');
+            return;
+        }
+
+        this.hardwareFlowSupported = true;
+        this.hardwareFlowPaused = signals.clearToSend === false;
+        this.app.ui.logToConsole(
+            `System: Hardware flow control active. CTS is ${signals.clearToSend ? 'ready' : 'holding'}.`,
+            'info'
+        );
+    }
+
+    async waitForTransmitReady() {
+        while (this.isConnected && !this.isHold) {
+            if (this.softwareFlowPaused) {
+                this.setTrafficLight('orange');
+                await this.waitForSoftwareFlowResume();
+                continue;
+            }
+
+            if (!this.isHardwareHandshakeEnabled()) {
+                return true;
+            }
+
+            if (!this.hardwareFlowSupported) {
+                return true;
+            }
+
+            const signals = await this._readSignals();
+            if (!signals || typeof signals.clearToSend !== 'boolean') {
+                return true;
+            }
+
+            const isReady = signals.clearToSend !== false;
+            if (isReady) {
+                if (this.hardwareFlowPaused) {
+                    this.app.ui.logToConsole('System: CTS asserted. Resuming transmission.', 'info');
+                }
+                this.hardwareFlowPaused = false;
+                return true;
+            }
+
+            if (!this.hardwareFlowPaused) {
+                this.hardwareFlowPaused = true;
+                this.app.ui.logToConsole('System: CTS deasserted. Pausing transmission until plotter is ready.', 'warning');
+            }
+            this.setTrafficLight('orange');
+            await new Promise(resolve => setTimeout(resolve, this.hardwareFlowPollMs));
+        }
+
+        return false;
     }
 
     getEstimatedPosition() {
@@ -516,18 +638,28 @@ class SerialManager {
         }
     }
 
-    async sendManualCommand(cmd) {
+    async sendManualCommand(cmd, options = {}) {
         if (!this.writer) return;
         const expandedCommands = this._expandCurveCommand(cmd);
         if (expandedCommands.length === 0) return;
-        const out = expandedCommands.join('');
-        expandedCommands.forEach(part => {
-            this.app.ui.logToConsole(part, 'tx');
-            this.queuePreviewMotionFromCommand(part);
-        });
-
         const encoder = new TextEncoder();
-        await this.writer.write(encoder.encode(out + '\r\n'));
+        for (const part of expandedCommands) {
+            this.app.ui.logToConsole(part, 'tx');
+            if (options.preview !== false) {
+                this.queuePreviewMotionFromCommand(part);
+            }
+            if (!this.isTestMode()) {
+                const ready = await this.waitForTransmitReady();
+                if (!ready) break;
+                await this.writer.write(encoder.encode(part + '\r\n'));
+            }
+            if (options.updateEstimatedFromCommand === true) {
+                this._updateEstimatedPositionFromCommand(part);
+            }
+        }
+        if (options.estimatedPosition) {
+            this.setEstimatedPosition(options.estimatedPosition.x, options.estimatedPosition.y);
+        }
     }
 
     async sendPenUpCommand() {
@@ -551,6 +683,8 @@ class SerialManager {
     async stopStream(clearQueue = true) {
         this.isStreaming = false;
         this.isHold = false;
+        this.softwareFlowPaused = false;
+        this._flushResumeWaiters();
         if (clearQueue) {
             this.queue = [];
             this.updateStats();
@@ -562,6 +696,7 @@ class SerialManager {
         if (clearQueue) {
             this.clearPreviewMotion(false);
         }
+        this.runPromise = null;
     }
 
     async runStream() {
@@ -569,46 +704,44 @@ class SerialManager {
         if (this.isStreaming) return this.runPromise;
         const initialQueueLength = this.queue.length;
 
-        this.runPromise = (async () => {
-            this.isStreaming = true;
-            this.isHold = false;
-            this.setTrafficLight('green');
+            this.runPromise = (async () => {
+                this.isStreaming = true;
+                this.isHold = false;
+                this.hardwareFlowPaused = false;
+                this.setTrafficLight('green');
 
-            while (this.queue.length > 0 && this.isStreaming && !this.isHold) {
-                if (this.softwareFlowPaused) {
-                    this.setTrafficLight('orange');
-                    await this.waitForSoftwareFlowResume();
-                    if (!this.isStreaming || this.isHold) break;
+                while (this.queue.length > 0 && this.isStreaming && !this.isHold) {
+                    const ready = await this.waitForTransmitReady();
+                    if (!ready || !this.isStreaming || this.isHold) break;
                     this.setTrafficLight('green');
+
+                    const cmd = this.queue.shift();
+                    await this.sendManualCommand(cmd);
+
+                    this.incrementLinesStat();
+                    this.updateStats();
+
+                    // Retain a small pacing delay as a fallback for adapters that expose CTS unreliably.
+                    const baseDelay = this.commandDelay || 50;
+                    const safeDelay = this.hardwareFlowSupported
+                        ? baseDelay
+                        : initialQueueLength > 1000 ? Math.max(baseDelay, 180)
+                            : initialQueueLength > 300 ? Math.max(baseDelay, 120)
+                                : baseDelay;
+                    await new Promise(r => setTimeout(r, safeDelay));
                 }
 
-                const cmd = this.queue.shift();
-                await this.sendManualCommand(cmd);
+                this.isStreaming = false;
+                if (this.isHold || this.hardwareFlowPaused || this.softwareFlowPaused) {
+                    this.setTrafficLight('orange');
+                    return;
+                }
 
-                this.incrementLinesStat();
-                this.updateStats();
-
-                // Configurable delay based on "Machine Send Speed" setting to prevent buffer overflow
-                // In a real robust system, XON/XOFF parsing or buffer polling via 'OA;' would be needed,
-                // but for generic web usb/serial a configurable blind delay is often the fallback.
-                const baseDelay = this.commandDelay || 50;
-                const safeDelay = initialQueueLength > 1000 ? Math.max(baseDelay, 180)
-                    : initialQueueLength > 300 ? Math.max(baseDelay, 120)
-                        : baseDelay;
-                await new Promise(r => setTimeout(r, safeDelay));
-            }
-
-            if (this.isHold) {
-                this.setTrafficLight('orange');
-                return;
-            }
-
-            this.isStreaming = false;
-            if (this.queue.length === 0) {
-                this.app.ui.logToConsole('System: Plotting complete.');
-                this.setTrafficLight('green');
-            }
-        })();
+                if (this.queue.length === 0) {
+                    this.app.ui.logToConsole('System: Plotting complete.');
+                    this.setTrafficLight('green');
+                }
+            })();
 
         try {
             await this.runPromise;
@@ -622,6 +755,12 @@ class SerialManager {
             button.addEventListener('click', async () => {
                 const action = button.dataset.streamAction;
                 if (action === 'run') {
+                    if (this.app.liveTracker?.isModeEnabled()) {
+                        await this.stopStream(true);
+                        this.isHold = false;
+                        await this.app.liveTracker.handleRunRequest();
+                        return;
+                    }
                     await this.stopStream(true);
                     if (this.app.hpgl.generateFromPaths(this.app.canvas.paths)) {
                         await this.runStream();
@@ -630,6 +769,13 @@ class SerialManager {
                 }
 
                 if (action === 'hold') {
+                    if (this.app.liveTracker?.isActiveOrPaused()) {
+                        this.isStreaming = false;
+                        this.app.liveTracker.handleHold();
+                        this.isHold = true;
+                        this.setTrafficLight('orange');
+                        return;
+                    }
                     this.isHold = true;
                     this.clearPreviewMotion(false);
                     this.setTrafficLight('orange');
@@ -638,7 +784,20 @@ class SerialManager {
                 }
 
                 if (action === 'cancel') {
+                    if (this.app.liveTracker?.isActiveOrPaused()) {
+                        this.isStreaming = false;
+                        this.isHold = false;
+                        this.app.liveTracker.handleCancel();
+                        if (this.writer) {
+                            await this.sendManualCommand('PU;', { preview: false, updateEstimatedFromCommand: true });
+                        }
+                        this.setTrafficLight('green');
+                        return;
+                    }
                     await this.stopStream(true);
+                    if (this.writer) {
+                        await this.sendManualCommand('PU;', { preview: false, updateEstimatedFromCommand: true });
+                    }
                     this.setTrafficLight('green'); // Ready again
                     this.app.ui.logToConsole('System: Stream cancelled.');
                 }

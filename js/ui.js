@@ -32,6 +32,7 @@ class UIController {
             { id: 'panel-machine-jog', x: 0, y: 4, w: 2, h: 4 },
             { id: 'panel-console', x: 0, y: 8, w: 2, h: 7 },
             { id: 'panel-visualiser', x: 2, y: 0, w: 5, h: 8 },
+            { id: 'panel-live-tracker', x: 8, y: 0, w: 2, h: 7 },
             { id: 'panel-handwriting', x: 2, y: 8, w: 3, h: 7 },
             { id: 'panel-image-vector', x: 5, y: 8, w: 3, h: 7 },
             { id: 'panel-patterns', x: 8, y: 8, w: 2, h: 7 }
@@ -41,6 +42,7 @@ class UIController {
             { id: 'panel-machine-jog', label: 'Machine & Jog' },
             { id: 'panel-console', label: 'Command Log' },
             { id: 'panel-visualiser', label: 'Visualiser' },
+            { id: 'panel-live-tracker', label: 'Live Finger Tracker' },
             { id: 'panel-patterns', label: 'Pattern Generator' },
             { id: 'panel-handwriting', label: 'Handwriting Generator' },
             { id: 'panel-image-vector', label: 'Image to Vector' }
@@ -535,6 +537,13 @@ class UIController {
         this.updateVisualizerPalette();
     }
 
+    setActiveVisualizerPen(penNumber, persist = true) {
+        const nextPen = Math.max(1, Math.min(8, Number(penNumber) || 1));
+        this.activeVisualizerPen = nextPen;
+        this.updateVisualizerPalette();
+        if (persist) this.saveWorkspaceState();
+    }
+
     updateVisualizerPalette() {
         const visPalette = document.getElementById('vis-palette');
         const penStack = document.getElementById('vis-pen-stack');
@@ -547,7 +556,7 @@ class UIController {
         visPalette.appendChild(penStack);
         penStack.innerHTML = '';
 
-        for (let i = 0; i < 8; i++) {
+        for (let i = 7; i >= 0; i--) {
             const btn = document.createElement('div');
             btn.className = 'vis-color-btn';
             if (i + 1 === this.activeVisualizerPen) btn.classList.add('active');
@@ -560,8 +569,6 @@ class UIController {
             }
 
             btn.addEventListener('click', () => {
-                document.querySelectorAll('.vis-color-btn').forEach(b => b.classList.remove('active'));
-                btn.classList.add('active');
                 this.activeVisualizerPen = i + 1;
 
                 if (this.app.canvas.selectedPaths.length > 0) {
@@ -572,6 +579,7 @@ class UIController {
                 }
 
                 this.showPenMenu(i + 1, btn);
+                this.updateVisualizerPalette();
                 this.saveWorkspaceState();
             });
 
@@ -593,23 +601,42 @@ class UIController {
         document.getElementById('input-pen-visible').checked = config.visible !== false;
 
         const btnRect = targetBtn.getBoundingClientRect();
-        const panel = targetBtn.closest('.grid-stack-item-content') || document.body;
+        const panel = targetBtn.closest('.grid-stack-item-content') || targetBtn.closest('.grid-stack-item') || document.body;
         const panelRect = panel.getBoundingClientRect();
+        const gap = 10;
 
-        // Position next to button
-        let top = btnRect.top;
-        let left = btnRect.right + 10;
-
-        // Clamp to prevent exceeding panel bottom
-        menu.classList.remove('hidden'); // Show briefly to get offsetHeight
-        const menuHeight = menu.offsetHeight;
-
-        if (top + menuHeight > panelRect.bottom) {
-            top = panelRect.bottom - menuHeight - 10;
+        if (menu.parentElement !== panel) {
+            panel.appendChild(menu);
         }
+
+        menu.classList.remove('hidden');
+        menu.style.visibility = 'hidden';
+        menu.style.position = 'absolute';
+        const menuHeight = menu.offsetHeight;
+        const menuWidth = menu.offsetWidth;
+        const panelWidth = panelRect.width;
+        const panelHeight = panelRect.height;
+
+        let left = (btnRect.right - panelRect.left) + gap;
+        let top = btnRect.top - panelRect.top;
+
+        if (left + menuWidth > panelWidth - gap) {
+            left = (btnRect.left - panelRect.left) - menuWidth - gap;
+        }
+        if (left < gap) {
+            left = Math.max(gap, Math.min(left, panelWidth - menuWidth - gap));
+        }
+
+        if (top + menuHeight > panelHeight - gap) {
+            top = panelHeight - menuHeight - gap;
+        }
+        if (top < gap) top = gap;
 
         menu.style.left = `${left}px`;
         menu.style.top = `${top}px`;
+        menu.style.right = 'auto';
+        menu.style.bottom = 'auto';
+        menu.style.visibility = '';
 
         // Bind internal menu actions once
         document.getElementById('btn-close-pen-menu').onclick = () => menu.classList.add('hidden');
