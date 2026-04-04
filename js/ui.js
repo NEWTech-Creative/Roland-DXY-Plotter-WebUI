@@ -3,7 +3,7 @@ class UIController {
         this.app = app;
         this.penColors = ['#1e1e1e', '#e11d48', '#2563eb', '#16a34a', '#eab308', '#9333ea', '#ea580c', '#0ea5e9']; // Default 8 pens
         this.visPenConfig = this.penColors.map(c => ({ color: c, thickness: 0.3 })); // Context configs
-        this.activeTool = 'select'; // select, text, shape, node, bucket
+        this.activeTool = 'select'; // select, text, shape, bezier, node, bucket
         this.activeVisualizerPen = 1;
         this.fillBucketSettings = {
             pattern: 'lines',
@@ -1021,13 +1021,18 @@ class UIController {
     }
 
     setTool(toolName) {
+        const previousTool = this.activeTool;
         this.activeTool = toolName;
         document.querySelectorAll('.tool-btn').forEach(b => {
             if (b.dataset.tool === toolName) b.classList.add('active');
             else b.classList.remove('active');
         });
         if (this.app.canvas) {
-            this.app.canvas.cancelCurrentOperation();
+            if (previousTool === 'bezier' && toolName !== 'bezier' && this.app.canvas.isCreatingBezier) {
+                this.app.canvas.finalizeBezierPath(true);
+            } else {
+                this.app.canvas.cancelCurrentOperation();
+            }
             this.clearPatternPreview();
             this.app.canvas.draw();
         }

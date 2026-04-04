@@ -36,6 +36,12 @@ class CanvasManager {
         this.activeShapeType = 'circle'; // 'circle', 'rectangle', 'line'
         this.isCreatingShape = false;
         this.currentShapeIdx = -1;
+        this.isCreatingBezier = false;
+        this.currentBezierPathIdx = -1;
+        this.isAdjustingBezierHandle = false;
+        this.pendingBezierSegmentIdx = -1;
+        this.bezierDragAnchor = null;
+        this.bezierPreviewPoint = null;
         this.isPanning = false;
         this.dragStartX = 0;
         this.dragStartY = 0;
@@ -90,10 +96,12 @@ class CanvasManager {
     clear() {
         this.paths = []; // Array of path objects
         this.selectedPaths = [];
+        this.selectedNodes = [];
         this.draggingNodeIndex = -1;
         this.patternPreviewPaths = [];
         this.liveTrackerOverlay = null;
         this.liveTrackerStrokeIndex = -1;
+        this.resetBezierToolState();
 
         // Panning and Zooming State
         this.viewOffsetX = 0;
@@ -172,6 +180,163 @@ class CanvasManager {
         this.draw();
     }
 
+    resetBezierToolState() {
+        this.isCreatingBezier = false;
+        this.currentBezierPathIdx = -1;
+        this.isAdjustingBezierHandle = false;
+        this.pendingBezierSegmentIdx = -1;
+        this.bezierDragAnchor = null;
+        this.bezierPreviewPoint = null;
+    }
+
+    offsetPathGeometry(path, dx, dy) {
+        if (!path) return;
+        if (path.type === 'circle' || path.type === 'text' || path.type === 'rectangle') {
+            if (Number.isFinite(path.x)) path.x += dx;
+            if (Number.isFinite(path.y)) path.y += dy;
+            return;
+        }
+        if (Array.isArray(path.points)) {
+            path.points.forEach(pt => {
+                if (!pt) return;
+                if (Number.isFinite(pt.x)) pt.x += dx;
+                if (Number.isFinite(pt.y)) pt.y += dy;
+            });
+        }
+        if (Array.isArray(path.segments)) {
+            path.segments.forEach(segment => {
+                if (!segment) return;
+                if (Number.isFinite(segment.x)) segment.x += dx;
+                if (Number.isFinite(segment.y)) segment.y += dy;
+                if (Number.isFinite(segment.x1)) segment.x1 += dx;
+                if (Number.isFinite(segment.y1)) segment.y1 += dy;
+                if (Number.isFinite(segment.x2)) segment.x2 += dx;
+                if (Number.isFinite(segment.y2)) segment.y2 += dy;
+            });
+        }
+    }
+
+    startBezierPath(anchor) {
+        const start = anchor ? { x: anchor.x, y: anchor.y } : { x: 0, y: 0 };
+        const visPen = this.app?.ui?.activeVisualizerPen || 1;
+        this.paths.push({
+            type: 'path',
+            points: [{ ...start }],
+            segments: [{ type: 'M', x: start.x, y: start.y }],
+            pen: visPen
+        });
+        this.currentBezierPathIdx = this.paths.length - 1;
+        this.isCreatingBezier = true;
+        this.isAdjustingBezierHandle = false;
+        this.pendingBezierSegmentIdx = -1;
+        this.bezierDragAnchor = null;
+        this.bezierPreviewPoint = { ...start };
+        this.selectedPaths = [this.currentBezierPathIdx];
+        this.selectedNodes = [];
+    }
+
+    shouldCloseBezierPath(anchor) {
+        const path = this.paths[this.currentBezierPathIdx];
+        if (!path || !Array.isArray(path.points) || path.points.length < 2 || !anchor) return false;
+        const start = path.points[0];
+        if (!start) return false;
+        const closeThreshold = Math.max(1.5, this.snapThreshold);
+        return Math.hypot((anchor.x || 0) - start.x, (anchor.y || 0) - start.y) <= closeThreshold;
+    }
+
+    closeBezierPath() {
+        const path = this.paths[this.currentBezierPathIdx];
+        if (!path || !Array.isArray(path.segments)) return false;
+        const hasClose = path.segments.some(segment => segment && segment.type === 'Z');
+        if (!hasClose) {
+            path.segments.push({ type: 'Z' });
+        }
+        path.closed = true;
+        return true;
+    }
+
+    addBezierAnchor(anchor) {
+        const path = this.paths[this.currentBezierPathIdx];
+        if (!path || !Array.isArray(path.points) || !Array.isArray(path.segments)) return false;
+        const lastPoint = path.points[path.points.length - 1];
+        if (!lastPoint) return false;
+        if (Math.hypot((anchor.x || 0) - lastPoint.x, (anchor.y || 0) - lastPoint.y) < 0.01) return false;
+
+        path.points.push({ x: anchor.x, y: anchor.y });
+        path.segments.push({ type: 'L', x: anchor.x, y: anchor.y });
+        this.pendingBezierSegmentIdx = path.segments.length - 1;
+        this.isAdjustingBezierHandle = true;
+        this.bezierDragAnchor = { x: anchor.x, y: anchor.y };
+        this.bezierPreviewPoint = { x: anchor.x, y: anchor.y };
+        this.selectedPaths = [this.currentBezierPathIdx];
+        this.selectedNodes = [];
+        return true;
+    }
+
+    updateBezierSegmentFromDrag(xMM, yMM) {
+        const path = this.paths[this.currentBezierPathIdx];
+        const segmentIdx = this.pendingBezierSegmentIdx;
+        const anchor = this.bezierDragAnchor;
+        if (!path || !anchor || !Array.isArray(path.points) || !Array.isArray(path.segments)) return;
+        if (segmentIdx <= 0 || segmentIdx >= path.segments.length) return;
+
+        const segment = path.segments[segmentIdx];
+        const previousAnchor = path.points[segmentIdx - 1];
+        if (!segment || !previousAnchor) return;
+
+        const dx = xMM - anchor.x;
+        const dy = yMM - anchor.y;
+        const dragDistance = Math.hypot(dx, dy);
+
+        if (dragDistance < 0.35) {
+            segment.type = 'L';
+            segment.x = anchor.x;
+            segment.y = anchor.y;
+            delete segment.x1;
+            delete segment.y1;
+            delete segment.x2;
+            delete segment.y2;
+            return;
+        }
+
+        segment.type = 'Q';
+        segment.x = anchor.x;
+        segment.y = anchor.y;
+        segment.x1 = anchor.x - dx;
+        segment.y1 = anchor.y - dy;
+        delete segment.x2;
+        delete segment.y2;
+    }
+
+    finalizeBezierPath(saveUndo = true) {
+        const pathIdx = this.currentBezierPathIdx;
+        const path = pathIdx >= 0 ? this.paths[pathIdx] : null;
+        let finalized = false;
+
+        if (path) {
+            const segmentCount = Array.isArray(path.segments) ? path.segments.length : 0;
+            const pointCount = Array.isArray(path.points) ? path.points.length : 0;
+            if (segmentCount <= 1 || pointCount <= 1) {
+                this.paths.splice(pathIdx, 1);
+                this.selectedPaths = [];
+            } else {
+                finalized = true;
+                this.selectedPaths = [pathIdx];
+                this.selectedNodes = [];
+            }
+        }
+
+        this.resetBezierToolState();
+
+        if (finalized && saveUndo) {
+            this.saveUndoState();
+            this.app?.ui?.logToConsole('System: Bezier path finalized.');
+        }
+
+        this.draw();
+        return finalized;
+    }
+
     saveUndoState() {
         this.undoStack.push(JSON.stringify(this.paths));
         this.redoStack = []; // Clear redo stack on new action
@@ -213,6 +378,7 @@ class CanvasManager {
     }
 
     undo() {
+        this.resetBezierToolState();
         if (this.undoStack.length > 1) {
             const current = this.undoStack.pop();
             this.redoStack.push(current);
@@ -232,6 +398,7 @@ class CanvasManager {
     }
 
     redo() {
+        this.resetBezierToolState();
         if (this.redoStack.length > 0) {
             const next = this.redoStack.pop();
             this.undoStack.push(next);
@@ -253,6 +420,15 @@ class CanvasManager {
             this.paths.splice(this.currentShapeIdx, 1);
             this.selectedPaths = []; // Clear selection if we were drawing
             this.app.ui.logToConsole('System: Shape drawing cancelled.');
+        }
+        if (this.isCreatingBezier) {
+            if (this.currentBezierPathIdx >= 0 && this.currentBezierPathIdx < this.paths.length) {
+                this.paths.splice(this.currentBezierPathIdx, 1);
+                this.selectedPaths = [];
+                this.selectedNodes = [];
+            }
+            this.resetBezierToolState();
+            this.app.ui.logToConsole('System: Bezier path cancelled.');
         }
 
         this.isCreatingShape = false;
@@ -294,6 +470,7 @@ class CanvasManager {
                     this.paths.splice(idx, 1);
                 });
                 this.selectedPaths = [];
+                this.selectedNodes = [];
                 this.saveUndoState();
                 this.draw();
                 this.app.ui.logToConsole(`System: ${indices.length} path(s) deleted.`);
@@ -333,23 +510,14 @@ class CanvasManager {
                     this.selectedPaths = []; // Clear current selection, select the new pastes
                     this.copyBuffer.forEach(p => {
                         const clone = JSON.parse(JSON.stringify(p));
-                        // Offset paste slightly right and down (approx +10mm)
-                        if (clone.type === 'circle' || clone.type === 'text') {
-                            clone.x += 10; clone.y += 10;
-                        } else if (clone.type === 'line' || clone.type === 'polyline' || clone.type === 'path') {
-                            clone.points.forEach(pt => { pt.x += 10; pt.y += 10; });
-                        }
+                        this.offsetPathGeometry(clone, 10, 10);
                         this.paths.push(clone);
                         this.selectedPaths.push(this.paths.length - 1);
                     });
 
                     // Also offset the buffer again in case of multi-pastes
                     this.copyBuffer.forEach(p => {
-                        if (p.type === 'circle' || p.type === 'text') {
-                            p.x += 10; p.y += 10;
-                        } else if (p.type === 'line' || p.type === 'polyline' || p.type === 'path') {
-                            p.points.forEach(pt => { pt.x += 10; pt.y += 10; });
-                        }
+                        this.offsetPathGeometry(p, 10, 10);
                     });
 
                     this.saveUndoState();
@@ -373,6 +541,16 @@ class CanvasManager {
             // Z / Undo (Ctrl+Z)
             if (e.ctrlKey && (e.key === 'z' || e.key === 'Z')) {
                 this.undo();
+            }
+
+            if (!e.ctrlKey && !e.metaKey && this.isCreatingBezier && (e.key === 'Enter' || e.key === 'Escape')) {
+                e.preventDefault();
+                if (e.key === 'Enter') {
+                    this.finalizeBezierPath(true);
+                } else {
+                    this.cancelCurrentOperation();
+                }
+                return;
             }
 
             // Inline Text Editing
@@ -416,6 +594,14 @@ class CanvasManager {
             e.preventDefault();
         });
 
+        document.addEventListener('dblclick', (e) => {
+            if (!checkTarget(e)) return;
+            if (this.app.ui.activeTool === 'bezier' && this.isCreatingBezier) {
+                e.preventDefault();
+                this.finalizeBezierPath(true);
+            }
+        });
+
 
         document.addEventListener('wheel', (e) => {
             if (!checkTarget(e)) return;
@@ -457,7 +643,7 @@ class CanvasManager {
         }, { passive: false });
 
         document.addEventListener('mousedown', (e) => {
-            if (!checkTarget(e) && !this.isCreatingShape) return;
+            if (!checkTarget(e) && !this.isCreatingShape && !this.isCreatingBezier) return;
 
             const pos = this.getMousePosMM(e);
 
@@ -478,6 +664,38 @@ class CanvasManager {
 
             if (this.app.ui.activeTool === 'bucket' && e.button === 0) {
                 this.applyBucketFillAt(pos.xMM, pos.yMM);
+                return;
+            }
+
+            if (this.app.ui.activeTool === 'bezier' && e.button === 0) {
+                let anchorX = pos.xMM;
+                let anchorY = pos.yMM;
+                const excludeNodeIdx = this.isCreatingBezier && this.currentBezierPathIdx >= 0
+                    ? Math.max(0, (this.paths[this.currentBezierPathIdx]?.points?.length || 1) - 1)
+                    : -1;
+                const snap = this.getSnapPoint(anchorX, anchorY, this.currentBezierPathIdx, excludeNodeIdx);
+                if (snap) {
+                    anchorX = snap.x;
+                    anchorY = snap.y;
+                    this.snapPoint = snap;
+                } else {
+                    this.snapPoint = null;
+                }
+
+                if (!this.isCreatingBezier || this.currentBezierPathIdx < 0) {
+                    this.startBezierPath({ x: anchorX, y: anchorY });
+                    this.app.ui.logToConsole('System: Bezier path started. Click for corners, click-drag for curves, Enter or double-click to finish.');
+                } else {
+                    if (this.shouldCloseBezierPath({ x: anchorX, y: anchorY })) {
+                        this.closeBezierPath();
+                        this.finalizeBezierPath(true);
+                        this.app.ui.setTool('select');
+                        return;
+                    }
+                    this.addBezierAnchor({ x: anchorX, y: anchorY });
+                }
+
+                this.draw();
                 return;
             }
 
@@ -686,7 +904,7 @@ class CanvasManager {
         }, true);
 
         document.addEventListener('mousemove', (e) => {
-            if (!this.isPanning && !this.isMarqueeSelecting && !this.isDragging && !this.isCreatingShape) {
+            if (!this.isPanning && !this.isMarqueeSelecting && !this.isDragging && !this.isCreatingShape && !this.isCreatingBezier) {
                 if (!checkTarget(e)) return;
             }
 
@@ -704,7 +922,7 @@ class CanvasManager {
 
             const pos = this.getMousePosMM(e);
 
-            if (this.app.ui.activeTool === 'bucket' && !this.isDragging && !this.isMarqueeSelecting && !this.isCreatingShape && !this.isRotating) {
+            if (this.app.ui.activeTool === 'bucket' && !this.isDragging && !this.isMarqueeSelecting && !this.isCreatingShape && !this.isRotating && !this.isCreatingBezier) {
                 const target = this.getFillTargetAt(pos.xMM, pos.yMM);
                 this.bucketHoverRegion = target ? target.region : null;
                 this.bucketHoverPathIdx = target ? target.pathIdx : -1;
@@ -722,6 +940,7 @@ class CanvasManager {
             else if (this.isDragging) cursor = 'move';
             else if (this.isMarqueeSelecting) cursor = 'crosshair';
             else if (this.editingPathIdx !== -1) cursor = 'text'; // Text editing cursor
+            else if (this.app.ui.activeTool === 'bezier') cursor = 'crosshair';
             else if (this.app.ui.activeTool === 'select' && this.selectedPaths.length >= 1) {
                 const box = this.getGroupBoundingBox(this.selectedPaths);
                 if (box) {
@@ -746,6 +965,27 @@ class CanvasManager {
                 cursor = 'pointer';
             }
             this.canvas.style.cursor = cursor;
+
+            if (this.app.ui.activeTool === 'bezier' && this.isCreatingBezier) {
+                let previewX = pos.xMM;
+                let previewY = pos.yMM;
+                const previewSnap = this.getSnapPoint(previewX, previewY, this.currentBezierPathIdx, -1);
+                if (previewSnap && !this.isAdjustingBezierHandle) {
+                    previewX = previewSnap.x;
+                    previewY = previewSnap.y;
+                    this.snapPoint = previewSnap;
+                } else if (!this.isAdjustingBezierHandle) {
+                    this.snapPoint = null;
+                }
+                this.bezierPreviewPoint = { x: previewX, y: previewY };
+
+                if (this.isAdjustingBezierHandle) {
+                    this.updateBezierSegmentFromDrag(pos.xMM, pos.yMM);
+                }
+
+                this.draw();
+                return;
+            }
 
             if (this.isRotating && this.selectedPaths.length > 0) {
                 const currentAngle = Math.atan2(pos.yMM - this.dragRotationCenter.y, pos.xMM - this.dragRotationCenter.x);
@@ -1069,6 +1309,15 @@ class CanvasManager {
 
             this.snapPoint = null;
 
+            if (this.app.ui.activeTool === 'bezier' && this.isAdjustingBezierHandle) {
+                this.isAdjustingBezierHandle = false;
+                this.pendingBezierSegmentIdx = -1;
+                this.bezierDragAnchor = null;
+                this.saveCurrentState();
+                this.draw();
+                return;
+            }
+
             if (e.button === 1 || this.isPanning) {
                 this.isPanning = false;
                 if (this.canvas.parentElement) this.canvas.parentElement.classList.remove('panning');
@@ -1203,9 +1452,12 @@ class CanvasManager {
                 const dist = Math.sqrt((xMM - p.x) ** 2 + (yMM - p.y) ** 2);
                 if (Math.abs(dist - p.r) <= tol) return i;
             } else if (p.type === 'line' || p.type === 'polyline' || p.type === 'path') {
-                for (let j = 0; j < p.points.length - 1; j++) {
-                    const p1 = p.points[j];
-                    const p2 = p.points[j + 1];
+                const hitPoints = (p.type === 'path' && Array.isArray(p.segments) && p.segments.length > 0)
+                    ? this.flattenPathForFill(p)
+                    : p.points;
+                for (let j = 0; j < hitPoints.length - 1; j++) {
+                    const p1 = hitPoints[j];
+                    const p2 = hitPoints[j + 1];
                     const d = this.distToSegment({ x: xMM, y: yMM }, p1, p2);
                     if (d <= tol) return i;
                 }
@@ -2931,6 +3183,23 @@ class CanvasManager {
                 this.ctx.stroke();
             }
         });
+
+        if (this.isCreatingBezier && this.currentBezierPathIdx >= 0) {
+            const activePath = this.paths[this.currentBezierPathIdx];
+            const previewStart = activePath?.points?.[activePath.points.length - 1];
+            const previewEnd = this.bezierPreviewPoint;
+            if (previewStart && previewEnd && Math.hypot(previewEnd.x - previewStart.x, previewEnd.y - previewStart.y) > 0.01) {
+                this.ctx.save();
+                this.ctx.setLineDash([4, 4]);
+                this.ctx.strokeStyle = 'rgba(37, 99, 235, 0.75)';
+                this.ctx.lineWidth = Math.max(0.15 / this.viewZoom, 0.45 * mmToPx);
+                this.ctx.beginPath();
+                this.ctx.moveTo(previewStart.x * mmToPx, previewStart.y * mmToPx);
+                this.ctx.lineTo(previewEnd.x * mmToPx, previewEnd.y * mmToPx);
+                this.ctx.stroke();
+                this.ctx.restore();
+            }
+        }
 
         // Draw Pattern Preview
         this.ctx.save();
