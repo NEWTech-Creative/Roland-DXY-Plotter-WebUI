@@ -1,0 +1,604 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HPGL Plotter Viewer</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Arial, Helvetica, sans-serif;
+      background: #f4f6f8;
+      color: #1f2933;
+      height: 100vh;
+      overflow: hidden;
+    }
+    .app {
+      display: grid;
+      grid-template-columns: 420px 1fr;
+      height: 100vh;
+    }
+    .panel {
+      background: #ffffff;
+      border-right: 1px solid #d9e2ec;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      min-height: 0;
+    }
+    .viewer-wrap {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      min-height: 0;
+    }
+    h1 {
+      margin: 0;
+      font-size: 22px;
+    }
+    .muted {
+      color: #52606d;
+      font-size: 14px;
+      line-height: 1.4;
+    }
+    textarea {
+      width: 100%;
+      flex: 1;
+      min-height: 280px;
+      resize: none;
+      padding: 12px;
+      border: 1px solid #bcccdc;
+      border-radius: 10px;
+      font-family: Consolas, Monaco, monospace;
+      font-size: 14px;
+      line-height: 1.5;
+      background: #f8fafc;
+      color: #102a43;
+    }
+    .row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    button {
+      border: none;
+      background: #2563eb;
+      color: white;
+      padding: 10px 14px;
+      border-radius: 10px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    button.secondary {
+      background: #486581;
+    }
+    button:hover { filter: brightness(0.96); }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 8px;
+    }
+    .card {
+      background: #f8fafc;
+      border: 1px solid #d9e2ec;
+      border-radius: 10px;
+      padding: 10px;
+      font-size: 13px;
+    }
+    .card strong {
+      display: block;
+      font-size: 12px;
+      color: #52606d;
+      margin-bottom: 4px;
+      font-weight: 600;
+    }
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 16px;
+      background: #ffffff;
+      border-bottom: 1px solid #d9e2ec;
+      flex-wrap: wrap;
+    }
+    .toolbar label {
+      font-size: 14px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .toolbar input[type="range"] {
+      width: 140px;
+    }
+    .canvas-shell {
+      flex: 1;
+      min-height: 0;
+      background: #e9eef5;
+      padding: 16px;
+      display: flex;
+    }
+    canvas {
+      width: 100%;
+      height: 100%;
+      background: #ffffff;
+      border: 1px solid #bcccdc;
+      border-radius: 12px;
+      display: block;
+    }
+    .status {
+      font-size: 13px;
+      color: #52606d;
+      padding: 0 2px;
+    }
+    .error {
+      color: #c81e1e;
+    }
+    @media (max-width: 900px) {
+      .app {
+        grid-template-columns: 1fr;
+        grid-template-rows: 45vh 1fr;
+      }
+      .panel {
+        border-right: none;
+        border-bottom: 1px solid #d9e2ec;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="panel">
+      <h1>HPGL Plotter Viewer</h1>
+      <div class="muted">
+        Paste your HPGL on the left, then render it on the right. This viewer supports common commands like <code>IN</code>, <code>SP</code>, <code>PU</code>, <code>PD</code>, <code>PA</code>, and <code>PR</code>.
+      </div>
+
+      <div class="row">
+        <button id="renderBtn">Render HPGL</button>
+        <button id="sampleBtn" class="secondary">Load Sample</button>
+        <button id="clearBtn" class="secondary">Clear</button>
+      </div>
+
+      <textarea id="hpglInput" spellcheck="false">IN;
+SP1;
+PU1000,1000;
+PD4000,1000,4000,3000,1000,3000,1000,1000;
+PU1800,1600;
+PD3200,1600,3200,2400,1800,2400,1800,1600;
+PU2200,3000;
+PD2500,3600,2800,3000;
+PU;</textarea>
+
+      <div class="stats">
+        <div class="card"><strong>Pen Moves</strong><span id="moveCount">0</span></div>
+        <div class="card"><strong>Draw Segments</strong><span id="segmentCount">0</span></div>
+        <div class="card"><strong>Bounds</strong><span id="boundsText">-</span></div>
+        <div class="card"><strong>Mode</strong><span id="modeText">Absolute</span></div>
+      </div>
+
+      <div id="status" class="status">Ready.</div>
+    </aside>
+
+    <section class="viewer-wrap">
+      <div class="toolbar">
+        <label>Zoom <input type="range" id="zoomSlider" min="0.2" max="4" step="0.1" value="1"></label>
+        <span id="zoomValue">1.0x</span>
+        <label><input type="checkbox" id="showTravel" checked> Show pen-up moves</label>
+        <label><input type="checkbox" id="showGrid" checked> Show grid</label>
+        <button id="playBtn">Play</button>
+        <button id="pauseBtn" class="secondary">Pause</button>
+        <button id="resetBtn" class="secondary">Reset</button>
+        <label>Speed <input type="range" id="speedSlider" min="1" max="100" step="1" value="1"></label>
+        <span id="speedValue">1x</span>
+      </div>
+      <div class="canvas-shell">
+        <canvas id="plotCanvas" width="1200" height="800"></canvas>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    const hpglInput = document.getElementById('hpglInput');
+    const renderBtn = document.getElementById('renderBtn');
+    const sampleBtn = document.getElementById('sampleBtn');
+    const clearBtn = document.getElementById('clearBtn');
+    const canvas = document.getElementById('plotCanvas');
+    const ctx = canvas.getContext('2d');
+    const statusEl = document.getElementById('status');
+    const moveCountEl = document.getElementById('moveCount');
+    const segmentCountEl = document.getElementById('segmentCount');
+    const boundsTextEl = document.getElementById('boundsText');
+    const modeTextEl = document.getElementById('modeText');
+    const zoomSlider = document.getElementById('zoomSlider');
+    const zoomValue = document.getElementById('zoomValue');
+    const showTravel = document.getElementById('showTravel');
+    const showGrid = document.getElementById('showGrid');
+    const playBtn = document.getElementById('playBtn');
+    const pauseBtn = document.getElementById('pauseBtn');
+    const resetBtn = document.getElementById('resetBtn');
+    const speedSlider = document.getElementById('speedSlider');
+    const speedValue = document.getElementById('speedValue');
+
+    let currentData = null;
+    let animationFrame = null;
+    let isPlaying = false;
+    let playbackIndex = 0;
+
+    function setStatus(message, isError = false) {
+      statusEl.textContent = message;
+      statusEl.className = isError ? 'status error' : 'status';
+    }
+
+    function resizeCanvasToDisplaySize() {
+      const rect = canvas.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      const width = Math.round(rect.width * dpr);
+      const height = Math.round(rect.height * dpr);
+      if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width;
+        canvas.height = height;
+      }
+    }
+
+    function parseNumbers(str) {
+      if (!str.trim()) return [];
+      return str
+        .split(',')
+        .map(v => v.trim())
+        .filter(v => v !== '')
+        .map(Number)
+        .filter(v => !Number.isNaN(v));
+    }
+
+    function parseHPGL(text) {
+      const commands = text
+        .replace(/\r/g, '')
+        .split(';')
+        .map(cmd => cmd.trim())
+        .filter(Boolean);
+
+      let x = 0;
+      let y = 0;
+      let penDown = false;
+      let absoluteMode = true;
+      let pen = 1;
+      const segments = [];
+      const travels = [];
+      let drawSegments = 0;
+      let moveCount = 0;
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+
+      function includePoint(px, py) {
+        minX = Math.min(minX, px);
+        minY = Math.min(minY, py);
+        maxX = Math.max(maxX, px);
+        maxY = Math.max(maxY, py);
+      }
+
+      function moveTo(nx, ny, draw) {
+        if (draw) {
+          segments.push({ x1: x, y1: y, x2: nx, y2: ny, pen });
+          drawSegments++;
+        } else {
+          travels.push({ x1: x, y1: y, x2: nx, y2: ny });
+        }
+        includePoint(x, y);
+        includePoint(nx, ny);
+        x = nx;
+        y = ny;
+        moveCount++;
+      }
+
+      for (const raw of commands) {
+        const cmd = raw.slice(0, 2).toUpperCase();
+        const argText = raw.slice(2).trim();
+        const nums = parseNumbers(argText);
+
+        switch (cmd) {
+          case 'IN':
+            x = 0;
+            y = 0;
+            penDown = false;
+            absoluteMode = true;
+            pen = 1;
+            break;
+
+          case 'SP':
+            if (nums.length > 0) pen = nums[0];
+            break;
+
+          case 'PA':
+            absoluteMode = true;
+            if (nums.length >= 2) {
+              for (let i = 0; i < nums.length - 1; i += 2) {
+                moveTo(nums[i], nums[i + 1], penDown);
+              }
+            }
+            break;
+
+          case 'PR':
+            absoluteMode = false;
+            if (nums.length >= 2) {
+              for (let i = 0; i < nums.length - 1; i += 2) {
+                moveTo(x + nums[i], y + nums[i + 1], penDown);
+              }
+            }
+            break;
+
+          case 'PU': {
+            penDown = false;
+            if (nums.length >= 2) {
+              for (let i = 0; i < nums.length - 1; i += 2) {
+                const nx = absoluteMode ? nums[i] : x + nums[i];
+                const ny = absoluteMode ? nums[i + 1] : y + nums[i + 1];
+                moveTo(nx, ny, false);
+              }
+            }
+            break;
+          }
+
+          case 'PD': {
+            if (nums.length === 0) {
+              penDown = true;
+              break;
+            }
+            penDown = true;
+            for (let i = 0; i < nums.length - 1; i += 2) {
+              const nx = absoluteMode ? nums[i] : x + nums[i];
+              const ny = absoluteMode ? nums[i + 1] : y + nums[i + 1];
+              moveTo(nx, ny, true);
+            }
+            break;
+          }
+
+          default:
+            break;
+        }
+      }
+
+      if (!Number.isFinite(minX)) {
+        minX = 0;
+        minY = 0;
+        maxX = 100;
+        maxY = 100;
+      }
+
+      return {
+        segments,
+        travels,
+        drawSegments,
+        moveCount,
+        bounds: { minX, minY, maxX, maxY },
+        mode: absoluteMode ? 'Absolute' : 'Relative'
+      };
+    }
+
+    function drawGrid(width, height) {
+      ctx.save();
+      ctx.strokeStyle = '#e5e7eb';
+      ctx.lineWidth = 1;
+      const step = 40;
+      for (let x = 0; x <= width; x += step) {
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, height);
+        ctx.stroke();
+      }
+      for (let y = 0; y <= height; y += step) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(width, y);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    function renderPlot(data, uptoIndex = null) {
+      resizeCanvasToDisplaySize();
+      const width = canvas.width;
+      const height = canvas.height;
+      ctx.clearRect(0, 0, width, height);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, width, height);
+
+      if (showGrid.checked) drawGrid(width, height);
+
+      const padding = 50;
+      const zoom = parseFloat(zoomSlider.value);
+      const bounds = data.bounds;
+      const plotW = Math.max(1, bounds.maxX - bounds.minX);
+      const plotH = Math.max(1, bounds.maxY - bounds.minY);
+      const scale = Math.min((width - padding * 2) / plotW, (height - padding * 2) / plotH) * zoom;
+      const offsetX = (width - plotW * scale) / 2;
+      const offsetY = (height - plotH * scale) / 2;
+
+      function mapPoint(px, py) {
+        return {
+          x: offsetX + (px - bounds.minX) * scale,
+          y: height - (offsetY + (py - bounds.minY) * scale)
+        };
+      }
+
+      if (showTravel.checked) {
+        ctx.save();
+        ctx.strokeStyle = 'rgba(100, 116, 139, 0.65)';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([8, 6]);
+        for (const s of data.travels) {
+          const a = mapPoint(s.x1, s.y1);
+          const b = mapPoint(s.x2, s.y2);
+          ctx.beginPath();
+          ctx.moveTo(a.x, a.y);
+          ctx.lineTo(b.x, b.y);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+
+      ctx.save();
+      ctx.strokeStyle = '#111827';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([]);
+      ctx.lineJoin = 'round';
+      ctx.lineCap = 'round';
+      const segmentLimit = uptoIndex === null ? data.segments.length : Math.min(data.segments.length, uptoIndex);
+      for (let i = 0; i < segmentLimit; i++) {
+        const s = data.segments[i];
+        const a = mapPoint(s.x1, s.y1);
+        const b = mapPoint(s.x2, s.y2);
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
+      }
+      ctx.restore();
+
+      if (segmentLimit > 0) {
+        const last = data.segments[segmentLimit - 1];
+        const tip = mapPoint(last.x2, last.y2);
+        ctx.save();
+        ctx.fillStyle = '#dc2626';
+        ctx.beginPath();
+        ctx.arc(tip.x, tip.y, 6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+
+      ctx.save();
+      ctx.strokeStyle = '#2563eb';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(offsetX, height - offsetY - plotH * scale, plotW * scale, plotH * scale);
+      ctx.restore();
+    }
+
+    function updateUI(data) {
+      moveCountEl.textContent = data.moveCount;
+      segmentCountEl.textContent = data.drawSegments;
+      boundsTextEl.textContent = `${Math.round(data.bounds.minX)}, ${Math.round(data.bounds.minY)} → ${Math.round(data.bounds.maxX)}, ${Math.round(data.bounds.maxY)}`;
+      modeTextEl.textContent = data.mode;
+    }
+
+    function stopPlayback() {
+      isPlaying = false;
+      if (animationFrame) cancelAnimationFrame(animationFrame);
+      animationFrame = null;
+    }
+
+    function animatePlayback() {
+      if (!isPlaying || !currentData) return;
+
+      const speed = Math.max(1, parseInt(speedSlider.value, 10) || 1);
+      renderPlot(currentData, playbackIndex);
+      playbackIndex += speed;
+
+      if (playbackIndex <= currentData.segments.length) {
+        animationFrame = requestAnimationFrame(animatePlayback);
+      } else {
+        renderPlot(currentData, currentData.segments.length);
+        stopPlayback();
+        setStatus('Playback complete.');
+      }
+    }
+
+    function doRender() {
+      try {
+        stopPlayback();
+        currentData = parseHPGL(hpglInput.value);
+        playbackIndex = 0;
+        updateUI(currentData);
+        renderPlot(currentData);
+        setStatus('HPGL rendered successfully.');
+      } catch (err) {
+        setStatus(`Render failed: ${err.message}`, true);
+      }
+    }
+
+    renderBtn.addEventListener('click', doRender);
+
+    sampleBtn.addEventListener('click', () => {
+      hpglInput.value = `IN;
+SP1;
+PU500,500;
+PD4500,500,4500,2800,500,2800,500,500;
+PU1200,1200;
+PD3800,1200;
+PD3800,2200;
+PD1200,2200;
+PD1200,1200;
+PU1200,2200;
+PD2500,3400,3800,2200;
+PU2200,1200;
+PD2200,2200;
+PU2800,1200;
+PD2800,2200;
+PU;`;
+      doRender();
+    });
+
+    clearBtn.addEventListener('click', () => {
+      stopPlayback();
+      hpglInput.value = '';
+      currentData = null;
+      resizeCanvasToDisplaySize();
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      moveCountEl.textContent = '0';
+      segmentCountEl.textContent = '0';
+      boundsTextEl.textContent = '-';
+      modeTextEl.textContent = 'Absolute';
+      setStatus('Cleared.');
+    });
+
+    zoomSlider.addEventListener('input', () => {
+      zoomValue.textContent = `${parseFloat(zoomSlider.value).toFixed(1)}x`;
+      if (currentData) renderPlot(currentData, isPlaying ? playbackIndex : null);
+    });
+
+    showTravel.addEventListener('change', () => {
+      if (currentData) renderPlot(currentData, isPlaying ? playbackIndex : null);
+    });
+
+    showGrid.addEventListener('change', () => {
+      if (currentData) renderPlot(currentData, isPlaying ? playbackIndex : null);
+    });
+
+    playBtn.addEventListener('click', () => {
+      if (!currentData) return;
+      if (playbackIndex >= currentData.segments.length) playbackIndex = 0;
+      if (!isPlaying) {
+        isPlaying = true;
+        setStatus('Playback running...');
+        animatePlayback();
+      }
+    });
+
+    pauseBtn.addEventListener('click', () => {
+      stopPlayback();
+      setStatus('Playback paused.');
+    });
+
+    resetBtn.addEventListener('click', () => {
+      stopPlayback();
+      playbackIndex = 0;
+      if (currentData) renderPlot(currentData, 0);
+      setStatus('Playback reset.');
+    });
+
+    speedSlider.addEventListener('input', () => {
+      speedValue.textContent = `${speedSlider.value}x`;
+    });
+
+    window.addEventListener('resize', () => {
+      if (currentData) renderPlot(currentData, isPlaying ? playbackIndex : null);
+    });
+
+    doRender();
+  </script>
+</body>
+</html>

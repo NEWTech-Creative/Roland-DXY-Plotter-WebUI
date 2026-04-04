@@ -1192,25 +1192,26 @@ class HpglParser {
         const processObj = async (obj, tf) => {
             if (obj.kind === 'POLYLINE_SEQ') {
                 const headerProps = extractProps(obj.headerRaw);
-                const pts = [];
+                const vertices = [];
 
                 for (const vRaw of obj.vertexRaws) {
                     const vp = extractProps(vRaw);
                     const x = vp[10]?.[0];
                     const y = vp[20]?.[0];
                     if (Number.isFinite(x) && Number.isFinite(y)) {
-                        const p = this._applyDXFTransform({ x, y }, tf);
-                        pts.push(p);
-                        updateBounds(p.x, p.y);
+                        vertices.push({
+                            x,
+                            y,
+                            bulge: Number.isFinite(vp[42]?.[0]) ? vp[42][0] : 0
+                        });
                     }
                 }
 
                 const closedFlag = headerProps[70]?.[0];
                 const isClosed = Number.isFinite(closedFlag) && ((closedFlag & 1) === 1);
+                const pts = this._buildDXFPolylinePoints(vertices, isClosed).map(p => this._applyDXFTransform(p, tf));
+                pts.forEach(p => updateBounds(p.x, p.y));
                 if (pts.length > 1) {
-                    if (isClosed && (pts[0].x !== pts[pts.length - 1].x || pts[0].y !== pts[pts.length - 1].y)) {
-                        pts.push({ ...pts[0] });
-                    }
                     allPaths.push(pts);
                 }
                 return;
@@ -1266,7 +1267,7 @@ class HpglParser {
             }
         }
 
-        this.finalizeImport(allPaths, minX, minY, maxX, maxY, 'DXF');
+        this.finalizeImport(allPaths, minX, minY, maxX, maxY, 'DXF', { flipY: true });
     }
 
     _makeDXFTransform(tx, ty, sx, sy, rotDeg) {
@@ -1305,6 +1306,345 @@ class HpglParser {
         };
     }
 
+    _getImportResolutionMultiplier() {
+        const res = this._getImportResolutionValue();
+        return Math.max(0.35, 0.45 + (res / 35));
+    }
+
+    _getImportResolutionValue() {
+        const raw = this.app?.settings?.importResolution;
+        const value = Number.isFinite(raw) ? raw : parseInt(raw, 10);
+        return Math.max(1, Math.min(100, Number.isFinite(value) ? value : 15));
+    }
+
+    _getImportMinSegmentLength() {
+        const res = this._getImportResolutionValue();
+        return 0.01 + (((100 - res) / 99) * 0.39);
+    }
+
+    _simplifyImportedPoints(points, preserveClosed = false) {
+        if (!Array.isArray(points) || points.length < 3) return points || [];
+
+        const minSegmentLength = this._getImportMinSegmentLength();
+        const minSegmentSquared = minSegmentLength * minSegmentLength;
+        const simplified = [];
+
+        const pushPoint = (point, force = false) => {
+            if (!point) return;
+            const last = simplified[simplified.length - 1];
+            if (!last) {
+                simplified.push(point);
+                return;
+            }
+            const dx = point.x - last.x;
+            const dy = point.y - last.y;
+            if (force || ((dx * dx) + (dy * dy)) >= minSegmentSquared) {
+                simplified.push(point);
+            }
+        };
+
+        pushPoint(points[0], true);
+        for (let i = 1; i < points.length - 1; i++) {
+            pushPoint(points[i], false);
+        }
+        pushPoint(points[points.length - 1], true);
+
+        if (preserveClosed && simplified.length > 2) {
+            const first = simplified[0];
+            const last = simplified[simplified.length - 1];
+            if (Math.abs(first.x - last.x) > 0.0001 || Math.abs(first.y - last.y) > 0.0001) {
+                simplified.push({ ...first });
+            }
+        }
+
+        return simplified;
+    }
+
+    _estimatePolylineLength(points) {
+        if (!Array.isArray(points) || points.length < 2) return 0;
+        let total = 0;
+        for (let i = 1; i < points.length; i++) {
+            total += Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y);
+        }
+        return total;
+    }
+
+    _sampleCatmullRom(points, closed = false) {
+        if (!Array.isArray(points) || points.length < 2) return points || [];
+
+        const resolution = this._getImportResolutionValue();
+        const estimatedLength = this._estimatePolylineLength(points);
+        const avgSpanLength = estimatedLength / Math.max(1, (closed ? points.length : points.length - 1));
+        const samplesPerSpan = Math.max(
+            10,
+            Math.min(
+                360,
+                Math.ceil(avgSpanLength * (0.75 + (resolution / 20))) + Math.ceil(resolution / 4)
+            )
+        );
+
+        const getPoint = (index) => {
+            if (closed) {
+                return points[(index + points.length) % points.length];
+            }
+            if (index < 0) return points[0];
+            if (index >= points.length) return points[points.length - 1];
+            return points[index];
+        };
+
+        const sampled = [];
+        const spanCount = closed ? points.length : points.length - 1;
+        for (let i = 0; i < spanCount; i++) {
+            const p0 = getPoint(i - 1);
+            const p1 = getPoint(i);
+            const p2 = getPoint(i + 1);
+            const p3 = getPoint(i + 2);
+
+            for (let step = 0; step <= samplesPerSpan; step++) {
+                if (i > 0 && step === 0) continue;
+                const t = step / samplesPerSpan;
+                const t2 = t * t;
+                const t3 = t2 * t;
+                sampled.push({
+                    x: 0.5 * ((2 * p1.x) + (-p0.x + p2.x) * t + ((2 * p0.x) - (5 * p1.x) + (4 * p2.x) - p3.x) * t2 + (-p0.x + (3 * p1.x) - (3 * p2.x) + p3.x) * t3),
+                    y: 0.5 * ((2 * p1.y) + (-p0.y + p2.y) * t + ((2 * p0.y) - (5 * p1.y) + (4 * p2.y) - p3.y) * t2 + (-p0.y + (3 * p1.y) - (3 * p2.y) + p3.y) * t3)
+                });
+            }
+        }
+
+        return this._simplifyImportedPoints(sampled, closed);
+    }
+
+    _sampleDXFArc(cx, cy, radius, startRad, endRad, minimumSteps = 12) {
+        if (!Number.isFinite(cx) || !Number.isFinite(cy) || !Number.isFinite(radius) || radius <= 0) return [];
+
+        let sweep = endRad - startRad;
+        if (sweep < 0) sweep += Math.PI * 2;
+        const resolution = this._getImportResolutionValue();
+        const arcLength = Math.abs(sweep) * radius;
+        const steps = Math.max(
+            minimumSteps,
+            Math.min(
+                4000,
+                Math.ceil((Math.abs(sweep) / (Math.PI / 40)) * this._getImportResolutionMultiplier()) +
+                Math.ceil(arcLength * (0.12 + (resolution / 32)))
+            )
+        );
+        const points = [];
+        for (let i = 0; i <= steps; i++) {
+            const t = i / steps;
+            const angle = startRad + (sweep * t);
+            points.push({
+                x: cx + Math.cos(angle) * radius,
+                y: cy + Math.sin(angle) * radius
+            });
+        }
+        return this._simplifyImportedPoints(points, false);
+    }
+
+    _sampleDXFBulgeSegment(start, end, bulge = 0) {
+        if (!start || !end) return [];
+        if (!Number.isFinite(bulge) || Math.abs(bulge) < 1e-6) {
+            return [{ x: start.x, y: start.y }, { x: end.x, y: end.y }];
+        }
+
+        const dx = end.x - start.x;
+        const dy = end.y - start.y;
+        const chord = Math.hypot(dx, dy);
+        if (!Number.isFinite(chord) || chord <= 0) {
+            return [{ x: start.x, y: start.y }, { x: end.x, y: end.y }];
+        }
+
+        const theta = 4 * Math.atan(bulge);
+        const radius = chord / (2 * Math.sin(Math.abs(theta) / 2));
+        if (!Number.isFinite(radius) || radius <= 0) {
+            return [{ x: start.x, y: start.y }, { x: end.x, y: end.y }];
+        }
+
+        const midX = (start.x + end.x) * 0.5;
+        const midY = (start.y + end.y) * 0.5;
+        const halfChord = chord * 0.5;
+        const offsetToCenter = Math.sqrt(Math.max(0, (radius * radius) - (halfChord * halfChord)));
+        const nx = -dy / chord;
+        const ny = dx / chord;
+        const direction = bulge >= 0 ? 1 : -1;
+        const center = {
+            x: midX + (nx * offsetToCenter * direction),
+            y: midY + (ny * offsetToCenter * direction)
+        };
+
+        let startAngle = Math.atan2(start.y - center.y, start.x - center.x);
+        let endAngle = Math.atan2(end.y - center.y, end.x - center.x);
+        if (bulge >= 0 && endAngle <= startAngle) endAngle += Math.PI * 2;
+        if (bulge < 0 && endAngle >= startAngle) endAngle -= Math.PI * 2;
+
+        const sweep = endAngle - startAngle;
+        const resolution = this._getImportResolutionValue();
+        const arcLength = Math.abs(sweep) * radius;
+        const steps = Math.max(
+            8,
+            Math.min(
+                3200,
+                Math.ceil((Math.abs(sweep) / (Math.PI / 40)) * this._getImportResolutionMultiplier()) +
+                Math.ceil(arcLength * (0.11 + (resolution / 36)))
+            )
+        );
+        const points = [];
+        for (let i = 0; i <= steps; i++) {
+            const t = i / steps;
+            const angle = startAngle + (sweep * t);
+            points.push({
+                x: center.x + Math.cos(angle) * radius,
+                y: center.y + Math.sin(angle) * radius
+            });
+        }
+        return this._simplifyImportedPoints(points, false);
+    }
+
+    _buildDXFPolylinePoints(vertices, isClosed = false) {
+        if (!Array.isArray(vertices) || vertices.length < 2) return [];
+
+        const path = [];
+        const pushPoint = (point) => {
+            if (!point) return;
+            const last = path[path.length - 1];
+            if (last && Math.abs(last.x - point.x) < 0.0001 && Math.abs(last.y - point.y) < 0.0001) return;
+            path.push(point);
+        };
+
+        const segmentCount = isClosed ? vertices.length : vertices.length - 1;
+        for (let i = 0; i < segmentCount; i++) {
+            const start = vertices[i];
+            const end = vertices[(i + 1) % vertices.length];
+            if (!start || !end) continue;
+            const segmentPoints = this._sampleDXFBulgeSegment(start, end, start.bulge || 0);
+            segmentPoints.forEach(pushPoint);
+        }
+
+        if (isClosed && path.length > 1) {
+            pushPoint({ ...path[0] });
+        }
+
+        return path;
+    }
+
+    _findDXFSpan(degree, knots, t) {
+        const n = knots.length - degree - 2;
+        if (n < degree) return -1;
+        if (t >= knots[n + 1]) return n;
+        if (t <= knots[degree]) return degree;
+
+        let low = degree;
+        let high = n + 1;
+        let mid = Math.floor((low + high) / 2);
+        while (t < knots[mid] || t >= knots[mid + 1]) {
+            if (t < knots[mid]) high = mid;
+            else low = mid;
+            mid = Math.floor((low + high) / 2);
+        }
+        return mid;
+    }
+
+    _evaluateDXFBSplinePoint(controlPoints, degree, knots, t) {
+        const span = this._findDXFSpan(degree, knots, t);
+        if (span < 0) return null;
+
+        const d = [];
+        for (let j = 0; j <= degree; j++) {
+            const point = controlPoints[span - degree + j];
+            if (!point) return null;
+            d.push({ x: point.x, y: point.y });
+        }
+
+        for (let r = 1; r <= degree; r++) {
+            for (let j = degree; j >= r; j--) {
+                const left = knots[span - degree + j];
+                const right = knots[span + 1 + j - r];
+                const denom = right - left;
+                const alpha = Math.abs(denom) < 1e-9 ? 0 : (t - left) / denom;
+                d[j] = {
+                    x: ((1 - alpha) * d[j - 1].x) + (alpha * d[j].x),
+                    y: ((1 - alpha) * d[j - 1].y) + (alpha * d[j].y)
+                };
+            }
+        }
+
+        return d[degree];
+    }
+
+    _sampleDXFSpline(props) {
+        const fitXs = props[11] || [];
+        const fitYs = props[21] || [];
+        if (fitXs.length >= 2 && fitXs.length === fitYs.length) {
+            const fitPoints = fitXs.map((x, index) => ({ x, y: fitYs[index] }));
+            return this._sampleCatmullRom(fitPoints, false);
+        }
+
+        const xs = props[10] || [];
+        const ys = props[20] || [];
+        const controlPoints = [];
+        for (let i = 0; i < Math.min(xs.length, ys.length); i++) {
+            const x = xs[i];
+            const y = ys[i];
+            if (Number.isFinite(x) && Number.isFinite(y)) {
+                controlPoints.push({ x, y });
+            }
+        }
+        if (controlPoints.length < 2) return [];
+
+        const degree = Math.max(1, Math.min(10, Math.round(props[71]?.[0] || 3)));
+        const rawKnots = (props[40] || []).filter(value => Number.isFinite(value));
+        let knots = rawKnots;
+        const expectedKnots = controlPoints.length + degree + 1;
+        if (knots.length !== expectedKnots) {
+            knots = [];
+            const interiorCount = Math.max(0, controlPoints.length - degree - 1);
+            for (let i = 0; i <= degree; i++) knots.push(0);
+            for (let i = 1; i <= interiorCount; i++) knots.push(i);
+            for (let i = 0; i <= degree; i++) knots.push(interiorCount + 1);
+        }
+
+        const start = knots[degree];
+        const end = knots[knots.length - degree - 1];
+        if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+            return controlPoints;
+        }
+
+        const isClosed = Number.isFinite(props[70]?.[0]) && ((props[70][0] & 1) === 1);
+        const resolution = this._getImportResolutionValue();
+        const estimatedLength = this._estimatePolylineLength(controlPoints);
+        const targetStep = Math.max(0.02, 1.1 - ((resolution - 1) * 0.011));
+        const sampleCount = Math.max(
+            64,
+            Math.min(
+                18000,
+                Math.ceil(estimatedLength / targetStep) +
+                Math.ceil(controlPoints.length * (0.04 + (resolution / 260))) +
+                (resolution * 10)
+            )
+        );
+        const points = [];
+        for (let i = 0; i <= sampleCount; i++) {
+            const t = start + ((end - start) * (i / sampleCount));
+            const point = this._evaluateDXFBSplinePoint(controlPoints, Math.min(degree, controlPoints.length - 1), knots, t);
+            if (!point) continue;
+            const last = points[points.length - 1];
+            if (!last || Math.abs(last.x - point.x) > 0.0001 || Math.abs(last.y - point.y) > 0.0001) {
+                points.push(point);
+            }
+        }
+
+        if (isClosed && points.length > 1) {
+            const first = points[0];
+            const last = points[points.length - 1];
+            if (Math.abs(first.x - last.x) > 0.0001 || Math.abs(first.y - last.y) > 0.0001) {
+                points.push({ ...first });
+            }
+        }
+
+        return this._simplifyImportedPoints(points, isClosed);
+    }
+
     async _processDXFEntity(type, props, allPaths, updateBounds, tf) {
         const apply = (p) => this._applyDXFTransform(p, tf);
 
@@ -1323,15 +1663,18 @@ class HpglParser {
         if (type === 'LWPOLYLINE') {
             const xs = props[10] || [];
             const ys = props[20] || [];
-            const pts = [];
+            const bulges = props[42] || [];
+            const vertices = [];
             for (let i = 0; i < Math.min(xs.length, ys.length); i++) {
                 const x = xs[i], y = ys[i];
                 if (Number.isFinite(x) && Number.isFinite(y)) {
-                    const p = apply({ x, y });
-                    pts.push(p);
-                    updateBounds(p.x, p.y);
+                    vertices.push({ x, y, bulge: Number.isFinite(bulges[i]) ? bulges[i] : 0 });
                 }
             }
+            const closedFlag = props[70]?.[0];
+            const isClosed = Number.isFinite(closedFlag) && ((closedFlag & 1) === 1);
+            const pts = this._buildDXFPolylinePoints(vertices, isClosed).map(apply);
+            pts.forEach(p => updateBounds(p.x, p.y));
             if (pts.length > 1) allPaths.push(pts);
             return;
         }
@@ -1344,44 +1687,16 @@ class HpglParser {
             let e = (type === 'ARC' ? (props[51]?.[0] || 360) : 360) * Math.PI / 180;
             if (e < s) e += Math.PI * 2;
 
-            const arc = [];
-            const res = this.app.settings.importResolution || 15;
-            const steps = Math.max(12, Math.ceil(((e - s) / (Math.PI / 18)) * (res / 15)));
-
-            for (let j = 0; j <= steps; j++) {
-                const a = s + (e - s) * (j / steps);
-                const p = apply({ x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r });
-                arc.push(p);
-                updateBounds(p.x, p.y);
-            }
+            const arc = this._sampleDXFArc(cx, cy, r, s, e, 12).map(apply);
+            arc.forEach(p => updateBounds(p.x, p.y));
             allPaths.push(arc);
             return;
         }
 
         if (type === 'SPLINE') {
-            // Many DXFs provide control points as repeating 10/20 pairs.
-            // We'll approximate by connecting them (good enough for plotting and preview).
-            const xs = props[10] || [];
-            const ys = props[20] || [];
-            const pts = [];
-
-            for (let i = 0; i < Math.min(xs.length, ys.length); i++) {
-                const x = xs[i], y = ys[i];
-                if (Number.isFinite(x) && Number.isFinite(y)) {
-                    const p = apply({ x, y });
-                    pts.push(p);
-                    updateBounds(p.x, p.y);
-                }
-            }
-
-            if (pts.length > 1) {
-                const closedFlag = props[70]?.[0];
-                const isClosed = Number.isFinite(closedFlag) && ((closedFlag & 1) === 1);
-                if (isClosed && (pts[0].x !== pts[pts.length - 1].x || pts[0].y !== pts[pts.length - 1].y)) {
-                    pts.push({ ...pts[0] });
-                }
-                allPaths.push(pts);
-            }
+            const pts = this._sampleDXFSpline(props).map(apply);
+            pts.forEach(p => updateBounds(p.x, p.y));
+            if (pts.length > 1) allPaths.push(pts);
             return;
         }
     }
@@ -1478,7 +1793,7 @@ class HpglParser {
         this.finalizeImport(allPaths, minX, minY, maxX, maxY, 'HPGL');
     }
 
-    finalizeImport(allPaths, minX, minY, maxX, maxY, formatName) {
+    finalizeImport(allPaths, minX, minY, maxX, maxY, formatName, options = {}) {
         if (allPaths.length === 0) {
             this.app.ui.logToConsole(`System: No supported vector geometry found in ${formatName}.`);
             return;
@@ -1499,6 +1814,7 @@ class HpglParser {
 
         const offsetX = (this.app.canvas.bedWidth / 2) - ((svgW * scale) / 2) - (minX * scale);
         const offsetY = (this.app.canvas.bedHeight / 2) - ((svgH * scale) / 2) - (minY * scale);
+        const normalizeY = (y) => options.flipY ? (minY + maxY - y) : y;
 
         const visPen = this.app.ui.activeVisualizerPen || 1;
 
@@ -1516,7 +1832,7 @@ class HpglParser {
                 // Simple point array
                 const scaledPoly = poly.map(p => ({
                     x: (p.x * scale) + offsetX,
-                    y: (p.y * scale) + offsetY
+                    y: (normalizeY(p.y) * scale) + offsetY
                 }));
                 this.app.canvas.addPath({ type: 'polyline', points: scaledPoly, pen: visPen, groupId });
                 pointsCount += scaledPoly.length;
@@ -1524,7 +1840,7 @@ class HpglParser {
                 // Object with points and native curve segments
                 const scaledPoly = poly.points.map(p => ({
                     x: (p.x * scale) + offsetX,
-                    y: (p.y * scale) + offsetY
+                    y: (normalizeY(p.y) * scale) + offsetY
                 }));
 
                 let scaledSegments = null;
@@ -1532,11 +1848,11 @@ class HpglParser {
                     scaledSegments = poly.segments.map(s => {
                         const scaled = { ...s };
                         // Scale Endpoints
-                        if (s.x !== undefined) { scaled.x = (s.x * scale) + offsetX; scaled.y = (s.y * scale) + offsetY; }
+                        if (s.x !== undefined) { scaled.x = (s.x * scale) + offsetX; scaled.y = (normalizeY(s.y) * scale) + offsetY; }
                         // Scale Handle 1
-                        if (s.x1 !== undefined) { scaled.x1 = (s.x1 * scale) + offsetX; scaled.y1 = (s.y1 * scale) + offsetY; }
+                        if (s.x1 !== undefined) { scaled.x1 = (s.x1 * scale) + offsetX; scaled.y1 = (normalizeY(s.y1) * scale) + offsetY; }
                         // Scale Handle 2
-                        if (s.x2 !== undefined) { scaled.x2 = (s.x2 * scale) + offsetX; scaled.y2 = (s.y2 * scale) + offsetY; }
+                        if (s.x2 !== undefined) { scaled.x2 = (s.x2 * scale) + offsetX; scaled.y2 = (normalizeY(s.y2) * scale) + offsetY; }
                         // Scale Arc settings
                         if (s.rx !== undefined) { scaled.rx = s.rx * scale; scaled.ry = s.ry * scale; }
                         return scaled;
@@ -1550,6 +1866,10 @@ class HpglParser {
             }
         });
 
-        this.app.ui.logToConsole(`System: Imported ${formatName} (x${scale.toFixed(2)}). Centered. ${pointsCount} points across ${allPaths.length} paths.`);
+        const resolution = this._getImportResolutionValue();
+        this.app.ui.logToConsole(`System: Imported ${formatName} (x${scale.toFixed(2)}). Centered. ${pointsCount} points across ${allPaths.length} paths. Curve resolution ${resolution}/100.`);
+        if (this.app?.settings?.outputFlipHorizontal === true) {
+            this.app.ui.logToConsole('System Warning: Horizontal plot output flip is enabled, so generated output will be mirrored relative to the canvas preview.', 'warning');
+        }
     }
 }

@@ -25,7 +25,9 @@ class SerialManager {
         this.previewMotionCurrent = null;
         this.previewMotionFrame = null;
         this.previewMotionLastTimestamp = 0;
-        this.previewMotionSpeed = 280;
+        this.previewMotionMinSpeed = 12;
+        this.previewMotionMaxSpeed = 90;
+        this.previewMotionTargetLagSeconds = 1.4;
 
         this.indicatorEls = Array.from(document.querySelectorAll('[data-stream-indicator]'));
         this.linesStatEls = Array.from(document.querySelectorAll('[data-stat="lines"]'));
@@ -39,6 +41,20 @@ class SerialManager {
 
     isTestMode() {
         return this.app?.settings?.model === 'test';
+    }
+
+    getSerialPortFilters() {
+        // Focus the Web Serial chooser on the most common USB-to-serial bridges
+        // used with plotters instead of showing unrelated serial endpoints.
+        return [
+            { usbVendorId: 0x1A86 }, // QinHeng / WCH (CH340/CH341)
+            { usbVendorId: 0x0403 }, // FTDI
+            { usbVendorId: 0x067B }, // Prolific
+            { usbVendorId: 0x10C4 }, // Silicon Labs
+            { usbVendorId: 0x2341 }, // Arduino
+            { usbVendorId: 0x2A03 }, // Arduino SA
+            { usbVendorId: 0x0483 }  // STMicroelectronics
+        ];
     }
 
     async connect() {
@@ -74,8 +90,10 @@ class SerialManager {
         try {
             const baudRateStr = document.getElementById('sel-baud').value;
             const baudRate = parseInt(baudRateStr, 10) || 9600;
-
-            this.port = await navigator.serial.requestPort();
+            const portFilters = this.getSerialPortFilters();
+            this.port = await navigator.serial.requestPort({
+                filters: portFilters
+            });
 
             const handshake = this.app.settings.handshake || 'normal';
             // Open the serial port with the chosen baud rate and flow control if 'normal'
@@ -414,6 +432,33 @@ class SerialManager {
         this.previewMotionQueue.push({ x1, y1, x2, y2, length, progress: 0 });
     }
 
+    getPreviewBacklogDistance() {
+        let total = 0;
+        if (this.previewMotionCurrent) {
+            total += Math.max(0, this.previewMotionCurrent.length - this.previewMotionCurrent.progress);
+        }
+        for (const segment of this.previewMotionQueue) {
+            total += segment.length;
+        }
+        return total;
+    }
+
+    getAdaptivePreviewMotionSpeed() {
+        const backlogDistance = this.getPreviewBacklogDistance();
+        if (backlogDistance <= 0.01) {
+            return this.previewMotionMinSpeed;
+        }
+
+        const targetLagSeconds = (this.softwareFlowPaused || this.hardwareFlowPaused)
+            ? this.previewMotionTargetLagSeconds * 1.35
+            : this.previewMotionTargetLagSeconds;
+        const adaptiveSpeed = backlogDistance / Math.max(0.25, targetLagSeconds);
+        return Math.max(
+            this.previewMotionMinSpeed,
+            Math.min(this.previewMotionMaxSpeed, adaptiveSpeed)
+        );
+    }
+
     startPreviewMotionLoop() {
         if (this.previewMotionFrame) return;
         const tick = (timestamp) => {
@@ -426,7 +471,8 @@ class SerialManager {
             if (!this.previewMotionLastTimestamp) {
                 this.previewMotionLastTimestamp = timestamp;
             }
-            let remainingDistance = Math.max(0, ((timestamp - this.previewMotionLastTimestamp) / 1000) * this.previewMotionSpeed);
+            const previewMotionSpeed = this.getAdaptivePreviewMotionSpeed();
+            let remainingDistance = Math.max(0, ((timestamp - this.previewMotionLastTimestamp) / 1000) * previewMotionSpeed);
             this.previewMotionLastTimestamp = timestamp;
 
             while (remainingDistance > 0 && (this.previewMotionCurrent || this.previewMotionQueue.length > 0)) {
@@ -561,6 +607,34 @@ class SerialManager {
         return commands;
     }
 
+    _splitCommands(commandString) {
+        return String(commandString || '')
+            .split(';')
+            .map(part => part.trim())
+            .filter(Boolean)
+            .map(part => `${part};`);
+    }
+
+    async _writePartWithFlowControl(part, encoder) {
+        while (this.isConnected && !this.isHold) {
+            const ready = await this.waitForTransmitReady();
+            if (!ready) return false;
+
+            // Re-check software flow immediately at the write boundary so every
+            // command part pauses if an XOFF was processed while awaiting readiness.
+            if (this.softwareFlowPaused) {
+                this.setTrafficLight('orange');
+                await this.waitForSoftwareFlowResume();
+                continue;
+            }
+
+            await this.writer.write(encoder.encode(part));
+            return true;
+        }
+
+        return false;
+    }
+
     _updateEstimatedPositionFromCommand(command) {
         const trimmed = (command || '').trim();
         if (!trimmed) return;
@@ -640,21 +714,28 @@ class SerialManager {
 
     async sendManualCommand(cmd, options = {}) {
         if (!this.writer) return;
-        const expandedCommands = this._expandCurveCommand(cmd);
-        if (expandedCommands.length === 0) return;
         const encoder = new TextEncoder();
-        for (const part of expandedCommands) {
-            this.app.ui.logToConsole(part, 'tx');
-            if (options.preview !== false) {
-                this.queuePreviewMotionFromCommand(part);
-            }
-            if (!this.isTestMode()) {
-                const ready = await this.waitForTransmitReady();
-                if (!ready) break;
-                await this.writer.write(encoder.encode(part));
-            }
-            if (options.updateEstimatedFromCommand === true) {
-                this._updateEstimatedPositionFromCommand(part);
+
+        for (const rawCommand of this._splitCommands(cmd)) {
+            const expandedCommands = this._expandCurveCommand(rawCommand);
+            if (expandedCommands.length === 0) continue;
+
+            for (const part of expandedCommands) {
+                this.app.ui.logToConsole(part, 'tx');
+
+                let wasTransmitted = this.isTestMode();
+                if (!this.isTestMode()) {
+                    wasTransmitted = await this._writePartWithFlowControl(part, encoder);
+                    if (!wasTransmitted) return;
+                }
+
+                // The preview must only follow commands that have actually gone out.
+                if (wasTransmitted && options.preview !== false) {
+                    this.queuePreviewMotionFromCommand(part);
+                }
+                if (wasTransmitted && options.updateEstimatedFromCommand === true) {
+                    this._updateEstimatedPositionFromCommand(part);
+                }
             }
         }
         if (options.estimatedPosition) {
