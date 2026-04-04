@@ -2,99 +2,81 @@
 
 Browser-based Roland DXY plotter controller and creative HPGL workflow for the Roland DXY-1100, DXY-1200, and DXY-1300 series.
 
-This project is a modern Roland DXY controller that combines drawing tools, HPGL generation, live preview, motion simulation, handwriting generation, image-to-vector conversion, and USB serial streaming in one web interface. It is designed for people searching for a Roland DXY web UI, Roland DXY controller, HPGL plotter software, or a browser-based pen plotter workflow using a CH340 USB-to-serial adapter.
+This project is a modern Roland DXY controller that combines drawing tools, HPGL generation, live preview, motion simulation, handwriting generation, image-to-vector conversion, and USB serial streaming in one web interface.
 
-Live site: [Click here](https://newtech-creative.github.io/Roland-DXY-Plotter-WebUI/)
+## Live Site
+👉 [Launch the WebUI](https://newtech-creative.github.io/Roland-DXY-Plotter-WebUI/)
 
 ![Roland DXY Web Interface](DXY_Web_connect.jpg)
 
 Created by NEWTech Creative.
 
-## Roland DXY Controller Features
+---
 
-- Connects to a Roland DXY plotter through a USB-to-serial CH340 adapter
-- Creates and edits vector artwork directly in the browser
-- Streams HPGL to the machine over serial
-- Exports HPGL files for plotting later
-- Simulates motion and previews pen paths before plotting
-- Generates handwriting-style vector text
-- Converts images into vector toolpaths
-- Applies repeat patterns and bucket-style fill patterns to closed regions
+## Features
 
-## Main Features
-
-### Roland Plotter Control
-
-- Roland DXY connection panel with baud-rate setup
-- Machine jog controls
+### Plotter Control
+- Connect via USB-to-serial (CH340)
+- Baud rate configuration
+- Jog controls
 - Command log with queue and position readout
-- Live `Run`, `Hold`, and `Cancel` controls
+- Run, Hold, and Cancel controls
 
-### Drawing and Editing
+### Drawing & Editing
+- Vector drawing tools (line, rectangle, circle, path)
+- Node editing
+- Layered pen workflow
+- Pattern generation tools
 
-- Select, text, shape, and node-edit tools
-- Rectangle, circle, line, and vector path support
-- Layered pen/color workflow
-- Pattern generation and grouped artwork handling
-
-### Fill and Pattern Tools
-
-- Paint bucket tool for filling closed regions with line art
-- Pattern options including lines, crosshatch, curves, circles, topography, Japanese patterns, worms, pixel wave, and zigzag
-- Pen layer, spacing, angle, and grouping controls
+### Fill & Pattern Tools
+- Bucket fill for closed regions
+- Patterns: lines, crosshatch, curves, circles, topography, zigzag, etc.
+- Adjustable spacing, angle, and grouping
 
 ### Handwriting Generator
-
-- Print, cursive, architect, and plotter styles
-- Adjustable slant, messiness, line spacing, height, and character spacing
-- Preview, export, and add-to-bed workflow
+- Multiple styles (print, cursive, architect, plotter)
+- Adjustable spacing, slant, messiness
+- Export or add directly to canvas
 
 ### Image to Vector
+- Contour tracing
+- Fill gap tools
+- Curve or straight-line output
+- SVG + raster workflows
 
-- Contour and tracing workflows
-- Fill-gap generation
-- Path style controls for curves or straight-line output
-- SVG and raster-based creative vector conversion options
+### HPGL Output
+- Visual preview with pen layers
+- Motion simulation
+- Export HPGL files
+- Optional internal curve handling
 
-### HPGL Preview and Output
+---
 
-- Visualiser with pen layers and crosshair preview
-- Motion simulation with multiple speed multipliers
-- HPGL export for Roland-compatible workflows
-- Optional use of DXY internal curve handling
+## Hardware
 
-## Hardware Notes
+Designed for:
+- Roland DXY-1100
+- Roland DXY-1200
+- Roland DXY-1300
 
-This interface is designed around Roland DXY pen plotters and is intended to work with a USB-to-serial CH340 adapter.
+Uses:
+- CH340 USB-to-serial adapter
+- Web Serial (Chromium browsers)
 
-Compatible search terms and hardware phrases people commonly use include:
+---
 
-- Roland DXY controller
-- Roland DXY-1100 controller
-- Roland DXY-1200 controller
-- Roland DXY-1300 controller
-- Roland DXY plotter software
-- HPGL plotter controller
-- pen plotter web interface
-- CH340 Roland DXY adapter
+## Getting Started
 
-The app also includes a startup/setup help reference for DIP switch configuration in:
+1. Open the live site  
+2. Use a Chromium-based browser (Chrome, Edge)  
+3. Click **Connect USB Serial**  
+4. Select your CH340 device  
+5. Start plotting  
 
-- [References/Dip switch setup.svg](C:/Users/myles/OneDrive/NEWTech/Roland/WEB interface v2/References/Dip switch setup.svg)
-
-## Use the Roland DXY Web UI
-
-The easiest way to use the app is through the live GitHub Pages build:
-
-[https://newtech-creative.github.io/Roland-DXY-Plotter-WebUI/](https://newtech-creative.github.io/Roland-DXY-Plotter-WebUI/)
-
-For the best experience, use a Chromium-based browser with Web Serial support, then connect your CH340 serial adapter and use the `Connect USB Serial` button.
-
-## Search-Friendly Summary
-
-If you want a modern Roland DXY controller in the browser, this project provides a web-based HPGL workflow for Roland DXY plotters. It is useful for controlling older Roland DXY machines, creating pen plotter artwork, importing logos and vector graphics, generating handwriting, and sending HPGL through a CH340 USB serial connection.
+---
 
 ## Project Structure
+
 
 - [index.html](C:/Users/myles/OneDrive/NEWTech/Roland/WEB interface v2/index.html)  
   Main app layout and panels
@@ -115,37 +97,34 @@ If you want a modern Roland DXY controller in the browser, this project provides
 - [js/handwriting](C:/Users/myles/OneDrive/NEWTech/Roland/WEB interface v2/js/handwriting)  
   Handwriting generation tools
 
-## Compatibility
 
-Built primarily for:
+---
 
-- Roland DXY-1100
-- Roland DXY-1200
-- Roland DXY-1300
-- Other Roland DXY series plotters
-- Web Serial capable desktop browsers
-- Creative plotting workflows using HPGL
+## Status
 
-## Current Status
+This is an actively evolving project.
 
-This is an actively evolving creative tool. Features and behavior are still being refined, especially around:
+Current focus:
+- Fill pattern improvements
+- Handwriting tuning
+- Serial streaming stability
+- Vector import handling
 
-- advanced fill pattern behavior
-- handwriting style tuning
-- live streaming behavior on different serial adapters
-- imported vector edge cases
+---
 
-## Roadmap Ideas
+## Roadmap
 
-- More refined handwriting alphabets and styles
-- Additional plotter-safe fill and hatch strategies
-- Better project import/export options
-- More machine presets and hardware setup helpers
-- Further optimization for large or complex plots
+- More handwriting styles
+- Improved fill algorithms
+- Project save/load system
+- Additional plotter presets
+
+---
 
 ## Credits
 
 Created by NEWTech Creative
 
-- YouTube: [https://www.youtube.com/@NEWTechCreative](https://www.youtube.com/@NEWTechCreative)
+- YouTube: https://www.youtube.com/@NEWTechCreative  
+- Support: https://paypal.me/NEWTechCreative
 - Support: [https://paypal.me/NEWTechCreative](https://paypal.me/NEWTechCreative)
