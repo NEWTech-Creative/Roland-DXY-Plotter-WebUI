@@ -19,6 +19,14 @@
 
     <!-- App CSS -->
     <link rel="stylesheet" href="css/main.css">
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"
+            }
+        }
+    </script>
 </head>
 
 <body class="dark-theme">
@@ -224,7 +232,7 @@
                         <h2>Visualiser</h2>
                         <div class="header-tools">
                             <select id="sel-paper-size" class="tool-select"
-                                style="width: 80px; padding: 2px 6px; font-size: 0.8rem; height: 26px; border-radius: 4px; margin-right: 10px;">
+                                style="width: 74px; padding: 2px 6px; font-size: 0.8rem; height: 26px; border-radius: 4px; margin-right: 10px;">
                                 <option value="A3">A3</option>
                                 <option value="A4">A4</option>
                                 <option value="A5">A5</option>
@@ -245,6 +253,12 @@
                                     <path d="M2 12h4" />
                                     <path d="M18 12h4" />
                                 </svg>
+                            </button>
+                            <button class="tool-btn" id="btn-toggle-visualizer-view" title="Show machine output view">
+                                <span id="visualizer-view-label">Workspace</span>
+                            </button>
+                            <button class="tool-btn" id="btn-import-resolution" title="Adjust machine curve resolution">
+                                <span id="import-resolution-label">Curve 85</span>
                             </button>
 
                             <!-- Undo/Redo Buttons -->
@@ -714,6 +728,178 @@
                 </div>
             </div>
 
+            <div class="grid-stack-item" gs-w="8" gs-h="8" gs-x="2" gs-y="15" id="panel-3d-vector">
+                <div class="grid-stack-item-content panel-glass">
+                    <div class="panel-header">
+                        <h2>3D Vector</h2>
+                    </div>
+                    <div class="panel-body flex-col compact-tool-panel v3d-panel-body">
+                        <div class="v3d-layout">
+                            <div class="v3d-controls">
+                                <div class="compact-section compact-section-soft v3d-section">
+                                    <div class="v3d-row">
+                                        <div class="form-group">
+                                            <label>Primitive</label>
+                                            <select id="sel-v3d-primitive">
+                                                <option value="sphere">Sphere</option>
+                                                <option value="cylinder">Cylinder</option>
+                                                <option value="cone">Cone</option>
+                                                <option value="cube">Cube</option>
+                                                <option value="plane">Plane</option>
+                                                <option value="hemisphere">Hemisphere</option>
+                                            </select>
+                                        </div>
+                                    <div class="form-group">
+                                        <label>Visibility</label>
+                                            <select id="sel-v3d-mode">
+                                                <option value="visible">Visible lines only</option>
+                                                <option value="seethrough">See-through</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div class="v3d-row">
+                                        <div class="form-group">
+                                            <label>Camera Angle: <span data-v3d-value="input-v3d-camera-angle">50</span> mm</label>
+                                            <input type="range" id="input-v3d-camera-angle" min="1" max="100" step="1" value="50">
+                                        </div>
+                                        <div class="form-group">
+                                            <label>Preview Quality</label>
+                                            <select id="sel-v3d-quality">
+                                                <option value="eco">Eco</option>
+                                                <option value="standard" selected>Standard</option>
+                                            </select>
+                                        </div>
+                                        <div class="form-group">
+                                            <label>Preview Lines</label>
+                                            <select id="sel-v3d-preview-detail">
+                                                <option value="low">Low</option>
+                                                <option value="medium" selected>Medium</option>
+                                                <option value="full">Full</option>
+                                            </select>
+                                        </div>
+                                        <div class="form-group">
+                                            <label>Selected Surface</label>
+                                            <div id="v3d-selected-surface" class="input-like-readout">Wrapped surface</div>
+                                        </div>
+                                        <div class="form-group">
+                                            <label class="panel-toggle-item">
+                                                <input type="checkbox" id="chk-v3d-include-shape-line">
+                                                <span>Include shape line</span>
+                                            </label>
+                                        </div>
+                                    </div>
+                                    <div class="button-grid v3d-button-grid">
+                                        <button id="btn-v3d-import-model" class="btn btn-secondary">Import 3D</button>
+                                        <button id="btn-v3d-import-svg" class="btn btn-secondary">Import SVG</button>
+                                        <button id="btn-v3d-from-canvas" class="btn btn-action">Use Selection</button>
+                                        <button id="btn-v3d-set-front" class="btn btn-secondary">Set Front</button>
+                                        <button id="btn-v3d-reset-view" class="btn btn-secondary">Reset View</button>
+                                    </div>
+                                    <input type="file" id="input-v3d-model" accept=".obj,.stl,.3mf,.glb,.gltf" class="hidden">
+                                    <input type="file" id="input-v3d-svg" accept=".svg" class="hidden">
+                                </div>
+
+                                <div class="compact-section compact-section-soft v3d-section">
+                                    <div class="v3d-subtitle">Artwork</div>
+                                    <div class="v3d-slider-grid">
+                                        <div class="form-group">
+                                            <label>X Offset: <span data-v3d-value="input-v3d-art-offset-x">0</span></label>
+                                            <input type="range" id="input-v3d-art-offset-x" min="-200" max="200" step="1" value="0">
+                                        </div>
+                                        <div class="form-group">
+                                            <label>Y Offset: <span data-v3d-value="input-v3d-art-offset-y">0</span></label>
+                                            <input type="range" id="input-v3d-art-offset-y" min="-200" max="200" step="1" value="0">
+                                        </div>
+                                        <div class="form-group">
+                                            <label>Scale: <span data-v3d-value="input-v3d-art-scale">1</span></label>
+                                            <input type="range" id="input-v3d-art-scale" min="0.2" max="3" step="0.05" value="1">
+                                        </div>
+                                        <div class="form-group">
+                                            <label>Rotation: <span data-v3d-value="input-v3d-art-rotation">0</span></label>
+                                            <input type="range" id="input-v3d-art-rotation" min="-180" max="180" step="1" value="0">
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="compact-section compact-section-soft v3d-section">
+                                    <div class="v3d-section-head">
+                                        <div class="v3d-subtitle">Object</div>
+                                        <button id="btn-v3d-reset-object" class="btn btn-secondary btn-small" type="button">Reset</button>
+                                    </div>
+                                    <div class="v3d-slider-grid">
+                                        <div class="form-group">
+                                            <label>Rotate X: <span data-v3d-value="input-v3d-obj-rot-x">0</span></label>
+                                            <input type="range" id="input-v3d-obj-rot-x" min="-180" max="180" step="1" value="0">
+                                        </div>
+                                        <div class="form-group">
+                                            <label>Rotate Y: <span data-v3d-value="input-v3d-obj-rot-y">0</span></label>
+                                            <input type="range" id="input-v3d-obj-rot-y" min="-180" max="180" step="1" value="0">
+                                        </div>
+                                        <div class="form-group">
+                                            <label>Rotate Z: <span data-v3d-value="input-v3d-obj-rot-z">0</span></label>
+                                            <input type="range" id="input-v3d-obj-rot-z" min="-180" max="180" step="1" value="0">
+                                        </div>
+                                        <div class="form-group">
+                                            <label>Scale: <span data-v3d-value="input-v3d-obj-scale">1</span></label>
+                                            <input type="range" id="input-v3d-obj-scale" min="0.2" max="3" step="0.05" value="1">
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="compact-section compact-section-soft v3d-section">
+                                    <div class="v3d-section-head">
+                                        <div class="v3d-subtitle">Plane Intersection</div>
+                                        <div class="v3d-section-actions">
+                                            <button id="btn-v3d-reset-plane" class="btn btn-secondary btn-small" type="button">Reset</button>
+                                            <label class="panel-toggle-item">
+                                                <input type="checkbox" id="chk-v3d-plane">
+                                                <span>Enabled</span>
+                                            </label>
+                                        </div>
+                                    </div>
+                                    <div class="v3d-slider-grid">
+                                        <div class="form-group">
+                                            <label>Plane Position: <span data-v3d-value="input-v3d-plane-pos">0</span></label>
+                                            <input type="range" id="input-v3d-plane-pos" data-v3d-plane-control min="-60" max="60" step="0.5" value="0">
+                                        </div>
+                                        <div class="form-group">
+                                            <label>Plane Rot X: <span data-v3d-value="input-v3d-plane-rot-x">0</span></label>
+                                            <input type="range" id="input-v3d-plane-rot-x" data-v3d-plane-control min="-180" max="180" step="1" value="0">
+                                        </div>
+                                        <div class="form-group">
+                                            <label>Plane Rot Y: <span data-v3d-value="input-v3d-plane-rot-y">0</span></label>
+                                            <input type="range" id="input-v3d-plane-rot-y" data-v3d-plane-control min="-180" max="180" step="1" value="0">
+                                        </div>
+                                        <div class="form-group">
+                                            <label>Plane Rot Z: <span data-v3d-value="input-v3d-plane-rot-z">0</span></label>
+                                            <input type="range" id="input-v3d-plane-rot-z" data-v3d-plane-control min="-180" max="180" step="1" value="0">
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="v3d-preview-shell compact-preview-shell">
+                                <div id="v3d-preview" class="v3d-preview">
+                                    <div id="v3d-preview-hint" class="v3d-preview-hint">Loading 3D preview...</div>
+                                </div>
+                                <div class="v3d-footer">
+                                    <div class="v3d-meta">
+                                        <div><span>Model</span><strong id="v3d-model-name">Sphere</strong></div>
+                                        <div><span>Vector</span><strong id="v3d-vector-name">None</strong></div>
+                                        <div><span>Output</span><strong id="v3d-output-name">No output yet</strong></div>
+                                    </div>
+                                    <div class="button-grid v3d-button-grid">
+                                        <button id="btn-v3d-add" class="btn btn-action">Send To Canvas / Visualiser</button>
+                                        <button id="btn-v3d-export" class="btn btn-secondary">Export SVG</button>
+                                    </div>
+                                    <div id="v3d-status" class="v3d-status">Import an SVG or pull selected canvas vectors to start.</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <div class="grid-stack-item" gs-w="2" gs-h="7" gs-x="8" gs-y="0" id="panel-live-tracker">
                 <div class="grid-stack-item-content panel-glass">
                     <div class="panel-header">
@@ -974,6 +1160,10 @@
                                     <span>Image to Vector</span>
                                 </label>
                                 <label class="panel-toggle-item">
+                                    <input type="checkbox" data-panel-toggle="panel-3d-vector" checked>
+                                    <span>3D Vector</span>
+                                </label>
+                                <label class="panel-toggle-item">
                                     <input type="checkbox" data-panel-toggle="panel-live-tracker" checked>
                                     <span>Live Finger Tracker</span>
                                 </label>
@@ -1034,18 +1224,10 @@
                         <h3>Import & Visuals</h3>
                         <div class="form-group">
                             <label class="panel-toggle-item">
-                                <input type="checkbox" id="input-use-internal-curve-engine" checked>
+                                <input type="checkbox" id="input-use-internal-curve-engine">
                                 <span>Use DXY Internal Curve Function</span>
                             </label>
-                            <small class="settings-help">On: export preserved curve paths with the DXY's built-in curve command. Off: flatten curves using the Import Curve Resolution setting instead.</small>
-                        </div>
-                        <div class="form-group" id="import-resolution-group">
-                            <label>Import Curve Resolution (1-100)</label>
-                            <div class="settings-range-row">
-                                <input type="range" id="input-import-resolution" min="1" max="100" step="1" value="15">
-                                <span id="val-import-resolution" class="settings-range-value">15</span>
-                            </div>
-                            <small class="settings-help">Higher = smoother curves, more plotter points. Lower = faster imports, blockier curves.</small>
+                            <small class="settings-help">Off by default: keep imported curves editable on canvas, then flatten them on export using the resolution below so the output is easier to predict. Turn this on only if you specifically want the DXY to generate the curve itself.</small>
                         </div>
                         <div class="form-group">
                             <label>Sim Background Opacity: <span id="val-sim-opacity">0.25</span></label>
@@ -1073,10 +1255,57 @@
                     </a>
                 </div>
                 <div class="settings-footer-actions">
+                    <button id="btn-backup-workspace" class="btn btn-secondary">Backup Workspace</button>
+                    <button id="btn-load-workspace" class="btn btn-secondary">Load Workspace</button>
                     <button id="btn-reset-settings" class="btn btn-danger">Reset To Defaults</button>
                     <button id="btn-save-settings" class="btn btn-primary">Save & Apply</button>
                 </div>
             </div>
+        </div>
+    </div>
+
+    <div id="custom-paper-modal" class="modal-overlay hidden">
+        <div class="modal-content" style="max-width: 460px;">
+            <div class="modal-header">
+                <h2>Add Custom Paper Size</h2>
+                <button id="btn-close-custom-paper" class="btn btn-icon">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="settings-two-col">
+                    <div class="form-group settings-field-full">
+                        <label>Paper Label</label>
+                        <input type="text" id="input-custom-paper-name" placeholder="e.g. A2, Card, Label">
+                    </div>
+                    <div class="form-group">
+                        <label>Width (mm)</label>
+                        <input type="number" id="input-custom-paper-width" min="1" step="1" placeholder="Width">
+                    </div>
+                    <div class="form-group">
+                        <label>Height (mm)</label>
+                        <input type="number" id="input-custom-paper-height" min="1" step="1" placeholder="Height">
+                    </div>
+                </div>
+                <small class="settings-help">Built-in sizes stay fixed. Custom sizes are saved in workspace backups and will appear in the paper dropdown.</small>
+            </div>
+            <div class="modal-footer">
+                <div class="settings-footer-actions">
+                    <button id="btn-save-custom-paper" class="btn btn-primary">Save Custom Size</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="import-resolution-menu" class="context-menu hidden" style="width: 260px;">
+        <div class="menu-header">
+            <span>Machine Curve Resolution</span>
+            <button id="btn-close-import-resolution" class="btn btn-icon btn-sm">&times;</button>
+        </div>
+        <div class="menu-body">
+            <div class="form-group-inline" style="display: block;">
+                <label style="display:block; margin-bottom: 8px;">Resolution: <span id="val-import-resolution">85</span></label>
+                <input type="range" id="input-import-resolution" min="1" max="100" step="1" value="85" style="width: 100%;">
+            </div>
+            <small class="settings-help">Lower shows a rougher machine preview. Higher shows smoother flattened output.</small>
         </div>
     </div>
 
@@ -1244,6 +1473,8 @@
     <!-- Image to Vector Scripts -->
     <script src="js/image-vector/image-vector-engine.js"></script>
     <script src="js/image-vector/image-vector-panel.js"></script>
+    <script src="js/3d-vector/3d-vector-engine.js"></script>
+    <script src="js/3d-vector/3d-vector-panel.js"></script>
     <script src="js/live-tracker-map.js"></script>
     <script src="js/live-tracker-hpgl.js"></script>
     <script src="js/live-tracker-vision.js"></script>

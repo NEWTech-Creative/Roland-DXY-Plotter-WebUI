@@ -214,6 +214,29 @@ class HpglParser {
         const tracePoints = [];
         let currentPoint = null;
         let subpathStart = null;
+        const importResolution = this._getImportResolutionEffectiveValue();
+        const getCurveSteps = (curveType, startPoint, segment) => {
+            const endPoint = segment && Number.isFinite(segment.x) && Number.isFinite(segment.y)
+                ? { x: segment.x, y: segment.y }
+                : startPoint;
+            const directDistance = startPoint && endPoint
+                ? Math.hypot((endPoint.x || 0) - (startPoint.x || 0), (endPoint.y || 0) - (startPoint.y || 0))
+                : 0;
+            const handleDistance = curveType === 'C'
+                ? Math.hypot((segment.x1 || 0) - (startPoint?.x || 0), (segment.y1 || 0) - (startPoint?.y || 0))
+                    + Math.hypot((segment.x2 || 0) - (segment.x1 || 0), (segment.y2 || 0) - (segment.y1 || 0))
+                    + Math.hypot((endPoint.x || 0) - (segment.x2 || 0), (endPoint.y || 0) - (segment.y2 || 0))
+                : Math.hypot((segment.x1 || 0) - (startPoint?.x || 0), (segment.y1 || 0) - (startPoint?.y || 0))
+                    + Math.hypot((endPoint.x || 0) - (segment.x1 || 0), (endPoint.y || 0) - (segment.y1 || 0));
+            const estimatedLength = Math.max(directDistance, handleDistance, 1);
+            const targetStep = Math.max(0.18, 18 - ((importResolution - 1) * 0.135));
+            const baseSteps = curveType === 'C' ? 2 : 1;
+            const lengthSteps = Math.ceil(estimatedLength / targetStep);
+            return Math.max(
+                curveType === 'C' ? 3 : 2,
+                Math.min(160, baseSteps + lengthSteps)
+            );
+        };
 
         const pushPoint = (point) => {
             if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return;
@@ -227,6 +250,71 @@ class HpglParser {
             pushPoint(currentPoint);
             for (let step = 1; step <= steps; step++) {
                 pushPoint(pointAt(step / steps));
+            }
+        };
+        const sampleArcSegment = (start, segment) => {
+            if (!start || !segment || !Number.isFinite(segment.rx) || !Number.isFinite(segment.ry)) {
+                if (segment && Number.isFinite(segment.x) && Number.isFinite(segment.y)) {
+                    pushPoint({ x: segment.x, y: segment.y });
+                }
+                return;
+            }
+
+            let rx = Math.abs(segment.rx);
+            let ry = Math.abs(segment.ry);
+            const phi = Number.isFinite(segment.rot) ? segment.rot : 0;
+            const end = { x: segment.x, y: segment.y };
+            if (rx < 1e-6 || ry < 1e-6) {
+                pushPoint(end);
+                return;
+            }
+
+            const cosPhi = Math.cos(phi);
+            const sinPhi = Math.sin(phi);
+            const x1p = cosPhi * (start.x - end.x) / 2 + sinPhi * (start.y - end.y) / 2;
+            const y1p = -sinPhi * (start.x - end.x) / 2 + cosPhi * (start.y - end.y) / 2;
+            let lambda = (x1p * x1p) / (rx * rx) + (y1p * y1p) / (ry * ry);
+            if (lambda > 1) {
+                const scale = Math.sqrt(lambda);
+                rx *= scale;
+                ry *= scale;
+            }
+
+            const denominator = (rx * rx * y1p * y1p) + (ry * ry * x1p * x1p);
+            if (denominator <= 1e-9) {
+                pushPoint(end);
+                return;
+            }
+
+            let factor = ((rx * ry) * (rx * ry) - (rx * rx * y1p * y1p) - (ry * ry * x1p * x1p)) / denominator;
+            factor = Math.sqrt(Math.max(0, factor));
+            if ((segment.large ? 1 : 0) === (segment.sweep ? 1 : 0)) factor = -factor;
+
+            const cxp = factor * ((rx * y1p) / ry);
+            const cyp = factor * (-(ry * x1p) / rx);
+            const cx = cosPhi * cxp - sinPhi * cyp + ((start.x + end.x) / 2);
+            const cy = sinPhi * cxp + cosPhi * cyp + ((start.y + end.y) / 2);
+            const theta1 = Math.atan2((y1p - cyp) / ry, (x1p - cxp) / rx);
+            let dTheta = Math.atan2((-y1p - cyp) / ry, (-x1p - cxp) / rx) - theta1;
+            if ((segment.sweep ? 1 : 0) === 0 && dTheta > 0) dTheta -= Math.PI * 2;
+            else if ((segment.sweep ? 1 : 0) === 1 && dTheta < 0) dTheta += Math.PI * 2;
+
+            const avgRadius = Math.max(0.1, (rx + ry) * 0.5);
+            const arcLength = Math.abs(dTheta) * avgRadius;
+            const targetStep = Math.max(0.24, 18 - ((importResolution - 1) * 0.135));
+            const steps = Math.max(
+                4,
+                Math.min(160, Math.ceil(arcLength / targetStep) + Math.ceil(Math.abs(dTheta) / (Math.PI / 2.5)))
+            );
+
+            pushPoint(start);
+            for (let step = 1; step <= steps; step++) {
+                const t = step / steps;
+                const angle = theta1 + (dTheta * t);
+                pushPoint({
+                    x: cosPhi * rx * Math.cos(angle) - sinPhi * ry * Math.sin(angle) + cx,
+                    y: sinPhi * rx * Math.cos(angle) + cosPhi * ry * Math.sin(angle) + cy
+                });
             }
         };
 
@@ -260,7 +348,7 @@ class HpglParser {
                         x: (mt * mt * mt * start.x) + (3 * mt * mt * t * segment.x1) + (3 * mt * t * t * segment.x2) + (t * t * t * segment.x),
                         y: (mt * mt * mt * start.y) + (3 * mt * mt * t * segment.y1) + (3 * mt * t * t * segment.y2) + (t * t * t * segment.y)
                     };
-                }, 24);
+                }, getCurveSteps('C', start, segment));
                 currentPoint = { x: segment.x, y: segment.y };
                 return;
             }
@@ -273,14 +361,14 @@ class HpglParser {
                         x: (mt * mt * start.x) + (2 * mt * t * segment.x1) + (t * t * segment.x),
                         y: (mt * mt * start.y) + (2 * mt * t * segment.y1) + (t * t * segment.y)
                     };
-                }, 18);
+                }, getCurveSteps('Q', start, segment));
                 currentPoint = { x: segment.x, y: segment.y };
                 return;
             }
 
             if (segment.type === 'A') {
+                sampleArcSegment(currentPoint, segment);
                 currentPoint = { x: segment.x, y: segment.y };
-                pushPoint(currentPoint);
                 return;
             }
 
@@ -290,7 +378,12 @@ class HpglParser {
             }
         });
 
-        return tracePoints.length >= 2 ? tracePoints : (Array.isArray(path.points) ? path.points : []);
+        if (tracePoints.length < 2) {
+            return Array.isArray(path.points) ? path.points : [];
+        }
+
+        const preserveClosed = this.isClosedPath(path);
+        return this._simplifyImportedPoints(tracePoints, preserveClosed);
     }
 
     pathContainsText(paths = []) {
@@ -726,7 +819,8 @@ class HpglParser {
                 const rx = tag === 'circle' ? Number(el.getAttribute('r') || 0) : Number(el.getAttribute('rx') || 0);
                 const ry = tag === 'circle' ? Number(el.getAttribute('r') || 0) : Number(el.getAttribute('ry') || 0);
                 let circlePts = [];
-                const steps = Math.max(12, Math.ceil(32 * ((this.app.settings.importResolution || 15) / 15)));
+                const importResolution = this._getImportResolutionValue();
+                const steps = Math.max(12, Math.ceil(32 * (importResolution / 15)));
                 for (let i = 0; i <= steps; i++) {
                     const ang = (i / steps) * Math.PI * 2;
                     circlePts.push({ x: cx + Math.cos(ang) * rx, y: cy + Math.sin(ang) * ry });
@@ -1307,19 +1401,25 @@ class HpglParser {
     }
 
     _getImportResolutionMultiplier() {
-        const res = this._getImportResolutionValue();
+        const res = this._getImportResolutionEffectiveValue();
         return Math.max(0.35, 0.45 + (res / 35));
     }
 
     _getImportResolutionValue() {
         const raw = this.app?.settings?.importResolution;
         const value = Number.isFinite(raw) ? raw : parseInt(raw, 10);
-        return Math.max(1, Math.min(100, Number.isFinite(value) ? value : 15));
+        return Math.max(1, Math.min(100, Number.isFinite(value) ? value : 85));
+    }
+
+    _getImportResolutionEffectiveValue() {
+        const raw = this._getImportResolutionValue();
+        if (raw <= 75) return raw;
+        return 75 + ((raw - 75) * (58 / 25));
     }
 
     _getImportMinSegmentLength() {
-        const res = this._getImportResolutionValue();
-        return 0.01 + (((100 - res) / 99) * 0.39);
+        const res = this._getImportResolutionEffectiveValue();
+        return Math.max(0.015, 0.04 + (((133 - res) / 132) * 1.2));
     }
 
     _simplifyImportedPoints(points, preserveClosed = false) {
@@ -1327,6 +1427,46 @@ class HpglParser {
 
         const minSegmentLength = this._getImportMinSegmentLength();
         const minSegmentSquared = minSegmentLength * minSegmentLength;
+        const perpendicularDistanceSquared = (point, start, end) => {
+            if (!point || !start || !end) return 0;
+            const dx = end.x - start.x;
+            const dy = end.y - start.y;
+            if (Math.abs(dx) < 1e-9 && Math.abs(dy) < 1e-9) {
+                const px = point.x - start.x;
+                const py = point.y - start.y;
+                return (px * px) + (py * py);
+            }
+            const t = ((point.x - start.x) * dx + (point.y - start.y) * dy) / ((dx * dx) + (dy * dy));
+            const clampedT = Math.max(0, Math.min(1, t));
+            const projX = start.x + (clampedT * dx);
+            const projY = start.y + (clampedT * dy);
+            const px = point.x - projX;
+            const py = point.y - projY;
+            return (px * px) + (py * py);
+        };
+        const rdp = (source, epsilonSquared) => {
+            if (!Array.isArray(source) || source.length <= 2) return source ? source.slice() : [];
+            let maxDistance = -1;
+            let splitIndex = -1;
+            const start = source[0];
+            const end = source[source.length - 1];
+            for (let i = 1; i < source.length - 1; i++) {
+                const distance = perpendicularDistanceSquared(source[i], start, end);
+                if (distance > maxDistance) {
+                    maxDistance = distance;
+                    splitIndex = i;
+                }
+            }
+            if (maxDistance <= epsilonSquared || splitIndex < 0) {
+                return [start, end];
+            }
+            const left = rdp(source.slice(0, splitIndex + 1), epsilonSquared);
+            const right = rdp(source.slice(splitIndex), epsilonSquared);
+            return left.slice(0, -1).concat(right);
+        };
+        const sourcePoints = preserveClosed && points.length > 3
+            ? points.slice(0, -1)
+            : points.slice();
         const simplified = [];
 
         const pushPoint = (point, force = false) => {
@@ -1343,11 +1483,16 @@ class HpglParser {
             }
         };
 
-        pushPoint(points[0], true);
-        for (let i = 1; i < points.length - 1; i++) {
-            pushPoint(points[i], false);
+        const resolution = this._getImportResolutionEffectiveValue();
+        const rdpTolerance = Math.max(0.03, 4.6 - ((resolution - 1) * 0.0355));
+        const rdpToleranceSquared = rdpTolerance * rdpTolerance;
+        const reduced = rdp(sourcePoints, rdpToleranceSquared);
+
+        pushPoint(reduced[0], true);
+        for (let i = 1; i < reduced.length - 1; i++) {
+            pushPoint(reduced[i], false);
         }
-        pushPoint(points[points.length - 1], true);
+        pushPoint(reduced[reduced.length - 1], true);
 
         if (preserveClosed && simplified.length > 2) {
             const first = simplified[0];
@@ -1372,14 +1517,14 @@ class HpglParser {
     _sampleCatmullRom(points, closed = false) {
         if (!Array.isArray(points) || points.length < 2) return points || [];
 
-        const resolution = this._getImportResolutionValue();
+        const resolution = this._getImportResolutionEffectiveValue();
         const estimatedLength = this._estimatePolylineLength(points);
         const avgSpanLength = estimatedLength / Math.max(1, (closed ? points.length : points.length - 1));
         const samplesPerSpan = Math.max(
             10,
             Math.min(
-                360,
-                Math.ceil(avgSpanLength * (0.75 + (resolution / 20))) + Math.ceil(resolution / 4)
+                520,
+                Math.ceil(avgSpanLength * (0.75 + (resolution / 18))) + Math.ceil(resolution / 3.1)
             )
         );
 
@@ -1420,14 +1565,14 @@ class HpglParser {
 
         let sweep = endRad - startRad;
         if (sweep < 0) sweep += Math.PI * 2;
-        const resolution = this._getImportResolutionValue();
+        const resolution = this._getImportResolutionEffectiveValue();
         const arcLength = Math.abs(sweep) * radius;
         const steps = Math.max(
             minimumSteps,
             Math.min(
-                4000,
+                5200,
                 Math.ceil((Math.abs(sweep) / (Math.PI / 40)) * this._getImportResolutionMultiplier()) +
-                Math.ceil(arcLength * (0.12 + (resolution / 32)))
+                Math.ceil(arcLength * (0.12 + (resolution / 27)))
             )
         );
         const points = [];
@@ -1479,14 +1624,14 @@ class HpglParser {
         if (bulge < 0 && endAngle >= startAngle) endAngle -= Math.PI * 2;
 
         const sweep = endAngle - startAngle;
-        const resolution = this._getImportResolutionValue();
+        const resolution = this._getImportResolutionEffectiveValue();
         const arcLength = Math.abs(sweep) * radius;
         const steps = Math.max(
             8,
             Math.min(
-                3200,
+                4200,
                 Math.ceil((Math.abs(sweep) / (Math.PI / 40)) * this._getImportResolutionMultiplier()) +
-                Math.ceil(arcLength * (0.11 + (resolution / 36)))
+                Math.ceil(arcLength * (0.11 + (resolution / 30)))
             )
         );
         const points = [];
@@ -1611,16 +1756,86 @@ class HpglParser {
         }
 
         const isClosed = Number.isFinite(props[70]?.[0]) && ((props[70][0] & 1) === 1);
-        const resolution = this._getImportResolutionValue();
+        const resolution = this._getImportResolutionEffectiveValue();
         const estimatedLength = this._estimatePolylineLength(controlPoints);
-        const targetStep = Math.max(0.02, 1.1 - ((resolution - 1) * 0.011));
+        const targetStep = Math.max(0.01, 1.1 - ((resolution - 1) * 0.0083));
         const sampleCount = Math.max(
             64,
             Math.min(
-                18000,
+                26000,
                 Math.ceil(estimatedLength / targetStep) +
-                Math.ceil(controlPoints.length * (0.04 + (resolution / 260))) +
-                (resolution * 10)
+                Math.ceil(controlPoints.length * (0.05 + (resolution / 200))) +
+                Math.ceil(resolution * 13)
+            )
+        );
+        const points = [];
+        for (let i = 0; i <= sampleCount; i++) {
+            const t = start + ((end - start) * (i / sampleCount));
+            const point = this._evaluateDXFBSplinePoint(controlPoints, Math.min(degree, controlPoints.length - 1), knots, t);
+            if (!point) continue;
+            const last = points[points.length - 1];
+            if (!last || Math.abs(last.x - point.x) > 0.0001 || Math.abs(last.y - point.y) > 0.0001) {
+                points.push(point);
+            }
+        }
+
+        if (isClosed && points.length > 1) {
+            const first = points[0];
+            const last = points[points.length - 1];
+            if (Math.abs(first.x - last.x) > 0.0001 || Math.abs(first.y - last.y) > 0.0001) {
+                points.push({ ...first });
+            }
+        }
+
+        return this._simplifyImportedPoints(points, isClosed);
+    }
+
+    _sampleDXFSplineDefinition(definition = {}) {
+        const fitPoints = Array.isArray(definition.fitPoints) ? definition.fitPoints : [];
+        if (fitPoints.length >= 2) {
+            return this._sampleCatmullRom(
+                fitPoints.map(point => ({ x: point.x, y: point.y })),
+                !!definition.isClosed
+            );
+        }
+
+        const controlPoints = Array.isArray(definition.controlPoints)
+            ? definition.controlPoints
+                .filter(point => point && Number.isFinite(point.x) && Number.isFinite(point.y))
+                .map(point => ({ x: point.x, y: point.y }))
+            : [];
+        if (controlPoints.length < 2) return [];
+
+        const degree = Math.max(1, Math.min(10, Math.round(definition.degree || 3)));
+        let knots = Array.isArray(definition.knots)
+            ? definition.knots.filter(value => Number.isFinite(value))
+            : [];
+        const expectedKnots = controlPoints.length + degree + 1;
+        if (knots.length !== expectedKnots) {
+            knots = [];
+            const interiorCount = Math.max(0, controlPoints.length - degree - 1);
+            for (let i = 0; i <= degree; i++) knots.push(0);
+            for (let i = 1; i <= interiorCount; i++) knots.push(i);
+            for (let i = 0; i <= degree; i++) knots.push(interiorCount + 1);
+        }
+
+        const start = knots[degree];
+        const end = knots[knots.length - degree - 1];
+        if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+            return controlPoints;
+        }
+
+        const isClosed = !!definition.isClosed;
+        const resolution = this._getImportResolutionEffectiveValue();
+        const estimatedLength = this._estimatePolylineLength(controlPoints);
+        const targetStep = Math.max(0.01, 1.1 - ((resolution - 1) * 0.0083));
+        const sampleCount = Math.max(
+            64,
+            Math.min(
+                26000,
+                Math.ceil(estimatedLength / targetStep) +
+                Math.ceil(controlPoints.length * (0.05 + (resolution / 200))) +
+                Math.ceil(resolution * 13)
             )
         );
         const points = [];
@@ -1673,9 +1888,27 @@ class HpglParser {
             }
             const closedFlag = props[70]?.[0];
             const isClosed = Number.isFinite(closedFlag) && ((closedFlag & 1) === 1);
-            const pts = this._buildDXFPolylinePoints(vertices, isClosed).map(apply);
+            const transformedVertices = vertices.map(vertex => {
+                const transformed = apply({ x: vertex.x, y: vertex.y });
+                return { x: transformed.x, y: transformed.y, bulge: vertex.bulge || 0 };
+            });
+            const pts = this._buildDXFPolylinePoints(transformedVertices, isClosed);
             pts.forEach(p => updateBounds(p.x, p.y));
-            if (pts.length > 1) allPaths.push(pts);
+            if (pts.length > 1) {
+                const hasBulges = transformedVertices.some(vertex => Math.abs(vertex.bulge || 0) > 1e-6);
+                if (hasBulges) {
+                    allPaths.push({
+                        points: pts,
+                        machinePreviewSource: {
+                            kind: 'dxfBulgePolyline',
+                            vertices: transformedVertices,
+                            isClosed
+                        }
+                    });
+                } else {
+                    allPaths.push(pts);
+                }
+            }
             return;
         }
 
@@ -1696,7 +1929,34 @@ class HpglParser {
         if (type === 'SPLINE') {
             const pts = this._sampleDXFSpline(props).map(apply);
             pts.forEach(p => updateBounds(p.x, p.y));
-            if (pts.length > 1) allPaths.push(pts);
+            if (pts.length > 1) {
+                const fitXs = props[11] || [];
+                const fitYs = props[21] || [];
+                const transformedFitPoints = fitXs.length >= 2 && fitXs.length === fitYs.length
+                    ? fitXs.map((x, index) => apply({ x, y: fitYs[index] }))
+                    : [];
+                const xs = props[10] || [];
+                const ys = props[20] || [];
+                const transformedControlPoints = [];
+                for (let i = 0; i < Math.min(xs.length, ys.length); i++) {
+                    const x = xs[i];
+                    const y = ys[i];
+                    if (Number.isFinite(x) && Number.isFinite(y)) {
+                        transformedControlPoints.push(apply({ x, y }));
+                    }
+                }
+                allPaths.push({
+                    points: pts,
+                    machinePreviewSource: {
+                        kind: 'dxfSpline',
+                        fitPoints: transformedFitPoints,
+                        controlPoints: transformedControlPoints,
+                        degree: Math.max(1, Math.min(10, Math.round(props[71]?.[0] || 3))),
+                        knots: (props[40] || []).filter(value => Number.isFinite(value)),
+                        isClosed: Number.isFinite(props[70]?.[0]) && ((props[70][0] & 1) === 1)
+                    }
+                });
+            }
             return;
         }
     }
@@ -1825,6 +2085,7 @@ class HpglParser {
             this.app.ui.updateVisualizerPalette();
         }
         let pointsCount = 0;
+        let editableCurvePathCount = 0;
         const groupId = 'import_' + Date.now() + '_' + Math.floor(Math.random() * 1000);
 
         allPaths.forEach(poly => {
@@ -1858,9 +2119,41 @@ class HpglParser {
                         return scaled;
                     });
                 }
+                let scaledMachinePreviewSource = null;
+                if (poly.machinePreviewSource) {
+                    const scalePreviewPoint = (point) => ({
+                        x: (point.x * scale) + offsetX,
+                        y: (normalizeY(point.y) * scale) + offsetY
+                    });
+                    scaledMachinePreviewSource = { ...poly.machinePreviewSource };
+                    if (Array.isArray(poly.machinePreviewSource.vertices)) {
+                        scaledMachinePreviewSource.vertices = poly.machinePreviewSource.vertices.map(vertex => ({
+                            x: (vertex.x * scale) + offsetX,
+                            y: (normalizeY(vertex.y) * scale) + offsetY,
+                            bulge: vertex.bulge || 0
+                        }));
+                    }
+                    if (Array.isArray(poly.machinePreviewSource.fitPoints)) {
+                        scaledMachinePreviewSource.fitPoints = poly.machinePreviewSource.fitPoints.map(scalePreviewPoint);
+                    }
+                    if (Array.isArray(poly.machinePreviewSource.controlPoints)) {
+                        scaledMachinePreviewSource.controlPoints = poly.machinePreviewSource.controlPoints.map(scalePreviewPoint);
+                    }
+                }
 
-                const pathObj = { type: 'polyline', points: scaledPoly, pen: visPen, groupId };
-                if (scaledSegments) pathObj.segments = scaledSegments;
+                const pathObj = {
+                    type: scaledSegments ? 'path' : 'polyline',
+                    points: scaledPoly,
+                    pen: visPen,
+                    groupId
+                };
+                if (scaledSegments) {
+                    pathObj.segments = scaledSegments;
+                    editableCurvePathCount++;
+                }
+                if (scaledMachinePreviewSource) {
+                    pathObj.machinePreviewSource = scaledMachinePreviewSource;
+                }
                 this.app.canvas.addPath(pathObj);
                 pointsCount += scaledPoly.length;
             }
@@ -1868,6 +2161,9 @@ class HpglParser {
 
         const resolution = this._getImportResolutionValue();
         this.app.ui.logToConsole(`System: Imported ${formatName} (x${scale.toFixed(2)}). Centered. ${pointsCount} points across ${allPaths.length} paths. Curve resolution ${resolution}/100.`);
+        if (editableCurvePathCount > 0) {
+            this.app.ui.logToConsole(`System: Preserved ${editableCurvePathCount} imported path(s) with editable curve nodes for the node tool.`);
+        }
         if (this.app?.settings?.outputFlipHorizontal === true) {
             this.app.ui.logToConsole('System Warning: Horizontal plot output flip is enabled, so generated output will be mirrored relative to the canvas preview.', 'warning');
         }

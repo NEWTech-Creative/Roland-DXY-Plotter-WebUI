@@ -23,7 +23,7 @@ class CanvasManager {
 
         // Default Paper Settings
         this.paperSize = 'A3';
-        this.paperDims = { 'A3': { w: 420, h: 297 }, 'A4': { w: 297, h: 210 }, 'A5': { w: 210, h: 148 } };
+        this.paperDims = {};
 
         this.snapThreshold = 5; // mm
         this.snapPoint = null; // {x, y} for visual hint
@@ -88,13 +88,22 @@ class CanvasManager {
         this.bucketHoverPathIdx = -1;
         this.editingPathIdx = -1;
         this.displayedCrosshairPoint = null;
+        this.closedFillRegionsCache = null;
         this.cursorBlink = true;
         this.drawFramePending = false;
+        this.lastSavedCanvasJson = '';
+        this.persistenceEventsBound = false;
         this.cursorTimer = setInterval(() => { this.cursorBlink = !this.cursorBlink; if (this.editingPathIdx !== -1) this.draw(); }, 500);
+        this.autoSaveTimer = setInterval(() => this.saveCurrentStateIfChanged(), 5000);
+    }
+
+    invalidateFillRegionCache() {
+        this.closedFillRegionsCache = null;
     }
 
     clear() {
         this.paths = []; // Array of path objects
+        this.invalidateFillRegionCache();
         this.selectedPaths = [];
         this.selectedNodes = [];
         this.draggingNodeIndex = -1;
@@ -114,6 +123,7 @@ class CanvasManager {
 
     clearForLiveTracker() {
         this.paths = [];
+        this.invalidateFillRegionCache();
         this.patternPreviewPaths = [];
         this.selectedPaths = [];
         this.selectedNodes = [];
@@ -338,6 +348,7 @@ class CanvasManager {
     }
 
     saveUndoState() {
+        this.invalidateFillRegionCache();
         this.undoStack.push(JSON.stringify(this.paths));
         this.redoStack = []; // Clear redo stack on new action
         if (this.undoStack.length > this.maxUndo) this.undoStack.shift();
@@ -356,7 +367,20 @@ class CanvasManager {
 
     saveCurrentState() {
         try {
-            localStorage.setItem('canvasBackup', JSON.stringify(this.paths));
+            const serialized = JSON.stringify(this.paths);
+            localStorage.setItem('canvasBackup', serialized);
+            this.lastSavedCanvasJson = serialized;
+        } catch (e) {
+            // Persist fail
+        }
+    }
+
+    saveCurrentStateIfChanged() {
+        try {
+            const serialized = JSON.stringify(this.paths);
+            if (serialized === this.lastSavedCanvasJson) return;
+            localStorage.setItem('canvasBackup', serialized);
+            this.lastSavedCanvasJson = serialized;
         } catch (e) {
             // Persist fail
         }
@@ -367,6 +391,8 @@ class CanvasManager {
             const saved = localStorage.getItem('canvasBackup');
             if (saved) {
                 this.paths = JSON.parse(saved);
+                this.lastSavedCanvasJson = saved;
+                this.invalidateFillRegionCache();
                 this.draw();
                 if (this.app && this.app.ui) {
                     this.app.ui.logToConsole('System: Previous canvas drawing restored.');
@@ -384,6 +410,7 @@ class CanvasManager {
             this.redoStack.push(current);
             const prev = this.undoStack[this.undoStack.length - 1];
             this.paths = JSON.parse(prev);
+            this.invalidateFillRegionCache();
             this.selectedPaths = [];
             this.draw();
             if (this.app.ui) this.app.ui.logToConsole('System: Undo action performed.');
@@ -391,6 +418,7 @@ class CanvasManager {
             const current = this.undoStack.pop();
             this.redoStack.push(current);
             this.paths = [];
+            this.invalidateFillRegionCache();
             this.selectedPaths = [];
             this.draw();
             if (this.app.ui) this.app.ui.logToConsole('System: Undo back to empty canvas.');
@@ -403,6 +431,7 @@ class CanvasManager {
             const next = this.redoStack.pop();
             this.undoStack.push(next);
             this.paths = JSON.parse(next);
+            this.invalidateFillRegionCache();
             this.selectedPaths = [];
             this.draw();
             if (this.app.ui) this.app.ui.logToConsole('System: Redo action performed.');
@@ -411,6 +440,7 @@ class CanvasManager {
 
     addPath(pathObj) {
         this.paths.push(pathObj);
+        this.invalidateFillRegionCache();
         this.saveUndoState();
         this.draw();
     }
@@ -455,8 +485,27 @@ class CanvasManager {
         this.eventsBound = true;
 
         document.getElementById('sel-paper-size').addEventListener('change', (e) => {
-            this.paperSize = e.target.value;
+            const nextValue = e.target.value;
+            if (nextValue === '__custom__') {
+                e.target.value = this.paperSize;
+                this.app?.ui?.openCustomPaperModal?.();
+                return;
+            }
+            this.paperSize = nextValue;
+            if (this.app?.settings) {
+                this.app.settings.paperSize = this.paperSize;
+                this.app.saveSettings?.();
+            }
             this.handleResize(); // re-draw
+        });
+        document.getElementById('sel-paper-size').addEventListener('focus', () => {
+            this.setPaperDropdownDetailMode(true);
+        });
+        document.getElementById('sel-paper-size').addEventListener('mousedown', () => {
+            this.setPaperDropdownDetailMode(true);
+        });
+        document.getElementById('sel-paper-size').addEventListener('blur', () => {
+            this.setPaperDropdownDetailMode(false);
         });
 
         document.addEventListener('keydown', (e) => {
@@ -1405,21 +1454,29 @@ class CanvasManager {
         return this.canvasPxToMM(px, py);
     }
 
+    getViewportTransform() {
+        const canvasRect = this.canvas?.getBoundingClientRect?.();
+        const viewportWidth = canvasRect?.width || this.canvas?.clientWidth || this.pixelW || 0;
+        const viewportHeight = canvasRect?.height || this.canvas?.clientHeight || this.pixelH || 0;
+        const mmToPx = this.scale;
+        const horizontalShift = 0;
+        const verticalShift = Math.max(0, viewportHeight - (this.bedHeight * mmToPx));
+        return { mmToPx, horizontalShift, verticalShift };
+    }
+
     canvasPxToMM(px, py) {
         const safePx = Number.isFinite(px) ? px : 0;
         const safePy = Number.isFinite(py) ? py : 0;
 
-        // Centering logic (same as in draw)
-        const mmToPx = this.scale;
-        const horizontalShift = 0;
-        const verticalShift = Math.max(0, this.pixelH - (this.bedHeight * mmToPx));
+        // Match the live render transform so hover/click math stays aligned after resize.
+        const { mmToPx, horizontalShift, verticalShift } = this.getViewportTransform();
 
         // Reverse translate and zoom
         const transformedPx = (safePx - this.viewOffsetX - horizontalShift) / this.viewZoom;
         const transformedPy = (safePy - this.viewOffsetY - verticalShift) / this.viewZoom;
 
-        const xMM = transformedPx / this.scale;
-        const yMM = transformedPy / this.scale;
+        const xMM = transformedPx / mmToPx;
+        const yMM = transformedPy / mmToPx;
 
         return { xMM, yMM };
     }
@@ -1898,7 +1955,9 @@ class CanvasManager {
 
     getPolygonBox(points = []) {
         if (!Array.isArray(points) || points.length < 3) return null;
-        return points.reduce((box, point) => ({
+        const validPoints = points.filter(point => Number.isFinite(point?.x) && Number.isFinite(point?.y));
+        if (validPoints.length < 3) return null;
+        return validPoints.reduce((box, point) => ({
             minX: Math.min(box.minX, point.x),
             minY: Math.min(box.minY, point.y),
             maxX: Math.max(box.maxX, point.x),
@@ -1913,24 +1972,40 @@ class CanvasManager {
 
     getPolygonArea(points = []) {
         if (!Array.isArray(points) || points.length < 3) return 0;
+        const validPoints = points.filter(point => Number.isFinite(point?.x) && Number.isFinite(point?.y));
+        if (validPoints.length < 3) return 0;
         let area = 0;
-        for (let i = 0; i < points.length; i++) {
-            const a = points[i];
-            const b = points[(i + 1) % points.length];
-            area += ((a.x || 0) * (b.y || 0)) - ((b.x || 0) * (a.y || 0));
+        for (let i = 0; i < validPoints.length; i++) {
+            const a = validPoints[i];
+            const b = validPoints[(i + 1) % validPoints.length];
+            area += (a.x * b.y) - (b.x * a.y);
         }
         return Math.abs(area) * 0.5;
     }
 
     getEmbeddedLoopFillRegions(path, pathIdx) {
         if (!path || !Array.isArray(path.points) || path.points.length < 6) return [];
-        const source = path.points.map(point => ({ x: point.x, y: point.y }));
+        const source = path.points
+            .filter(point => Number.isFinite(point?.x) && Number.isFinite(point?.y))
+            .map(point => ({ x: point.x, y: point.y }));
+        if (source.length < 6) return [];
+
+        // Dense tracked strokes can make loop discovery explode during bucket hover.
+        const maxLoopPoints = path.liveTrackerGenerated ? 900 : 600;
+        if (source.length > maxLoopPoints) return [];
+
         const loops = [];
         const seen = new Set();
         const closeThreshold = path.liveTrackerGenerated ? 4.5 : 2.5;
+        const maxLoopSpan = path.liveTrackerGenerated ? 180 : 240;
+        const maxLoopChecks = path.liveTrackerGenerated ? 12000 : 18000;
+        let loopChecks = 0;
 
         for (let start = 0; start < source.length - 4; start++) {
-            for (let end = start + 4; end < source.length; end++) {
+            const endLimit = Math.min(source.length, start + maxLoopSpan);
+            for (let end = start + 4; end < endLimit; end++) {
+                loopChecks++;
+                if (loopChecks > maxLoopChecks) return loops;
                 const startPoint = source[start];
                 const endPoint = source[end];
                 if (Math.hypot((endPoint.x || 0) - (startPoint.x || 0), (endPoint.y || 0) - (startPoint.y || 0)) > closeThreshold) {
@@ -1964,6 +2039,9 @@ class CanvasManager {
     }
 
     getClosedFillRegions() {
+        if (this.closedFillRegionsCache) {
+            return this.closedFillRegionsCache;
+        }
         const regions = [];
         for (let i = 0; i < this.paths.length; i++) {
             const path = this.paths[i];
@@ -1972,6 +2050,7 @@ class CanvasManager {
             if (region) regions.push({ ...region, pathIdx: i, path });
             this.getEmbeddedLoopFillRegions(path, i).forEach(loopRegion => regions.push(loopRegion));
         }
+        this.closedFillRegionsCache = regions;
         return regions;
     }
 
@@ -2759,6 +2838,8 @@ class CanvasManager {
             }
         }
 
+        this.refreshPaperSettings();
+
         // Dynamically resize when panel changes size (GridStack)
         if (this.canvas && this.canvas.parentElement) {
             const resizeObserver = new ResizeObserver(() => {
@@ -2770,7 +2851,84 @@ class CanvasManager {
 
         this.resize();
         this.loadSavedState(); // Restore from localStorage on startup
+        if (!this.persistenceEventsBound) {
+            this.persistenceEventsBound = true;
+            window.addEventListener('beforeunload', () => this.saveCurrentStateIfChanged());
+            document.addEventListener('visibilitychange', () => {
+                if (document.hidden) this.saveCurrentStateIfChanged();
+            });
+        }
         this.draw(true);
+    }
+
+    refreshPaperSettings() {
+        this.paperDims = this.app?.getPaperSizeMap?.() || {
+            A3: { name: 'A3', width: 420, height: 297 },
+            A4: { name: 'A4', width: 297, height: 210 },
+            A5: { name: 'A5', width: 210, height: 148 }
+        };
+        this.paperSize = this.app?.settings?.paperSize || this.paperSize || 'A3';
+        if (this.paperSize !== 'Max' && !this.paperDims[this.paperSize]) {
+            this.paperSize = 'A3';
+        }
+
+        const select = document.getElementById('sel-paper-size');
+        if (select) {
+            const optionKeys = [...Object.keys(this.paperDims), 'Max'];
+            const previousValue = this.paperSize;
+            select.innerHTML = '';
+            optionKeys.forEach(key => {
+                const opt = document.createElement('option');
+                opt.value = key;
+                opt.textContent = key;
+                select.appendChild(opt);
+            });
+            const customOption = document.createElement('option');
+            customOption.value = '__custom__';
+            customOption.textContent = 'Custom...';
+            select.appendChild(customOption);
+            select.value = optionKeys.includes(previousValue) ? previousValue : 'A3';
+            this.paperSize = select.value;
+            this.setPaperDropdownDetailMode(false);
+        }
+    }
+
+    setPaperDropdownDetailMode(showDetails) {
+        const select = document.getElementById('sel-paper-size');
+        if (!select) return;
+        select.style.width = showDetails ? '220px' : '74px';
+
+        Array.from(select.options).forEach(option => {
+            const key = option.value;
+            if (key === '__custom__') {
+                option.textContent = 'Custom...';
+                return;
+            }
+            if (key === 'Max') {
+                option.textContent = 'Max';
+                return;
+            }
+            const dims = this.paperDims[key];
+            if (!dims) {
+                option.textContent = key;
+                return;
+            }
+            option.textContent = showDetails
+                ? `${key} (${dims.width} x ${dims.height} mm)`
+                : key;
+        });
+    }
+
+    getPaperDimensions(sizeName = this.paperSize) {
+        if (sizeName === 'Max') {
+            return { width: this.bedWidth, height: this.bedHeight };
+        }
+
+        const preset = this.paperDims[sizeName] || this.paperDims.A3;
+        return {
+            width: preset?.width || 420,
+            height: preset?.height || 297
+        };
     }
 
     handleResize() {
@@ -2783,8 +2941,9 @@ class CanvasManager {
         if (!parent) return;
 
         const dpr = window.devicePixelRatio || 1;
-        const rectW = parent.clientWidth;
-        const rectH = parent.clientHeight;
+        const parentRect = parent.getBoundingClientRect();
+        const rectW = parentRect.width || parent.clientWidth;
+        const rectH = parentRect.height || parent.clientHeight;
 
         const scale = Math.min(
             rectW / this.bedWidth,
@@ -2820,13 +2979,12 @@ class CanvasManager {
 
     _renderCanvas() {
         if (!this.ctx) return;
+        const showMachineOutput = this.app?.ui?.currentVisualizerView === 'machine-output';
         this.ctx.save(); // Save default unscaled state
         this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
 
         // Bottom-left anchor logic: keep the machine origin fixed to the lower-left of the viewport.
-        const mmToPx = this.scale;
-        const horizontalShift = 0;
-        const verticalShift = Math.max(0, this.pixelH - (this.bedHeight * mmToPx));
+        const { mmToPx, horizontalShift, verticalShift } = this.getViewportTransform();
 
         // Apply panning and zooming transformations
         this.ctx.translate(this.viewOffsetX + horizontalShift, this.viewOffsetY + verticalShift);
@@ -2876,9 +3034,9 @@ class CanvasManager {
         // Wait, physical DXY places bottom-left origin in bottom-left corner.
         // Screen canvas places 0,0 at top-left.
         // Let's draw paper attached to bottom left (x=0, y=maxY).
-        const pSize = this.paperDims[this.paperSize] || this.paperDims['A3'];
-        const pWPx = pSize.w * mmToPx;
-        const pHPx = pSize.h * mmToPx;
+        const pSize = this.getPaperDimensions(this.paperSize);
+        const pWPx = pSize.width * mmToPx;
+        const pHPx = pSize.height * mmToPx;
 
         // origin bottom-left means Y is bedPixelH - pHPx
         const startY = bedPixelH - pHPx;
@@ -2911,10 +3069,12 @@ class CanvasManager {
         this.ctx.fill();
 
         this.drawPaths();
-        this.drawBucketHoverPreview(mmToPx);
+        if (!showMachineOutput) {
+            this.drawBucketHoverPreview(mmToPx);
+        }
 
         // Draw Snap Hint
-        if (this.snapPoint) {
+        if (!showMachineOutput && this.snapPoint) {
             this.ctx.strokeStyle = '#22c55e'; // green-500
             this.ctx.fillStyle = '#22c55e';
             this.ctx.lineWidth = 2 / this.viewZoom;
@@ -3007,11 +3167,13 @@ class CanvasManager {
     }
 
     drawPaths() {
+        const showMachineOutput = this.app?.ui?.currentVisualizerView === 'machine-output';
         const mmToPx = this.scale;
-        const selectedPathSet = new Set(this.selectedPaths);
-        const selectedNodeSet = new Set(this.selectedNodes.map(node => `${node.pathIdx}:${node.nodeIdx}`));
-        const selectToolActive = this.app.ui.activeTool === 'select' && this.selectedPaths.length >= 1;
-        const nodeToolActive = this.app.ui.activeTool === 'node';
+        const renderPaths = showMachineOutput ? this.buildMachineOutputPreviewPaths() : this.paths;
+        const selectedPathSet = showMachineOutput ? new Set() : new Set(this.selectedPaths);
+        const selectedNodeSet = showMachineOutput ? new Set() : new Set(this.selectedNodes.map(node => `${node.pathIdx}:${node.nodeIdx}`));
+        const selectToolActive = !showMachineOutput && this.app.ui.activeTool === 'select' && this.selectedPaths.length >= 1;
+        const nodeToolActive = !showMachineOutput && this.app.ui.activeTool === 'node';
         const selectionBox = selectToolActive ? this.getGroupBoundingBox(this.selectedPaths) : null;
         const selectionNodeSize = 8 / (mmToPx * this.viewZoom);
         const selectionCorners = selectionBox ? [
@@ -3024,10 +3186,16 @@ class CanvasManager {
             { x: selectionBox.minX, y: selectionBox.maxY },
             { x: selectionBox.minX, y: selectionBox.minY + (selectionBox.maxY - selectionBox.minY) / 2 }
         ] : null;
-        this.ctx.lineCap = 'round';
-        this.ctx.lineJoin = 'round';
+        if (showMachineOutput) {
+            this.ctx.lineCap = 'butt';
+            this.ctx.lineJoin = 'miter';
+            this.ctx.miterLimit = 6;
+        } else {
+            this.ctx.lineCap = 'round';
+            this.ctx.lineJoin = 'round';
+        }
 
-        this.paths.forEach((p, index) => {
+        renderPaths.forEach((p, index) => {
             // Match canvas stroke color and thickness to assigned visualizer pen
             const penCfg = this.app.ui.visPenConfig[(p.pen || 1) - 1] || { color: '#3b82f6', thickness: 0.3 };
 
@@ -3184,7 +3352,7 @@ class CanvasManager {
             }
         });
 
-        if (this.isCreatingBezier && this.currentBezierPathIdx >= 0) {
+        if (!showMachineOutput && this.isCreatingBezier && this.currentBezierPathIdx >= 0) {
             const activePath = this.paths[this.currentBezierPathIdx];
             const previewStart = activePath?.points?.[activePath.points.length - 1];
             const previewEnd = this.bezierPreviewPoint;
@@ -3202,40 +3370,42 @@ class CanvasManager {
         }
 
         // Draw Pattern Preview
-        this.ctx.save();
-        this.ctx.setLineDash([5, 5]);
-        this.ctx.strokeStyle = 'rgba(59, 130, 246, 0.5)';
-        this.patternPreviewPaths.forEach(p => {
-            if (p.type === 'circle') {
-                this.ctx.beginPath();
-                this.ctx.arc(p.x * mmToPx, p.y * mmToPx, p.r * mmToPx, 0, Math.PI * 2);
-                this.ctx.stroke();
-            } else if (p.type === 'rectangle') {
-                this.ctx.strokeRect(p.x * mmToPx, p.y * mmToPx, (p.w || 0.1) * mmToPx, (p.h || 0.1) * mmToPx);
-            } else if (p.type === 'text') {
-                this.drawVectorText(p, mmToPx, false);
-            } else if (p.points) {
-                this.ctx.beginPath();
-                if (p.segments && p.segments.length > 0) {
-                    p.segments.forEach(s => {
-                        if (s.type === 'M') this.ctx.moveTo(s.x * mmToPx, s.y * mmToPx);
-                        else if (s.type === 'L') this.ctx.lineTo(s.x * mmToPx, s.y * mmToPx);
-                        else if (s.type === 'C') this.ctx.bezierCurveTo(s.x1 * mmToPx, s.y1 * mmToPx, s.x2 * mmToPx, s.y2 * mmToPx, s.x * mmToPx, s.y * mmToPx);
-                        else if (s.type === 'Q') this.ctx.quadraticCurveTo(s.x1 * mmToPx, s.y1 * mmToPx, s.x * mmToPx, s.y * mmToPx);
-                        else if (s.type === 'A') this.ctx.lineTo(s.x * mmToPx, s.y * mmToPx);
-                        else if (s.type === 'Z') this.ctx.closePath();
-                    });
-                } else {
-                    this.ctx.moveTo(p.points[0].x * mmToPx, p.points[0].y * mmToPx);
-                    for (let i = 1; i < p.points.length; i++) {
-                        this.ctx.lineTo(p.points[i].x * mmToPx, p.points[i].y * mmToPx);
+        if (!showMachineOutput) {
+            this.ctx.save();
+            this.ctx.setLineDash([5, 5]);
+            this.ctx.strokeStyle = 'rgba(59, 130, 246, 0.5)';
+            this.patternPreviewPaths.forEach(p => {
+                if (p.type === 'circle') {
+                    this.ctx.beginPath();
+                    this.ctx.arc(p.x * mmToPx, p.y * mmToPx, p.r * mmToPx, 0, Math.PI * 2);
+                    this.ctx.stroke();
+                } else if (p.type === 'rectangle') {
+                    this.ctx.strokeRect(p.x * mmToPx, p.y * mmToPx, (p.w || 0.1) * mmToPx, (p.h || 0.1) * mmToPx);
+                } else if (p.type === 'text') {
+                    this.drawVectorText(p, mmToPx, false);
+                } else if (p.points) {
+                    this.ctx.beginPath();
+                    if (p.segments && p.segments.length > 0) {
+                        p.segments.forEach(s => {
+                            if (s.type === 'M') this.ctx.moveTo(s.x * mmToPx, s.y * mmToPx);
+                            else if (s.type === 'L') this.ctx.lineTo(s.x * mmToPx, s.y * mmToPx);
+                            else if (s.type === 'C') this.ctx.bezierCurveTo(s.x1 * mmToPx, s.y1 * mmToPx, s.x2 * mmToPx, s.y2 * mmToPx, s.x * mmToPx, s.y * mmToPx);
+                            else if (s.type === 'Q') this.ctx.quadraticCurveTo(s.x1 * mmToPx, s.y1 * mmToPx, s.x * mmToPx, s.y * mmToPx);
+                            else if (s.type === 'A') this.ctx.lineTo(s.x * mmToPx, s.y * mmToPx);
+                            else if (s.type === 'Z') this.ctx.closePath();
+                        });
+                    } else {
+                        this.ctx.moveTo(p.points[0].x * mmToPx, p.points[0].y * mmToPx);
+                        for (let i = 1; i < p.points.length; i++) {
+                            this.ctx.lineTo(p.points[i].x * mmToPx, p.points[i].y * mmToPx);
+                        }
                     }
+                    this.ctx.stroke();
                 }
-                this.ctx.stroke();
-            }
-        });
-        this.ctx.restore();
-        this.ctx.setLineDash([]); // Reset line dash after pattern preview
+            });
+            this.ctx.restore();
+            this.ctx.setLineDash([]); // Reset line dash after pattern preview
+        }
 
         // Draw Simulation Overlay
         if (this.simulationActive) {
@@ -3280,6 +3450,70 @@ class CanvasManager {
         }
 
         this.ctx.restore(); // Restore context to avoid accumulating transformations
+    }
+
+    buildMachineOutputPreviewPaths() {
+        const hpgl = this.app?.hpgl;
+        if (!hpgl) return this.paths;
+
+        const previewPaths = [];
+        const pushPolyline = (points, pen) => {
+            if (!Array.isArray(points) || points.length < 2) return;
+            previewPaths.push({ type: 'polyline', points, pen });
+        };
+        this.paths.forEach((path) => {
+            if (!path) return;
+            const pen = path.pen || 1;
+
+            if (path.type === 'circle') {
+                const steps = 96;
+                const points = [];
+                for (let i = 0; i <= steps; i++) {
+                    const angle = (i / steps) * Math.PI * 2;
+                    points.push({
+                        x: path.x + Math.cos(angle) * path.r,
+                        y: path.y + Math.sin(angle) * path.r
+                    });
+                }
+                pushPolyline(points, pen);
+                return;
+            }
+
+            if (path.type === 'rectangle') {
+                const points = hpgl.getRectanglePoints(path.x, path.y, path.x + (path.w || 0), path.y + (path.h || 0));
+                pushPolyline(points, pen);
+                return;
+            }
+
+            if (path.type === 'text') {
+                this.getVectorTextSegments(path).forEach(segment => {
+                    pushPolyline([
+                        { x: segment.x1, y: segment.y1 },
+                        { x: segment.x2, y: segment.y2 }
+                    ], pen);
+                });
+                return;
+            }
+
+            if (path.type === 'line' || path.type === 'polyline' || path.type === 'path') {
+                let tracePoints = null;
+                if (path.machinePreviewSource?.kind === 'dxfBulgePolyline') {
+                    tracePoints = hpgl._buildDXFPolylinePoints(
+                        path.machinePreviewSource.vertices || [],
+                        !!path.machinePreviewSource.isClosed
+                    );
+                } else if (path.machinePreviewSource?.kind === 'dxfSpline') {
+                    tracePoints = hpgl._sampleDXFSplineDefinition(path.machinePreviewSource);
+                } else {
+                    tracePoints = hpgl.getTracePointsForPath(path);
+                }
+                if (Array.isArray(tracePoints) && tracePoints.length >= 2) {
+                    pushPolyline(tracePoints.map(point => ({ x: point.x, y: point.y })), pen);
+                }
+            }
+        });
+
+        return previewPaths;
     }
 
     drawVectorText(p, mmToPx, isEditing) {

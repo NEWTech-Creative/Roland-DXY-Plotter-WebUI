@@ -29,6 +29,15 @@ class SerialManager {
         this.previewMotionMinSpeed = 12;
         this.previewMotionMaxSpeed = 90;
         this.previewMotionTargetLagSeconds = 1.4;
+        this.predictionBlocks = [];
+        this.predictionCurrentBlock = null;
+        this.predictionCarryoverMs = 0;
+        this.predictionReferencePoint = null;
+        this.streamBlockTimingSamples = [];
+        this.blockTimingAverageMs = 220;
+        this.blockTimingAverageDistance = 12;
+        this.blockTimingPauseStartedAt = 0;
+        this.streamBlocksQueued = 0;
 
         this.indicatorEls = Array.from(document.querySelectorAll('[data-stream-indicator]'));
         this.linesStatEls = Array.from(document.querySelectorAll('[data-stat="lines"]'));
@@ -76,6 +85,7 @@ class SerialManager {
             this.estimatedPosition = { x: 0, y: 0 };
             this.estimatedAbsoluteMode = true;
             this.clearPreviewMotion(false);
+            this.resetStreamPrediction(false);
             this.app.updateConnectionState(true);
             this.app.ui.logToConsole('Connected to Test / Null Plotter. Commands will not be sent to hardware.');
             this.setTrafficLight('green');
@@ -126,6 +136,7 @@ class SerialManager {
             this.estimatedPosition = { x: 0, y: 0 };
             this.estimatedAbsoluteMode = true;
             this.clearPreviewMotion(false);
+            this.resetStreamPrediction(false);
             this.app.updateConnectionState(true);
             this.app.ui.logToConsole(`Connected at ${baudRate} baud`);
             this.setTrafficLight('green');
@@ -194,6 +205,7 @@ class SerialManager {
             this.estimatedPosition = { x: 0, y: 0 };
             this.estimatedAbsoluteMode = true;
             this.clearPreviewMotion(false);
+            this.resetStreamPrediction(false);
             this._flushResumeWaiters();
             this.app.updateConnectionState(false);
             this.setTrafficLight('red');
@@ -230,6 +242,7 @@ class SerialManager {
             if (byte === 0x11) {
                 this._flushPrintableBytes(printableBytes, textDecoder);
                 this.softwareFlowPaused = false;
+                this.handleSoftwareFlowResume();
                 this._flushResumeWaiters();
                 this.app.ui.logToConsole('RX: <XON>', 'info');
                 continue;
@@ -238,6 +251,7 @@ class SerialManager {
             if (byte === 0x13) {
                 this._flushPrintableBytes(printableBytes, textDecoder);
                 this.softwareFlowPaused = true;
+                this.handleSoftwareFlowPause();
                 this.app.ui.logToConsole('RX: <XOFF>', 'info');
                 continue;
             }
@@ -411,6 +425,42 @@ class SerialManager {
         }
     }
 
+    resetStreamPrediction(resetPosition = false) {
+        this.predictionBlocks = [];
+        this.predictionCurrentBlock = null;
+        this.predictionCarryoverMs = 0;
+        this.predictionReferencePoint = null;
+        this.streamBlockTimingSamples = [];
+        this.blockTimingPauseStartedAt = 0;
+        this.streamBlocksQueued = 0;
+        if (resetPosition) {
+            this.setEstimatedPosition(0, 0);
+        }
+    }
+
+    handleSoftwareFlowPause() {
+        if (!this.isStreaming || this.blockTimingPauseStartedAt) return;
+        this.blockTimingPauseStartedAt = performance.now();
+    }
+
+    handleSoftwareFlowResume() {
+        if (!this.isStreaming || !this.blockTimingPauseStartedAt) return;
+        const elapsed = Math.max(1, performance.now() - this.blockTimingPauseStartedAt);
+        this.blockTimingPauseStartedAt = 0;
+        const sample = this.streamBlockTimingSamples.length > 0 ? this.streamBlockTimingSamples.shift() : null;
+        this.blockTimingAverageMs = (this.blockTimingAverageMs * 0.7) + (elapsed * 0.3);
+        if (sample && Number.isFinite(sample.distance) && sample.distance > 0) {
+            this.blockTimingAverageDistance = (this.blockTimingAverageDistance * 0.7) + (sample.distance * 0.3);
+        }
+        this.predictionCarryoverMs = Math.max(
+            20,
+            Math.min(
+                this.blockTimingAverageMs * 0.85,
+                (elapsed * 0.45) + (this.blockTimingAverageMs * 0.15)
+            )
+        );
+    }
+
     getPreviewMotionReferencePoint() {
         if (this.previewMotionQueue.length > 0) {
             const tail = this.previewMotionQueue[this.previewMotionQueue.length - 1];
@@ -431,6 +481,216 @@ class SerialManager {
         const length = Math.hypot(x2 - x1, y2 - y1);
         if (!Number.isFinite(length) || length <= 0) return;
         this.previewMotionQueue.push({ x1, y1, x2, y2, length, progress: 0 });
+    }
+
+    _buildMotionSegmentsFromCommand(command, startPoint = null, absoluteModeOverride = null) {
+        const trimmed = (command || '').trim();
+        if (!trimmed) return { segments: [], startPoint, endPoint: startPoint, absoluteMode: absoluteModeOverride ?? this.estimatedAbsoluteMode };
+
+        const normalized = trimmed.endsWith(';') ? trimmed.slice(0, -1) : trimmed;
+        const opcode = normalized.slice(0, 2).toUpperCase();
+        const args = normalized.slice(2);
+        const numbers = this._parseHpglNumbers(args);
+        let absoluteMode = absoluteModeOverride ?? this.estimatedAbsoluteMode;
+        let current = startPoint ? { ...startPoint } : this.getEstimatedPosition();
+        const segments = [];
+
+        const pushSegment = (next) => {
+            if (!next) return;
+            const length = Math.hypot(next.x - current.x, next.y - current.y);
+            if (Number.isFinite(length) && length > 0.0001) {
+                segments.push({ x1: current.x, y1: current.y, x2: next.x, y2: next.y, length });
+            }
+            current = { ...next };
+        };
+
+        if (opcode === 'IN') {
+            return {
+                segments: [],
+                startPoint: startPoint ? { ...startPoint } : this.getEstimatedPosition(),
+                endPoint: { x: 0, y: 0 },
+                absoluteMode: true
+            };
+        }
+
+        if (opcode === 'PA') {
+            absoluteMode = true;
+        } else if (opcode === 'PR') {
+            absoluteMode = false;
+        }
+
+        if (opcode === 'PU' || opcode === 'PD' || opcode === 'PA' || opcode === 'PR') {
+            for (let i = 0; i < numbers.length - 1; i += 2) {
+                const next = (opcode === 'PR' || ((opcode === 'PU' || opcode === 'PD') && absoluteMode === false))
+                    ? { x: current.x + (numbers[i] / 40), y: current.y + (numbers[i + 1] / 40) }
+                    : { x: numbers[i] / 40, y: numbers[i + 1] / 40 };
+                pushSegment(next);
+            }
+            return { segments, startPoint: startPoint ? { ...startPoint } : this.getEstimatedPosition(), endPoint: current, absoluteMode };
+        }
+
+        if ((opcode === 'EA' || opcode === 'ER') && numbers.length >= 2) {
+            const target = (opcode === 'ER' && absoluteMode === false)
+                ? { x: current.x + (numbers[0] / 40), y: current.y + (numbers[1] / 40) }
+                : { x: numbers[0] / 40, y: numbers[1] / 40 };
+            pushSegment({ x: target.x, y: current.y });
+            pushSegment({ x: target.x, y: target.y });
+            pushSegment({ x: startPoint ? startPoint.x : this.getEstimatedPosition().x, y: target.y });
+            pushSegment(startPoint ? { ...startPoint } : this.getEstimatedPosition());
+            return { segments, startPoint: startPoint ? { ...startPoint } : this.getEstimatedPosition(), endPoint: current, absoluteMode };
+        }
+
+        if (opcode === 'CI' && numbers.length >= 1) {
+            const center = { ...current };
+            const radius = numbers[0] / 40;
+            if (!Number.isFinite(radius) || radius <= 0) {
+                return { segments: [], startPoint: center, endPoint: center, absoluteMode };
+            }
+            const steps = 72;
+            let previous = { x: center.x + radius, y: center.y };
+            pushSegment(previous);
+            for (let i = 1; i <= steps; i++) {
+                const angle = (i / steps) * Math.PI * 2;
+                const next = {
+                    x: center.x + Math.cos(angle) * radius,
+                    y: center.y + Math.sin(angle) * radius
+                };
+                pushSegment(next);
+                previous = next;
+            }
+            pushSegment(center);
+            return { segments, startPoint: center, endPoint: center, absoluteMode };
+        }
+
+        return { segments: [], startPoint: startPoint ? { ...startPoint } : this.getEstimatedPosition(), endPoint: current, absoluteMode };
+    }
+
+    _getPointAtDistanceOnSegments(segments, distance) {
+        if (!Array.isArray(segments) || segments.length === 0) return null;
+        let remaining = Math.max(0, distance);
+        for (let i = 0; i < segments.length; i++) {
+            const segment = segments[i];
+            if (!segment || !Number.isFinite(segment.length) || segment.length <= 0) continue;
+            if (remaining <= segment.length) {
+                const t = segment.length > 0 ? (remaining / segment.length) : 1;
+                return {
+                    x: segment.x1 + ((segment.x2 - segment.x1) * t),
+                    y: segment.y1 + ((segment.y2 - segment.y1) * t)
+                };
+            }
+            remaining -= segment.length;
+        }
+        const last = segments[segments.length - 1];
+        return last ? { x: last.x2, y: last.y2 } : null;
+    }
+
+    _estimateStreamBlockDurationMs(distance, segmentCount) {
+        const safeDistance = Math.max(0, Number(distance) || 0);
+        const safeSegments = Math.max(1, Number(segmentCount) || 1);
+        const learnedDistance = Math.max(1, this.blockTimingAverageDistance);
+        const normalizedDistance = safeDistance > 0 ? (safeDistance / learnedDistance) : 0.35;
+        const durationFromAverage = this.blockTimingAverageMs * Math.max(0.35, normalizedDistance);
+        const durationFromGeometry = (safeDistance * 16) + (safeSegments * 18);
+        return Math.max(40, Math.min(6000, (durationFromAverage * 0.65) + (durationFromGeometry * 0.35)));
+    }
+
+    queuePredictedMotionBlock(command, options = {}) {
+        const parts = this._splitCommands(command)
+            .flatMap(rawCommand => this._expandCurveCommand(rawCommand));
+        if (parts.length === 0) return;
+
+        let absoluteMode = this.estimatedAbsoluteMode;
+        let startPoint = this.predictionReferencePoint ? { ...this.predictionReferencePoint } : this.getEstimatedPosition();
+        const segments = [];
+
+        for (const part of parts) {
+            const motion = this._buildMotionSegmentsFromCommand(part, startPoint, absoluteMode);
+            if (motion.segments.length > 0) {
+                segments.push(...motion.segments);
+            }
+            startPoint = motion.endPoint ? { ...motion.endPoint } : startPoint;
+            absoluteMode = motion.absoluteMode;
+        }
+
+        this.predictionReferencePoint = startPoint ? { ...startPoint } : this.predictionReferencePoint;
+        if (segments.length === 0) return;
+
+        const totalDistance = segments.reduce((sum, segment) => sum + (segment.length || 0), 0);
+        const durationMs = this._estimateStreamBlockDurationMs(totalDistance, segments.length);
+        const carryoverMs = options.isFirstBlock ? 0 : Math.max(0, this.predictionCarryoverMs || (this.blockTimingAverageMs * 0.25));
+        this.predictionBlocks.push({
+            segments,
+            totalDistance,
+            durationMs,
+            carryoverMs,
+            elapsedMs: 0,
+            delayRemainingMs: carryoverMs,
+            endPoint: { x: startPoint.x, y: startPoint.y }
+        });
+        this.streamBlockTimingSamples.push({ distance: totalDistance });
+        this.streamBlocksQueued += 1;
+        this.predictionCarryoverMs = Math.max(20, this.blockTimingAverageMs * 0.2);
+        this.startStreamPredictionLoop();
+    }
+
+    startStreamPredictionLoop() {
+        if (this.previewMotionFrame) return;
+
+        const tick = (timestamp) => {
+            if (!this.predictionCurrentBlock && this.predictionBlocks.length === 0) {
+                this.previewMotionFrame = null;
+                this.previewMotionLastTimestamp = 0;
+                return;
+            }
+
+            if (!this.previewMotionLastTimestamp) {
+                this.previewMotionLastTimestamp = timestamp;
+            }
+
+            let remainingMs = Math.max(0, timestamp - this.previewMotionLastTimestamp);
+            this.previewMotionLastTimestamp = timestamp;
+
+            while (remainingMs > 0) {
+                if (!this.predictionCurrentBlock) {
+                    this.predictionCurrentBlock = this.predictionBlocks.shift() || null;
+                    if (!this.predictionCurrentBlock) break;
+                }
+
+                const block = this.predictionCurrentBlock;
+                if (block.delayRemainingMs > 0) {
+                    const pauseStep = Math.min(block.delayRemainingMs, remainingMs);
+                    block.delayRemainingMs -= pauseStep;
+                    remainingMs -= pauseStep;
+                    if (block.delayRemainingMs > 0) break;
+                }
+
+                const durationLeft = Math.max(0, block.durationMs - block.elapsedMs);
+                if (durationLeft <= 0) {
+                    this.setEstimatedPosition(block.endPoint.x, block.endPoint.y);
+                    this.predictionCurrentBlock = null;
+                    continue;
+                }
+
+                const stepMs = Math.min(durationLeft, remainingMs);
+                block.elapsedMs += stepMs;
+                remainingMs -= stepMs;
+
+                const progress = Math.max(0, Math.min(1, block.elapsedMs / Math.max(1, block.durationMs)));
+                const point = this._getPointAtDistanceOnSegments(block.segments, block.totalDistance * progress);
+                if (point) {
+                    this.setEstimatedPosition(point.x, point.y);
+                }
+
+                if (block.elapsedMs >= block.durationMs - 0.0001) {
+                    this.setEstimatedPosition(block.endPoint.x, block.endPoint.y);
+                    this.predictionCurrentBlock = null;
+                }
+            }
+
+            this.previewMotionFrame = requestAnimationFrame(tick);
+        };
+
+        this.previewMotionFrame = requestAnimationFrame(tick);
     }
 
     getPreviewBacklogDistance() {
@@ -745,7 +1005,7 @@ class SerialManager {
     }
 
     async sendManualCommand(cmd, options = {}) {
-        if (!this.writer) return;
+        if (!this.writer) return false;
         const encoder = new TextEncoder();
 
         for (const rawCommand of this._splitCommands(cmd)) {
@@ -758,7 +1018,7 @@ class SerialManager {
                 let wasTransmitted = this.isTestMode();
                 if (!this.isTestMode()) {
                     wasTransmitted = await this._writePartWithFlowControl(part, encoder);
-                    if (!wasTransmitted) return;
+                    if (!wasTransmitted) return false;
                 }
 
                 // The preview must only follow commands that have actually gone out.
@@ -773,6 +1033,7 @@ class SerialManager {
         if (options.estimatedPosition) {
             this.setEstimatedPosition(options.estimatedPosition.x, options.estimatedPosition.y);
         }
+        return true;
     }
 
     async sendPenUpCommand() {
@@ -811,6 +1072,7 @@ class SerialManager {
         this._flushResumeWaiters();
         this.updateStats();
         this.clearPreviewMotion(false);
+        this.resetStreamPrediction(false);
 
         const activeRun = this.runPromise;
         if (activeRun) {
@@ -857,6 +1119,7 @@ class SerialManager {
         }
         if (clearQueue) {
             this.clearPreviewMotion(false);
+            this.resetStreamPrediction(false);
         }
         this.runPromise = null;
     }
@@ -871,7 +1134,9 @@ class SerialManager {
                 this.isHold = false;
                 this.abortRequested = false;
                 this.hardwareFlowPaused = false;
+                this.resetStreamPrediction(false);
                 this.setTrafficLight('green');
+                let streamedBlockIndex = 0;
 
                 while (this.queue.length > 0 && this.isStreaming && !this.isHold) {
                     const ready = await this.waitForTransmitReady();
@@ -879,7 +1144,10 @@ class SerialManager {
                     this.setTrafficLight('green');
 
                     const cmd = this.queue.shift();
-                    await this.sendManualCommand(cmd);
+                    const wasSent = await this.sendManualCommand(cmd, { preview: false });
+                    if (!wasSent) break;
+                    this.queuePredictedMotionBlock(cmd, { isFirstBlock: streamedBlockIndex === 0 });
+                    streamedBlockIndex++;
 
                     this.incrementLinesStat();
                     this.updateStats();
@@ -918,7 +1186,10 @@ class SerialManager {
             button.addEventListener('click', async () => {
                 const action = button.dataset.streamAction;
                 if (action === 'run') {
-                    if (this.app.liveTracker?.isModeEnabled()) {
+                    const hasCanvasPaths = Array.isArray(this.app?.canvas?.paths) && this.app.canvas.paths.length > 0;
+                    const shouldRunLiveTracker = this.app.liveTracker?.isModeEnabled() && !hasCanvasPaths;
+
+                    if (shouldRunLiveTracker) {
                         await this.stopStream(true);
                         this.isHold = false;
                         await this.app.liveTracker.handleRunRequest();
@@ -941,6 +1212,7 @@ class SerialManager {
                     }
                     this.isHold = true;
                     this.clearPreviewMotion(false);
+                    this.resetStreamPrediction(false);
                     this.setTrafficLight('orange');
                     this.app.ui.logToConsole('System: Stream paused.');
                     return;
@@ -980,15 +1252,25 @@ class SerialManager {
 
         const unitsX = Math.round(deltaX * 40);
         const unitsY = Math.round(deltaY * 40);
-        await this.sendManualCommand(`PR${unitsX},${unitsY};`);
-        this.setEstimatedPosition(nextX, nextY);
+        this.clearPreviewMotion(false);
+        this.resetStreamPrediction(false);
+        await this.sendManualCommand(`PR${unitsX},${unitsY};`, {
+            preview: false,
+            updateEstimatedFromCommand: false,
+            estimatedPosition: { x: nextX, y: nextY }
+        });
         return true;
     }
 
     async sendHomeCommand() {
         if (!this.writer) return false;
-        await this.sendManualCommand('PU;PA0,0;');
-        this.setEstimatedPosition(0, 0);
+        this.clearPreviewMotion(false);
+        this.resetStreamPrediction(false);
+        await this.sendManualCommand('PU;PA0,0;', {
+            preview: false,
+            updateEstimatedFromCommand: false,
+            estimatedPosition: { x: 0, y: 0 }
+        });
         return true;
     }
 

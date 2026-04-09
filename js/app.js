@@ -20,9 +20,11 @@ class App {
             outputFlipVertical: true,
             showPredictedCrosshair: true,
             showStartupMessage: true,
-            useInternalCurveEngine: true,
-            importResolution: 15,
+            useInternalCurveEngine: false,
+            importResolution: 85,
             simBackgroundOpacity: 0.25,
+            paperSize: 'A3',
+            customPaperSizes: [],
             panelVisibility: {
                 'panel-connection': true,
                 'panel-machine-jog': true,
@@ -31,6 +33,7 @@ class App {
                 'panel-patterns': true,
                 'panel-handwriting': true,
                 'panel-image-vector': true,
+                'panel-3d-vector': true,
                 'panel-live-tracker': true
             },
             liveTracker: {}
@@ -72,6 +75,7 @@ class App {
         this.bindEvents();
         this.initHandwriting();
         this.initImageVector();
+        this.init3DVector();
         this.liveTracker.init();
         this.ui.showStartupModal();
     }
@@ -81,6 +85,10 @@ class App {
             const saved = localStorage.getItem('dxySettings');
             if (saved) {
                 this.settings = { ...this.settings, ...JSON.parse(saved) };
+            }
+            this.settings.customPaperSizes = this.normalizeCustomPaperSizes(this.settings.customPaperSizes);
+            if (!this.isValidPaperSize(this.settings.paperSize)) {
+                this.settings.paperSize = 'A3';
             }
             if (!['test', '1100', '1200', '1300'].includes(this.settings.model)) {
                 this.settings.model = '1200';
@@ -95,11 +103,74 @@ class App {
 
     saveSettings() {
         try {
+            this.settings.customPaperSizes = this.normalizeCustomPaperSizes(this.settings.customPaperSizes);
+            if (!this.isValidPaperSize(this.settings.paperSize)) {
+                this.settings.paperSize = 'A3';
+            }
             localStorage.setItem('dxySettings', JSON.stringify(this.settings));
             document.body.className = this.settings.theme;
         } catch (e) {
             // Save fail
         }
+    }
+
+    getBuiltInPaperSizes() {
+        return {
+            A3: { name: 'A3', width: 420, height: 297 },
+            A4: { name: 'A4', width: 297, height: 210 },
+            A5: { name: 'A5', width: 210, height: 148 }
+        };
+    }
+
+    normalizeCustomPaperSizes(customPaperSizes = []) {
+        const reservedNames = new Set(['A3', 'A4', 'A5', 'MAX', 'CUSTOM']);
+        const normalized = [];
+        const seenNames = new Set();
+
+        (Array.isArray(customPaperSizes) ? customPaperSizes : []).forEach(entry => {
+            const rawName = typeof entry?.name === 'string' ? entry.name.trim() : '';
+            const upperName = rawName.toUpperCase();
+            const width = Number(entry?.width);
+            const height = Number(entry?.height);
+            if (!rawName || reservedNames.has(upperName) || seenNames.has(upperName)) return;
+            if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return;
+            normalized.push({
+                name: rawName,
+                width: Math.round(width * 1000) / 1000,
+                height: Math.round(height * 1000) / 1000
+            });
+            seenNames.add(upperName);
+        });
+
+        return normalized;
+    }
+
+    getPaperSizeMap() {
+        const paperMap = { ...this.getBuiltInPaperSizes() };
+        this.normalizeCustomPaperSizes(this.settings.customPaperSizes).forEach(size => {
+            paperMap[size.name] = { ...size };
+        });
+        return paperMap;
+    }
+
+    isValidPaperSize(name) {
+        if (name === 'Max') return true;
+        return Object.prototype.hasOwnProperty.call(this.getPaperSizeMap(), name || '');
+    }
+
+    buildWorkspaceBackupData() {
+        return {
+            version: '1.1',
+            appName: 'RolandPlotterWeb',
+            timestamp: new Date().toISOString(),
+            paths: this.canvas.paths,
+            penConfig: this.ui.visPenConfig,
+            settings: {
+                ...this.settings,
+                customPaperSizes: this.normalizeCustomPaperSizes(this.settings.customPaperSizes)
+            },
+            workspaceState: this.ui.getWorkspaceBackupState()
+        };
     }
 
     getMachineProfile(model = this.settings.model) {
@@ -395,23 +466,22 @@ class App {
         }
     }
 
-    saveProject() {
+    init3DVector() {
+        if (typeof Vector3DPanel !== 'undefined') {
+            this.vector3DPanel = new Vector3DPanel(this);
+        }
+    }
+
+    saveProject(filePrefix = 'plotter_project') {
         try {
-            const projectData = {
-                version: '1.0',
-                appName: 'RolandPlotterWeb',
-                timestamp: new Date().toISOString(),
-                paths: this.canvas.paths,
-                penConfig: this.ui.visPenConfig,
-                settings: this.settings
-            };
+            const projectData = this.buildWorkspaceBackupData();
 
             const json = JSON.stringify(projectData, null, 2);
             const blob = new Blob([json], { type: 'application/json' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = `plotter_project_${new Date().getTime()}.dxyweb`;
+            a.download = `${filePrefix}_${new Date().getTime()}.dxyweb`;
             a.click();
             URL.revokeObjectURL(url);
             this.ui.logToConsole('System: Project file (.dxyweb) exported successfully.');
@@ -444,6 +514,10 @@ class App {
 
                 if (data.settings) {
                     this.settings = { ...this.settings, ...data.settings };
+                    this.settings.customPaperSizes = this.normalizeCustomPaperSizes(this.settings.customPaperSizes);
+                    if (!this.isValidPaperSize(this.settings.paperSize)) {
+                        this.settings.paperSize = 'A3';
+                    }
                     if (!['test', '1100', '1200', '1300'].includes(this.settings.model)) {
                         this.settings.model = '1200';
                         this.settings.bedWidth = 432;
@@ -457,8 +531,13 @@ class App {
                     if (this.canvas) {
                         this.canvas.bedWidth = this.settings.bedWidth || this.getMachineProfile().bedWidth;
                         this.canvas.bedHeight = this.settings.bedHeight || this.getMachineProfile().bedHeight;
+                        this.canvas.refreshPaperSettings?.();
                         this.canvas.resize();
                     }
+                }
+
+                if (data.workspaceState) {
+                    this.ui.applyWorkspaceBackupState(data.workspaceState);
                 }
 
                 this.canvas.draw();

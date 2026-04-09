@@ -1356,7 +1356,184 @@ input[type="color"] {
     border: 1px solid rgba(255, 255, 255, 0.06);
 }
 
+.v3d-panel-body {
+    gap: 10px !important;
+    padding: 10px !important;
+    overflow: hidden;
+    height: 100%;
+}
+
+.v3d-layout {
+    display: grid;
+    grid-template-columns: minmax(300px, 360px) minmax(0, 1fr);
+    gap: 12px;
+    min-height: 0;
+    height: 100%;
+}
+
+.v3d-controls {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 10px;
+    overflow: auto;
+    padding-right: 2px;
+}
+
+.v3d-section {
+    padding: 10px 12px !important;
+}
+
+.v3d-row {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+}
+
+.v3d-button-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.v3d-button-grid .btn {
+    min-height: 38px;
+}
+
+.v3d-slider-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px 10px;
+}
+
+.v3d-slider-grid .form-group {
+    margin-bottom: 0;
+}
+
+.v3d-subtitle {
+    font-size: 0.82rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+}
+
+.v3d-section-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.v3d-section-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.btn-small {
+    min-height: 28px;
+    padding: 0 10px;
+    font-size: 0.76rem;
+}
+
+.v3d-preview-shell {
+    display: grid;
+    grid-template-rows: minmax(0, 1fr) auto;
+    overflow: hidden;
+}
+
+.v3d-preview {
+    position: relative;
+    min-height: 360px;
+    width: 100%;
+    height: 100%;
+    background:
+        radial-gradient(circle at top, rgba(56, 189, 248, 0.12), transparent 36%),
+        linear-gradient(180deg, rgba(15, 23, 42, 0.75), rgba(2, 6, 23, 0.92));
+}
+
+.v3d-preview canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
+.v3d-preview-hint {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 18px;
+    font-size: 0.9rem;
+    color: rgba(226, 232, 240, 0.85);
+    pointer-events: none;
+}
+
+.v3d-footer {
+    display: grid;
+    gap: 10px;
+    padding: 12px;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    background: rgba(2, 6, 23, 0.58);
+}
+
+.v3d-meta {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.v3d-meta div {
+    display: grid;
+    gap: 4px;
+    padding: 8px 10px;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.v3d-meta span {
+    font-size: 0.74rem;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+.v3d-meta strong {
+    font-size: 0.9rem;
+    color: var(--text-main);
+    word-break: break-word;
+}
+
+.v3d-status {
+    min-height: 20px;
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+}
+
 @media (max-width: 900px) {
+    .v3d-layout {
+        grid-template-columns: 1fr;
+    }
+
+    .v3d-preview {
+        min-height: 280px;
+    }
+
+    .v3d-meta {
+        grid-template-columns: 1fr;
+    }
+
+    .v3d-row,
+    .v3d-slider-grid,
+    .v3d-button-grid {
+        grid-template-columns: 1fr;
+    }
+
     .settings-grid,
     .settings-two-col,
     .settings-panel-toggle-list {

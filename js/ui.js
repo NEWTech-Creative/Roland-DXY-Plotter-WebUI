@@ -25,7 +25,8 @@ class UIController {
             { id: 'panel-visualiser', x: 3, y: 0, w: 6, h: 11 },
             { id: 'panel-patterns', x: 9, y: 13, w: 3, h: 10 },
             { id: 'panel-handwriting', x: 3, y: 11, w: 6, h: 8 },
-            { id: 'panel-image-vector', x: 3, y: 19, w: 6, h: 12 }
+            { id: 'panel-image-vector', x: 3, y: 19, w: 6, h: 12 },
+            { id: 'panel-3d-vector', x: 3, y: 31, w: 6, h: 12 }
         ];
         this.defaultGridLayout = [
             { id: 'panel-connection', x: 0, y: 0, w: 2, h: 4 },
@@ -35,7 +36,8 @@ class UIController {
             { id: 'panel-live-tracker', x: 8, y: 0, w: 2, h: 7 },
             { id: 'panel-handwriting', x: 2, y: 8, w: 3, h: 7 },
             { id: 'panel-image-vector', x: 5, y: 8, w: 3, h: 7 },
-            { id: 'panel-patterns', x: 8, y: 8, w: 2, h: 7 }
+            { id: 'panel-patterns', x: 8, y: 8, w: 2, h: 7 },
+            { id: 'panel-3d-vector', x: 2, y: 15, w: 8, h: 8 }
         ];
         this.panelDefinitions = [
             { id: 'panel-connection', label: 'Connection', alwaysVisible: true },
@@ -45,7 +47,8 @@ class UIController {
             { id: 'panel-live-tracker', label: 'Live Finger Tracker' },
             { id: 'panel-patterns', label: 'Pattern Generator' },
             { id: 'panel-handwriting', label: 'Handwriting Generator' },
-            { id: 'panel-image-vector', label: 'Image to Vector' }
+            { id: 'panel-image-vector', label: 'Image to Vector' },
+            { id: 'panel-3d-vector', label: '3D Vector' }
         ];
         this.gridResizeTimer = null;
         this.gridAutoSaveTimer = null;
@@ -55,6 +58,7 @@ class UIController {
         this.isUpdatingSelectionSizeControls = false;
         this.visualizerToolbarItems = [];
         this.visualizerToolbarResizeObserver = null;
+        this.currentVisualizerView = 'workspace';
 
         this.loadWorkspaceState();
         this._bindInput();
@@ -62,12 +66,15 @@ class UIController {
         this._bindStartupModal();
         this._bindMachineSetupHelp();
         this._bindSettings();
+        this._bindCustomPaperModal();
+        this._bindImportResolutionMenu();
         this._bindJog();
         this._bindPatterns();
         this._bindFillBucketMenu();
         this._bindSelectionSizeControls();
         this._bindVisualizerToolbarOverflow();
         this._bindPredictedCrosshairToggle();
+        this._bindVisualizerViewToggle();
         // HandwritingPanel is initialized by its own window.load listener in handwriting-panel.js
 
         // Global click listener to close context menus
@@ -75,6 +82,7 @@ class UIController {
             const penMenu = document.getElementById('vis-pen-menu');
             const shapeMenu = document.getElementById('shape-type-menu');
             const fillBucketMenu = document.getElementById('fill-bucket-menu');
+            const importResolutionMenu = document.getElementById('import-resolution-menu');
             const overflowMenu = document.getElementById('vis-toolbar-overflow-menu');
             const overflowBtn = document.getElementById('btn-vis-toolbar-more');
 
@@ -91,6 +99,11 @@ class UIController {
             if (fillBucketMenu && !fillBucketMenu.classList.contains('hidden')) {
                 if (!fillBucketMenu.contains(e.target) && !e.target.closest('[data-tool="bucket"]')) {
                     fillBucketMenu.classList.add('hidden');
+                }
+            }
+            if (importResolutionMenu && !importResolutionMenu.classList.contains('hidden')) {
+                if (!importResolutionMenu.contains(e.target) && !e.target.closest('#btn-import-resolution')) {
+                    importResolutionMenu.classList.add('hidden');
                 }
             }
             if (overflowMenu && overflowBtn && !overflowMenu.classList.contains('hidden')) {
@@ -111,6 +124,10 @@ class UIController {
 
             const savedActive = localStorage.getItem('activeVisualizerPen');
             if (savedActive) this.activeVisualizerPen = parseInt(savedActive, 10);
+            const savedVisualizerView = localStorage.getItem('visualizerViewMode');
+            if (savedVisualizerView === 'machine-output' || savedVisualizerView === 'workspace') {
+                this.currentVisualizerView = savedVisualizerView;
+            }
 
 
             // Normalise pen config: ensure each pen has required fields and sane visibility.
@@ -134,7 +151,251 @@ class UIController {
             localStorage.setItem('visPenConfig', JSON.stringify(this.visPenConfig));
             localStorage.setItem('penColors', JSON.stringify(this.penColors));
             localStorage.setItem('activeVisualizerPen', this.activeVisualizerPen.toString());
+            localStorage.setItem('visualizerViewMode', this.currentVisualizerView);
         } catch (e) { console.error('Workspace save fail:', e); }
+    }
+
+    getWorkspaceBackupState() {
+        return {
+            penConfig: this.visPenConfig,
+            penColors: this.penColors,
+            activeVisualizerPen: this.activeVisualizerPen,
+            visualizerViewMode: this.currentVisualizerView,
+            plotterLayout: localStorage.getItem('plotterLayout'),
+            plotterLayoutVersion: localStorage.getItem('plotterLayoutVersion')
+        };
+    }
+
+    applyWorkspaceBackupState(workspaceState = {}) {
+        try {
+            if (Array.isArray(workspaceState.penColors)) {
+                this.penColors = workspaceState.penColors;
+                localStorage.setItem('penColors', JSON.stringify(this.penColors));
+            }
+            if (Array.isArray(workspaceState.penConfig)) {
+                this.visPenConfig = workspaceState.penConfig;
+                localStorage.setItem('visPenConfig', JSON.stringify(this.visPenConfig));
+            }
+            if (Number.isFinite(Number(workspaceState.activeVisualizerPen))) {
+                this.activeVisualizerPen = parseInt(workspaceState.activeVisualizerPen, 10);
+                localStorage.setItem('activeVisualizerPen', String(this.activeVisualizerPen));
+            }
+            if (workspaceState.visualizerViewMode === 'machine-output' || workspaceState.visualizerViewMode === 'workspace') {
+                this.currentVisualizerView = workspaceState.visualizerViewMode;
+                localStorage.setItem('visualizerViewMode', this.currentVisualizerView);
+            }
+            if (typeof workspaceState.plotterLayout === 'string' && workspaceState.plotterLayout.trim()) {
+                localStorage.setItem('plotterLayout', workspaceState.plotterLayout);
+            }
+            if (workspaceState.plotterLayoutVersion != null) {
+                localStorage.setItem('plotterLayoutVersion', String(workspaceState.plotterLayoutVersion));
+            }
+
+            this.initPenSlots();
+            this.refreshVisualizerViewToggleButton();
+
+            const savedLayout = this.getSavedLayout();
+            if (savedLayout.length) {
+                this.baseGridLayout = savedLayout;
+                this.applyResponsiveGridLayout();
+            }
+            this.applyPanelVisibilitySettings();
+            this.refreshImportResolutionControl();
+            this.app.canvas?.refreshPaperSettings?.();
+            this.app.canvas?.draw?.();
+        } catch (e) {
+            console.error('Workspace restore fail:', e);
+        }
+    }
+
+    refreshVisualizerViewToggleButton() {
+        const toggleBtn = document.getElementById('btn-toggle-visualizer-view');
+        const labelEl = document.getElementById('visualizer-view-label');
+        if (!toggleBtn || !labelEl) return;
+        const isMachineOutput = this.currentVisualizerView === 'machine-output';
+        labelEl.textContent = isMachineOutput ? 'Machine' : 'Workspace';
+        toggleBtn.classList.toggle('active', isMachineOutput);
+        toggleBtn.title = isMachineOutput
+            ? 'Show editable workspace view'
+            : 'Show machine output view';
+    }
+
+    refreshImportResolutionControl() {
+        const input = document.getElementById('input-import-resolution');
+        const valueLabel = document.getElementById('val-import-resolution');
+        const buttonLabel = document.getElementById('import-resolution-label');
+        const triggerButton = document.getElementById('btn-import-resolution');
+        const resolution = this.app?.settings?.importResolution || 85;
+        const disabled = this.app?.settings?.useInternalCurveEngine === true;
+
+        if (input) {
+            input.value = resolution;
+            input.disabled = disabled;
+        }
+        if (valueLabel) valueLabel.textContent = String(resolution);
+        if (buttonLabel) buttonLabel.textContent = `Curve ${resolution}`;
+        if (triggerButton) {
+            triggerButton.classList.toggle('disabled', disabled);
+            triggerButton.title = disabled
+                ? 'Curve resolution is disabled while the DXY internal curve function is on'
+                : 'Adjust machine curve resolution';
+        }
+    }
+
+    _bindImportResolutionMenu() {
+        const triggerButton = document.getElementById('btn-import-resolution');
+        const menu = document.getElementById('import-resolution-menu');
+        const closeButton = document.getElementById('btn-close-import-resolution');
+        const input = document.getElementById('input-import-resolution');
+        const valueLabel = document.getElementById('val-import-resolution');
+
+        if (!triggerButton || !menu || !input) return;
+
+        const positionMenu = () => {
+            const btnRect = triggerButton.getBoundingClientRect();
+            const panel = triggerButton.closest('.grid-stack-item-content') || triggerButton.closest('.grid-stack-item') || document.body;
+            const panelRect = panel.getBoundingClientRect();
+            const gap = 10;
+
+            if (menu.parentElement !== panel) panel.appendChild(menu);
+            menu.classList.remove('hidden');
+            menu.style.visibility = 'hidden';
+            menu.style.position = 'absolute';
+
+            const menuWidth = menu.offsetWidth;
+            const menuHeight = menu.offsetHeight;
+            const panelWidth = panelRect.width;
+            const panelHeight = panelRect.height;
+
+            let left = btnRect.left - panelRect.left;
+            let top = (btnRect.bottom - panelRect.top) + gap;
+
+            if (left + menuWidth > panelWidth - gap) left = panelWidth - menuWidth - gap;
+            if (left < gap) left = gap;
+            if (top + menuHeight > panelHeight - gap) top = (btnRect.top - panelRect.top) - menuHeight - gap;
+            if (top < gap) top = gap;
+
+            menu.style.left = `${left}px`;
+            menu.style.top = `${top}px`;
+            menu.style.right = 'auto';
+            menu.style.bottom = 'auto';
+            menu.style.visibility = '';
+        };
+
+        triggerButton.onclick = () => {
+            if (this.app?.settings?.useInternalCurveEngine === true) {
+                this.logToConsole('System: Curve resolution is disabled while the DXY internal curve function is enabled.');
+                return;
+            }
+            if (!menu.classList.contains('hidden')) {
+                menu.classList.add('hidden');
+                return;
+            }
+            this.refreshImportResolutionControl();
+            positionMenu();
+        };
+
+        if (closeButton) closeButton.onclick = () => menu.classList.add('hidden');
+
+        input.oninput = (e) => {
+            const value = parseInt(e.target.value, 10) || 85;
+            if (valueLabel) valueLabel.textContent = String(value);
+            this.app.settings.importResolution = value;
+            this.app.saveSettings();
+            this.refreshImportResolutionControl();
+            this.app.canvas?.draw?.(true);
+        };
+
+        this.refreshImportResolutionControl();
+    }
+
+    openCustomPaperModal() {
+        const modal = document.getElementById('custom-paper-modal');
+        const inputName = document.getElementById('input-custom-paper-name');
+        const inputWidth = document.getElementById('input-custom-paper-width');
+        const inputHeight = document.getElementById('input-custom-paper-height');
+        if (!modal) return;
+        if (inputName) inputName.value = '';
+        if (inputWidth) inputWidth.value = '';
+        if (inputHeight) inputHeight.value = '';
+        modal.classList.remove('hidden');
+        inputName?.focus?.();
+    }
+
+    closeCustomPaperModal() {
+        const modal = document.getElementById('custom-paper-modal');
+        if (modal) modal.classList.add('hidden');
+    }
+
+    saveCustomPaperFromModal() {
+        const inputName = document.getElementById('input-custom-paper-name');
+        const inputWidth = document.getElementById('input-custom-paper-width');
+        const inputHeight = document.getElementById('input-custom-paper-height');
+        const name = inputName ? inputName.value.trim() : '';
+        const width = inputWidth ? parseFloat(inputWidth.value) : NaN;
+        const height = inputHeight ? parseFloat(inputHeight.value) : NaN;
+        const invalidReserved = ['A3', 'A4', 'A5', 'MAX', 'CUSTOM'].includes(name.toUpperCase());
+        const existingCustom = (this.app.settings.customPaperSizes || []).filter(size => size.name.toUpperCase() !== name.toUpperCase());
+        const normalized = this.app.normalizeCustomPaperSizes([...existingCustom, { name, width, height }]);
+        const exists = normalized.some(size => size.name.toUpperCase() === name.toUpperCase());
+
+        if (!name || invalidReserved || !Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0 || !exists) {
+            this.logToConsole('Error: Enter a unique paper label plus valid width and height in mm.', 'error');
+            return false;
+        }
+
+        this.app.settings.customPaperSizes = normalized;
+        this.app.settings.paperSize = name;
+        this.app.saveSettings();
+        this.app.canvas?.refreshPaperSettings?.();
+        this.app.canvas?.handleResize?.();
+        this.closeCustomPaperModal();
+        this.logToConsole(`System: Custom paper "${name}" added to the paper size list.`);
+        return true;
+    }
+
+    _bindCustomPaperModal() {
+        const btnClose = document.getElementById('btn-close-custom-paper');
+        const btnSave = document.getElementById('btn-save-custom-paper');
+        const inputName = document.getElementById('input-custom-paper-name');
+        const inputWidth = document.getElementById('input-custom-paper-width');
+        const inputHeight = document.getElementById('input-custom-paper-height');
+
+        if (btnClose) btnClose.onclick = () => this.closeCustomPaperModal();
+        if (btnSave) btnSave.onclick = () => this.saveCustomPaperFromModal();
+        [inputName, inputWidth, inputHeight].forEach(input => {
+            if (!input) return;
+            input.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    this.saveCustomPaperFromModal();
+                }
+            });
+        });
+    }
+
+    _bindVisualizerViewToggle() {
+        const toggleBtn = document.getElementById('btn-toggle-visualizer-view');
+        if (!toggleBtn) return;
+
+        toggleBtn.addEventListener('click', () => {
+            this.currentVisualizerView = this.currentVisualizerView === 'machine-output'
+                ? 'workspace'
+                : 'machine-output';
+            this.refreshVisualizerViewToggleButton();
+            this.saveWorkspaceState();
+            if (this.app.canvas) {
+                this.app.canvas.displayedCrosshairPoint = null;
+            }
+            this.app.canvas?.draw?.();
+            this.logToConsole(
+                this.currentVisualizerView === 'machine-output'
+                    ? 'System: Visualiser now shows flattened machine-output geometry in workspace orientation.'
+                    : 'System: Visualiser returned to editable workspace view.'
+            );
+        });
+
+        this.refreshVisualizerViewToggleButton();
     }
 
     showLoading(title = 'Importing File...') {
@@ -308,6 +569,7 @@ class UIController {
             'visPenConfig',
             'penColors',
             'activeVisualizerPen',
+            'visualizerViewMode',
             'plotterLayout',
             'plotterLayoutVersion'
         ].forEach(key => localStorage.removeItem(key));
@@ -681,29 +943,14 @@ class UIController {
         const inputBedH = document.getElementById('input-bed-h');
         const inputSimOpacity = document.getElementById('input-sim-opacity');
         const valSimOpacity = document.getElementById('val-sim-opacity');
-        const inputRes = document.getElementById('input-import-resolution');
-        const valRes = document.getElementById('val-import-resolution');
         const inputUseInternalCurveEngine = document.getElementById('input-use-internal-curve-engine');
-        const importResolutionGroup = document.getElementById('import-resolution-group');
         const inputMarginX = document.getElementById('input-margin-x');
         const inputMarginY = document.getElementById('input-margin-y');
         const inputOutputFlipX = document.getElementById('input-output-flip-x');
         const inputOutputFlipY = document.getElementById('input-output-flip-y');
+        const btnBackupWorkspace = document.getElementById('btn-backup-workspace');
+        const btnLoadWorkspace = document.getElementById('btn-load-workspace');
         const panelToggleInputs = Array.from(document.querySelectorAll('[data-panel-toggle]'));
-
-        const updateImportResolutionAvailability = () => {
-            const useInternalCurveEngine = inputUseInternalCurveEngine ? inputUseInternalCurveEngine.checked : true;
-            const isDisabled = useInternalCurveEngine === true;
-            if (inputRes) {
-                inputRes.disabled = isDisabled;
-            }
-            if (valRes) {
-                valRes.classList.toggle('is-disabled', isDisabled);
-            }
-            if (importResolutionGroup) {
-                importResolutionGroup.classList.toggle('settings-control-disabled', isDisabled);
-            }
-        };
 
         btnSettings.onclick = () => {
             selTheme.value = this.app.settings.theme || 'dark-theme';
@@ -715,14 +962,9 @@ class UIController {
                 inputSimOpacity.value = this.app.settings.simBackgroundOpacity || 0.25;
                 if (valSimOpacity) valSimOpacity.textContent = inputSimOpacity.value;
             }
-            if (inputRes) {
-                inputRes.value = this.app.settings.importResolution || 15;
-                if (valRes) valRes.textContent = inputRes.value;
-            }
             if (inputUseInternalCurveEngine) {
                 inputUseInternalCurveEngine.checked = this.app.settings.useInternalCurveEngine !== false;
             }
-            updateImportResolutionAvailability();
             if (inputMarginX) inputMarginX.value = this.app.settings.marginX || 15;
             if (inputMarginY) inputMarginY.value = this.app.settings.marginY || 10;
             if (inputOutputFlipX) inputOutputFlipX.checked = this.app.settings.outputFlipHorizontal === true;
@@ -740,15 +982,30 @@ class UIController {
             };
         }
 
-        if (inputRes) {
-            inputRes.oninput = (e) => {
-                if (valRes) valRes.textContent = e.target.value;
+        if (inputUseInternalCurveEngine) {
+            inputUseInternalCurveEngine.onchange = () => {
+                this.refreshImportResolutionControl();
             };
         }
 
-        if (inputUseInternalCurveEngine) {
-            inputUseInternalCurveEngine.onchange = () => {
-                updateImportResolutionAvailability();
+        if (btnBackupWorkspace) {
+            btnBackupWorkspace.onclick = () => {
+                this.app.saveProject('workspace_backup');
+            };
+        }
+
+        if (btnLoadWorkspace) {
+            btnLoadWorkspace.onclick = () => {
+                const input = document.createElement('input');
+                input.type = 'file';
+                input.accept = '.dxyweb,.json';
+                input.onchange = e => {
+                    const file = e.target.files[0];
+                    if (!file) return;
+                    this.app.loadProject(file);
+                    modal.classList.add('hidden');
+                };
+                input.click();
             };
         }
 
@@ -769,9 +1026,6 @@ class UIController {
             if (inputSimOpacity) {
                 this.app.settings.simBackgroundOpacity = parseFloat(inputSimOpacity.value);
             }
-            if (inputRes) {
-                this.app.settings.importResolution = parseInt(inputRes.value, 10);
-            }
             if (inputUseInternalCurveEngine) {
                 this.app.settings.useInternalCurveEngine = inputUseInternalCurveEngine.checked;
             }
@@ -779,11 +1033,15 @@ class UIController {
             if (inputMarginY) this.app.settings.marginY = parseFloat(inputMarginY.value);
             if (inputOutputFlipX) this.app.settings.outputFlipHorizontal = inputOutputFlipX.checked;
             if (inputOutputFlipY) this.app.settings.outputFlipVertical = !inputOutputFlipY.checked;
+            if (!this.app.isValidPaperSize(this.app.settings.paperSize)) {
+                this.app.settings.paperSize = 'A3';
+            }
             this.app.settings.panelVisibility = panelToggleInputs.reduce((acc, input) => {
                 acc[input.dataset.panelToggle] = input.disabled ? true : input.checked;
                 return acc;
             }, this._getDefaultPanelVisibility());
             this.app.saveSettings();
+            this.refreshImportResolutionControl();
             this.applyPanelVisibilitySettings();
             this.applyResponsiveGridLayout();
             this.forceLayoutSave();
@@ -791,6 +1049,7 @@ class UIController {
             if (this.app.canvas) {
                 this.app.canvas.bedWidth = this.app.settings.bedWidth || this.app.getMachineProfile().bedWidth;
                 this.app.canvas.bedHeight = this.app.settings.bedHeight || this.app.getMachineProfile().bedHeight;
+                this.app.canvas.refreshPaperSettings();
                 this.app.canvas.resize();
             }
             modal.classList.add('hidden');
