@@ -86,9 +86,15 @@ class CanvasManager {
         this.liveTrackerStrokeIndex = -1;
         this.bucketHoverRegion = null;
         this.bucketHoverPathIdx = -1;
+        this.bucketHoverLookupQueued = false;
+        this.bucketHoverPendingPos = null;
         this.editingPathIdx = -1;
         this.displayedCrosshairPoint = null;
         this.closedFillRegionsCache = null;
+        this.viewportHorizontalShift = 0;
+        this.viewportVerticalShift = 0;
+        this.bedRenderWidthPx = 0;
+        this.bedRenderHeightPx = 0;
         this.cursorBlink = true;
         this.drawFramePending = false;
         this.lastSavedCanvasJson = '';
@@ -99,6 +105,38 @@ class CanvasManager {
 
     invalidateFillRegionCache() {
         this.closedFillRegionsCache = null;
+        this.bucketHoverPendingPos = null;
+    }
+
+    clearBucketHoverPreview() {
+        const hadHover = !!this.bucketHoverRegion || this.bucketHoverPathIdx !== -1;
+        this.bucketHoverRegion = null;
+        this.bucketHoverPathIdx = -1;
+        this.bucketHoverPendingPos = null;
+        return hadHover;
+    }
+
+    queueBucketHoverPreview(xMM, yMM) {
+        this.bucketHoverPendingPos = {
+            xMM: Number.isFinite(xMM) ? xMM : 0,
+            yMM: Number.isFinite(yMM) ? yMM : 0
+        };
+        if (this.bucketHoverLookupQueued) return;
+        this.bucketHoverLookupQueued = true;
+        requestAnimationFrame(() => {
+            this.bucketHoverLookupQueued = false;
+            const pos = this.bucketHoverPendingPos;
+            if (!pos || this.app?.ui?.activeTool !== 'bucket') return;
+
+            const target = this.getFillTargetAt(pos.xMM, pos.yMM, { previewOnly: true });
+            const nextRegion = target ? target.region : null;
+            const nextPathIdx = target ? target.pathIdx : -1;
+            if (this.bucketHoverRegion === nextRegion && this.bucketHoverPathIdx === nextPathIdx) return;
+
+            this.bucketHoverRegion = nextRegion;
+            this.bucketHoverPathIdx = nextPathIdx;
+            this.draw();
+        });
     }
 
     clear() {
@@ -712,7 +750,7 @@ class CanvasManager {
             }
 
             if (this.app.ui.activeTool === 'bucket' && e.button === 0) {
-                this.applyBucketFillAt(pos.xMM, pos.yMM);
+                void this.applyBucketFillAt(pos.xMM, pos.yMM);
                 return;
             }
 
@@ -972,13 +1010,8 @@ class CanvasManager {
             const pos = this.getMousePosMM(e);
 
             if (this.app.ui.activeTool === 'bucket' && !this.isDragging && !this.isMarqueeSelecting && !this.isCreatingShape && !this.isRotating && !this.isCreatingBezier) {
-                const target = this.getFillTargetAt(pos.xMM, pos.yMM);
-                this.bucketHoverRegion = target ? target.region : null;
-                this.bucketHoverPathIdx = target ? target.pathIdx : -1;
-                this.draw();
-            } else if (this.bucketHoverRegion) {
-                this.bucketHoverRegion = null;
-                this.bucketHoverPathIdx = -1;
+                this.queueBucketHoverPreview(pos.xMM, pos.yMM);
+            } else if (this.clearBucketHoverPreview()) {
                 this.draw();
             }
 
@@ -1455,12 +1488,9 @@ class CanvasManager {
     }
 
     getViewportTransform() {
-        const canvasRect = this.canvas?.getBoundingClientRect?.();
-        const viewportWidth = canvasRect?.width || this.canvas?.clientWidth || this.pixelW || 0;
-        const viewportHeight = canvasRect?.height || this.canvas?.clientHeight || this.pixelH || 0;
         const mmToPx = this.scale;
-        const horizontalShift = 0;
-        const verticalShift = Math.max(0, viewportHeight - (this.bedHeight * mmToPx));
+        const horizontalShift = Number.isFinite(this.viewportHorizontalShift) ? this.viewportHorizontalShift : 0;
+        const verticalShift = Number.isFinite(this.viewportVerticalShift) ? this.viewportVerticalShift : 0;
         return { mmToPx, horizontalShift, verticalShift };
     }
 
@@ -1479,6 +1509,16 @@ class CanvasManager {
         const yMM = transformedPy / mmToPx;
 
         return { xMM, yMM };
+    }
+
+    mmToCanvasPx(xMM, yMM) {
+        const safeX = Number.isFinite(xMM) ? xMM : 0;
+        const safeY = Number.isFinite(yMM) ? yMM : 0;
+        const { mmToPx, horizontalShift, verticalShift } = this.getViewportTransform();
+        return {
+            x: (safeX * mmToPx * this.viewZoom) + this.viewOffsetX + horizontalShift,
+            y: (safeY * mmToPx * this.viewZoom) + this.viewOffsetY + verticalShift
+        };
     }
 
     normalizeTextRotation(rotation) {
@@ -1838,7 +1878,9 @@ class CanvasManager {
         if (Array.isArray(path.points) && path.points.length >= 3) {
             const first = path.points[0];
             const last = path.points[path.points.length - 1];
-            return Math.hypot((last.x || 0) - (first.x || 0), (last.y || 0) - (first.y || 0)) <= 1;
+            // Keep inferred closure very strict so exported helper/fill polylines
+            // are not promoted into fake fill boundaries.
+            return Math.hypot((last.x || 0) - (first.x || 0), (last.y || 0) - (first.y || 0)) <= 0.08;
         }
         return false;
     }
@@ -1855,7 +1897,9 @@ class CanvasManager {
         }
         if (path.type === 'circle') {
             const points = [];
-            const steps = 64;
+            const radius = Math.max(0.1, path.r || 0);
+            const circumference = Math.PI * 2 * radius;
+            const steps = Math.max(64, Math.min(512, Math.ceil(circumference / 1.2)));
             for (let i = 0; i < steps; i++) {
                 const angle = (i / steps) * Math.PI * 2;
                 points.push({
@@ -1869,6 +1913,9 @@ class CanvasManager {
             const points = [];
             let currentPoint = null;
             let subpathStart = null;
+            const estimateSegmentSteps = (lengthEstimate, minSteps, maxSteps) => {
+                return Math.max(minSteps, Math.min(maxSteps, Math.ceil(Math.max(0.1, lengthEstimate) / 1.2)));
+            };
             const addPoint = (pt) => {
                 if (!pt) return;
                 const prev = points[points.length - 1];
@@ -1884,8 +1931,12 @@ class CanvasManager {
                     addPoint(currentPoint);
                 } else if (segment.type === 'C' && currentPoint) {
                     const start = { ...currentPoint };
-                    for (let i = 1; i <= 24; i++) {
-                        const t = i / 24;
+                    const controlSpan = Math.hypot(segment.x1 - start.x, segment.y1 - start.y)
+                        + Math.hypot(segment.x2 - segment.x1, segment.y2 - segment.y1)
+                        + Math.hypot(segment.x - segment.x2, segment.y - segment.y2);
+                    const steps = estimateSegmentSteps(controlSpan, 24, 240);
+                    for (let i = 1; i <= steps; i++) {
+                        const t = i / steps;
                         const mt = 1 - t;
                         addPoint({
                             x: (mt ** 3) * start.x + 3 * (mt ** 2) * t * segment.x1 + 3 * mt * (t ** 2) * segment.x2 + (t ** 3) * segment.x,
@@ -1895,8 +1946,11 @@ class CanvasManager {
                     currentPoint = { x: segment.x, y: segment.y };
                 } else if (segment.type === 'Q' && currentPoint) {
                     const start = { ...currentPoint };
-                    for (let i = 1; i <= 20; i++) {
-                        const t = i / 20;
+                    const controlSpan = Math.hypot(segment.x1 - start.x, segment.y1 - start.y)
+                        + Math.hypot(segment.x - segment.x1, segment.y - segment.y1);
+                    const steps = estimateSegmentSteps(controlSpan, 20, 180);
+                    for (let i = 1; i <= steps; i++) {
+                        const t = i / steps;
                         const mt = 1 - t;
                         addPoint({
                             x: (mt ** 2) * start.x + 2 * mt * t * segment.x1 + (t ** 2) * segment.x,
@@ -1929,28 +1983,264 @@ class CanvasManager {
         return inside;
     }
 
-    getBaseFillRegion(path) {
-        const box = this.getBoundingBox(path);
-        if (!box || !this.isPathClosed(path)) return null;
-        const polygon = this.flattenPathForFill(path);
-        if (!polygon || polygon.length < 3) return null;
-        return {
-            box,
-            polygon,
-            contains: (x, y) => {
-                if (path.type === 'circle') {
-                    return Math.hypot(x - path.x, y - path.y) <= path.r;
+    extractClosedPathPolygons(path) {
+        if (path?.type !== 'path' || !Array.isArray(path.segments) || path.segments.length === 0) return [];
+
+        const polygons = [];
+        let currentPolygon = [];
+        let currentPoint = null;
+        let subpathStart = null;
+        const closeTolerance = 0.18;
+        const minClosedRegionArea = 0.2;
+        const estimateSegmentSteps = (lengthEstimate, minSteps, maxSteps) => {
+            return Math.max(minSteps, Math.min(maxSteps, Math.ceil(Math.max(0.1, lengthEstimate) / 1.2)));
+        };
+        const addPoint = (pt) => {
+            if (!Number.isFinite(pt?.x) || !Number.isFinite(pt?.y)) return;
+            const prev = currentPolygon[currentPolygon.length - 1];
+            if (!prev || Math.hypot(prev.x - pt.x, prev.y - pt.y) > 0.01) {
+                currentPolygon.push({ x: pt.x, y: pt.y });
+            }
+        };
+        const flushPolygon = (forceClose = false) => {
+            if (currentPolygon.length < 3 || !subpathStart) {
+                currentPolygon = [];
+                return;
+            }
+            const first = currentPolygon[0];
+            const last = currentPolygon[currentPolygon.length - 1];
+            const isClosed = Math.hypot(last.x - first.x, last.y - first.y) <= closeTolerance;
+            if (!forceClose && !isClosed) {
+                currentPolygon = [];
+                return;
+            }
+            if (!isClosed) currentPolygon.push({ ...first });
+            const polygon = currentPolygon.map(point => ({ ...point }));
+            if (this.getPolygonArea(polygon) >= minClosedRegionArea) polygons.push(polygon);
+            currentPolygon = [];
+        };
+
+        path.segments.forEach(segment => {
+            if (segment.type === 'M') {
+                flushPolygon(path.closed === true);
+                currentPoint = { x: segment.x, y: segment.y };
+                subpathStart = { ...currentPoint };
+                addPoint(currentPoint);
+            } else if (segment.type === 'L') {
+                currentPoint = { x: segment.x, y: segment.y };
+                addPoint(currentPoint);
+            } else if (segment.type === 'C' && currentPoint) {
+                const start = { ...currentPoint };
+                const controlSpan = Math.hypot(segment.x1 - start.x, segment.y1 - start.y)
+                    + Math.hypot(segment.x2 - segment.x1, segment.y2 - segment.y1)
+                    + Math.hypot(segment.x - segment.x2, segment.y - segment.y2);
+                const steps = estimateSegmentSteps(controlSpan, 24, 240);
+                for (let i = 1; i <= steps; i++) {
+                    const t = i / steps;
+                    const mt = 1 - t;
+                    addPoint({
+                        x: (mt ** 3) * start.x + 3 * (mt ** 2) * t * segment.x1 + 3 * mt * (t ** 2) * segment.x2 + (t ** 3) * segment.x,
+                        y: (mt ** 3) * start.y + 3 * (mt ** 2) * t * segment.y1 + 3 * mt * (t ** 2) * segment.y2 + (t ** 3) * segment.y
+                    });
                 }
-                if (path.type === 'rectangle') {
+                currentPoint = { x: segment.x, y: segment.y };
+            } else if (segment.type === 'Q' && currentPoint) {
+                const start = { ...currentPoint };
+                const controlSpan = Math.hypot(segment.x1 - start.x, segment.y1 - start.y)
+                    + Math.hypot(segment.x - segment.x1, segment.y - segment.y1);
+                const steps = estimateSegmentSteps(controlSpan, 20, 180);
+                for (let i = 1; i <= steps; i++) {
+                    const t = i / steps;
+                    const mt = 1 - t;
+                    addPoint({
+                        x: (mt ** 2) * start.x + 2 * mt * t * segment.x1 + (t ** 2) * segment.x,
+                        y: (mt ** 2) * start.y + 2 * mt * t * segment.y1 + (t ** 2) * segment.y
+                    });
+                }
+                currentPoint = { x: segment.x, y: segment.y };
+            } else if (segment.type === 'A') {
+                currentPoint = { x: segment.x, y: segment.y };
+                addPoint(currentPoint);
+            } else if (segment.type === 'Z' && subpathStart) {
+                addPoint({ ...subpathStart });
+                currentPoint = { ...subpathStart };
+                flushPolygon(true);
+                subpathStart = null;
+            }
+        });
+
+        // Only explicitly closed paths get force-closed here. This avoids
+        // silently sealing near-touching export polylines into bogus regions.
+        flushPolygon(path.closed === true);
+        return polygons;
+    }
+
+    getPolygonInteriorPoint(polygon) {
+        if (!Array.isArray(polygon) || polygon.length < 3) return null;
+        const box = this.getPolygonBox(polygon);
+        if (!box) return null;
+
+        const candidateYs = [];
+        const centerY = (box.minY + box.maxY) * 0.5;
+        candidateYs.push(centerY);
+        const height = Math.max(0.001, box.maxY - box.minY);
+        for (let i = 1; i <= 6; i++) {
+            const offset = (height * i) / 14;
+            candidateYs.push(centerY - offset, centerY + offset);
+        }
+
+        for (const y of candidateYs) {
+            const intersections = [];
+            for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+                const a = polygon[j];
+                const b = polygon[i];
+                if (!Number.isFinite(a?.x) || !Number.isFinite(a?.y) || !Number.isFinite(b?.x) || !Number.isFinite(b?.y)) continue;
+                const crossesScanline = ((a.y > y) !== (b.y > y));
+                if (!crossesScanline) continue;
+                const t = (y - a.y) / ((b.y - a.y) || 0.000001);
+                intersections.push(a.x + ((b.x - a.x) * t));
+            }
+
+            intersections.sort((left, right) => left - right);
+            for (let i = 0; i + 1 < intersections.length; i += 2) {
+                const x1 = intersections[i];
+                const x2 = intersections[i + 1];
+                if (!Number.isFinite(x1) || !Number.isFinite(x2)) continue;
+                if (x2 - x1 <= 0.001) continue;
+                const candidate = { x: (x1 + x2) * 0.5, y };
+                if (this.pointInPolygon(candidate.x, candidate.y, polygon)) {
+                    return candidate;
+                }
+            }
+        }
+
+        const validPoints = polygon.filter(point => Number.isFinite(point?.x) && Number.isFinite(point?.y));
+        if (validPoints.length === 0) return null;
+        const centroid = validPoints.reduce((acc, point) => ({
+            x: acc.x + point.x,
+            y: acc.y + point.y
+        }), { x: 0, y: 0 });
+        const fallback = {
+            x: centroid.x / validPoints.length,
+            y: centroid.y / validPoints.length
+        };
+        return this.pointInPolygon(fallback.x, fallback.y, polygon) ? fallback : validPoints[0];
+    }
+
+    buildCompoundFillRegions(polygons, path, pathIdx) {
+        if (!Array.isArray(polygons) || polygons.length === 0) return [];
+
+        const polygonMeta = polygons.map((polygon, polygonIdx) => ({
+            polygonIdx,
+            polygon,
+            box: this.getPolygonBox(polygon),
+            area: this.getPolygonArea(polygon),
+            samplePoint: this.getPolygonInteriorPoint(polygon),
+            parentIdx: -1,
+            depth: 0,
+            children: []
+        })).filter(meta => meta.box && meta.area > 0 && meta.samplePoint);
+
+        polygonMeta.forEach((meta, idx) => {
+            let bestParentIdx = -1;
+            let bestParentArea = Infinity;
+            polygonMeta.forEach((candidate, candidateIdx) => {
+                if (candidateIdx === idx) return;
+                if (candidate.area <= meta.area) return;
+                if (!this.pointInPolygon(meta.samplePoint.x, meta.samplePoint.y, candidate.polygon)) return;
+                if (candidate.area < bestParentArea) {
+                    bestParentArea = candidate.area;
+                    bestParentIdx = candidateIdx;
+                }
+            });
+            meta.parentIdx = bestParentIdx;
+        });
+
+        polygonMeta.forEach((meta, idx) => {
+            let depth = 0;
+            let cursor = meta.parentIdx;
+            while (cursor !== -1) {
+                depth++;
+                cursor = polygonMeta[cursor]?.parentIdx ?? -1;
+            }
+            meta.depth = depth;
+            if (meta.parentIdx !== -1) {
+                polygonMeta[meta.parentIdx].children.push(idx);
+            }
+        });
+
+        return polygonMeta
+            .filter(meta => meta.depth % 2 === 0)
+            .map(meta => {
+                const holeIndices = meta.children.filter(childIdx => polygonMeta[childIdx]?.depth === meta.depth + 1);
+                return {
+                    regionId: `${pathIdx}:compound:${meta.polygonIdx}`,
+                    box: meta.box,
+                    polygon: meta.polygon,
+                    holePolygons: holeIndices.map(childIdx => polygonMeta[childIdx].polygon),
+                    pathIdx,
+                    path,
+                    contains: (x, y) => {
+                        if (!this.pointInPolygon(x, y, meta.polygon)) return false;
+                        return !holeIndices.some(childIdx => this.pointInPolygon(x, y, polygonMeta[childIdx].polygon));
+                    }
+                };
+            });
+    }
+
+    getBaseFillRegions(path, pathIdx) {
+        if (!path) return [];
+        if (path.type === 'circle') {
+            const polygon = this.flattenPathForFill(path);
+            const box = this.getBoundingBox(path);
+            if (!box || polygon.length < 3) return [];
+            return [{
+                regionId: `${pathIdx}:circle`,
+                box,
+                polygon,
+                pathIdx,
+                path,
+                contains: (x, y) => Math.hypot(x - path.x, y - path.y) <= path.r
+            }];
+        }
+        if (path.type === 'rectangle') {
+            const polygon = this.flattenPathForFill(path);
+            const box = this.getBoundingBox(path);
+            if (!box || polygon.length < 3) return [];
+            return [{
+                regionId: `${pathIdx}:rect`,
+                box,
+                polygon,
+                pathIdx,
+                path,
+                contains: (x, y) => {
                     const minX = Math.min(path.x, path.x + (path.w || 0));
                     const maxX = Math.max(path.x, path.x + (path.w || 0));
                     const minY = Math.min(path.y, path.y + (path.h || 0));
                     const maxY = Math.max(path.y, path.y + (path.h || 0));
                     return x >= minX && x <= maxX && y >= minY && y <= maxY;
                 }
-                return this.pointInPolygon(x, y, polygon);
-            }
-        };
+            }];
+        }
+
+        const polygons = this.extractClosedPathPolygons(path);
+        if (polygons.length > 0) {
+            const compoundRegions = this.buildCompoundFillRegions(polygons, path, pathIdx);
+            if (compoundRegions.length > 0) return compoundRegions;
+        }
+
+        const box = this.getBoundingBox(path);
+        if (!box || !this.isPathClosed(path)) return [];
+        const polygon = this.flattenPathForFill(path);
+        if (!polygon || polygon.length < 3) return [];
+        return [{
+            regionId: `${pathIdx}:base`,
+            box,
+            polygon,
+            pathIdx,
+            path,
+            contains: (x, y) => this.pointInPolygon(x, y, polygon)
+        }];
     }
 
     getPolygonBox(points = []) {
@@ -1985,6 +2275,10 @@ class CanvasManager {
 
     getEmbeddedLoopFillRegions(path, pathIdx) {
         if (!path || !Array.isArray(path.points) || path.points.length < 6) return [];
+        // Imported/explicitly closed contours already produce exact fill faces.
+        // Mining "embedded loops" inside them creates lots of tiny bogus regions
+        // that show up as jagged cut-outs in bucket targeting.
+        if (this.isPathClosed(path)) return [];
         const source = path.points
             .filter(point => Number.isFinite(point?.x) && Number.isFinite(point?.y))
             .map(point => ({ x: point.x, y: point.y }));
@@ -2015,7 +2309,7 @@ class CanvasManager {
                 const polygon = source.slice(start, end + 1).map(point => ({ x: point.x, y: point.y }));
                 polygon[polygon.length - 1] = { x: startPoint.x, y: startPoint.y };
                 const area = this.getPolygonArea(polygon);
-                if (area < 4) continue;
+                if (area < 0.2) continue;
 
                 const signature = `${start}:${end}:${Math.round(area * 10)}`;
                 if (seen.has(signature)) continue;
@@ -2025,6 +2319,7 @@ class CanvasManager {
                 if (!box) continue;
 
                 loops.push({
+                    regionId: `${pathIdx}:embedded:${start}:${end}`,
                     box,
                     polygon,
                     pathIdx,
@@ -2046,8 +2341,7 @@ class CanvasManager {
         for (let i = 0; i < this.paths.length; i++) {
             const path = this.paths[i];
             if (path?.generatedBy === 'bucket-fill') continue;
-            const region = this.getBaseFillRegion(path);
-            if (region) regions.push({ ...region, pathIdx: i, path });
+            this.getBaseFillRegions(path, i).forEach(region => regions.push(region));
             this.getEmbeddedLoopFillRegions(path, i).forEach(loopRegion => regions.push(loopRegion));
         }
         this.closedFillRegionsCache = regions;
@@ -2056,6 +2350,9 @@ class CanvasManager {
 
     getRegionArea(region) {
         if (!region) return Infinity;
+        if (region.fillCells instanceof Set && Number.isFinite(region.cellSize) && region.cellSize > 0) {
+            return region.fillCells.size * region.cellSize * region.cellSize;
+        }
         if (Array.isArray(region.polygon) && region.polygon.length >= 3) {
             const polygonArea = this.getPolygonArea(region.polygon);
             if (polygonArea > 0) return polygonArea;
@@ -2066,26 +2363,194 @@ class CanvasManager {
         return Infinity;
     }
 
+    getRegionPerimeter(region) {
+        if (!region) return Infinity;
+        if (Array.isArray(region.polygon) && region.polygon.length >= 2) {
+            let perimeter = 0;
+            for (let i = 0; i < region.polygon.length; i++) {
+                const current = region.polygon[i];
+                const next = region.polygon[(i + 1) % region.polygon.length];
+                if (!Number.isFinite(current?.x) || !Number.isFinite(current?.y) || !Number.isFinite(next?.x) || !Number.isFinite(next?.y)) continue;
+                perimeter += Math.hypot(next.x - current.x, next.y - current.y);
+            }
+            if (perimeter > 0) return perimeter;
+        }
+        if (region.box) {
+            const width = Math.max(0, region.box.maxX - region.box.minX);
+            const height = Math.max(0, region.box.maxY - region.box.minY);
+            return (width + height) * 2;
+        }
+        return Infinity;
+    }
+
+    getFillRegionRenderMetrics(region) {
+        if (!region?.box) {
+            return { areaPx: 0, estimatedThicknessPx: 0 };
+        }
+        const pxPerMM = Math.max(0.0001, (this.scale || 1) * Math.max(1, this.viewZoom || 1));
+        const areaPx = this.getRegionArea(region) * pxPerMM * pxPerMM;
+        const perimeterPx = this.getRegionPerimeter(region) * pxPerMM;
+        const estimatedThicknessPx = perimeterPx > 0 ? areaPx / perimeterPx : 0;
+        return { areaPx, estimatedThicknessPx };
+    }
+
+    isExactFillRegion(region) {
+        return !!region
+            && Array.isArray(region.polygon)
+            && region.polygon.length >= 3
+            && !(region.fillCells instanceof Set);
+    }
+
+    exactRegionHasNestedChildren(region, allRegions = []) {
+        if (!this.isExactFillRegion(region) || Array.isArray(region?.holePolygons) && region.holePolygons.length > 0) {
+            return false;
+        }
+        const regionId = region.regionId || `${region.pathIdx}`;
+        const regionArea = this.getRegionArea(region);
+        return allRegions.some(candidate => {
+            if (!this.isExactFillRegion(candidate)) return false;
+            const candidateId = candidate.regionId || `${candidate.pathIdx}`;
+            if (candidateId === regionId) return false;
+            const candidateArea = this.getRegionArea(candidate);
+            if (!Number.isFinite(candidateArea) || candidateArea <= 0 || candidateArea >= regionArea) return false;
+            const samplePoint = this.getPolygonInteriorPoint(candidate.polygon);
+            return !!samplePoint && region.contains(samplePoint.x, samplePoint.y);
+        });
+    }
+
+    buildNestedExactFillRegion(region, allRegions = []) {
+        if (!this.isExactFillRegion(region)) return null;
+        const regionId = region.regionId || `${region.pathIdx}`;
+        const regionArea = this.getRegionArea(region);
+        const candidateChildren = allRegions
+            .filter(candidate => {
+                if (!this.isExactFillRegion(candidate)) return false;
+                const candidateId = candidate.regionId || `${candidate.pathIdx}`;
+                if (candidateId === regionId) return false;
+                const candidateArea = this.getRegionArea(candidate);
+                if (!Number.isFinite(candidateArea) || candidateArea <= 0 || candidateArea >= regionArea) return false;
+                if (!candidate.box || !region.box) return false;
+                if (candidate.box.minX < region.box.minX || candidate.box.maxX > region.box.maxX) return false;
+                if (candidate.box.minY < region.box.minY || candidate.box.maxY > region.box.maxY) return false;
+                const samplePoint = this.getPolygonInteriorPoint(candidate.polygon);
+                return !!samplePoint && region.contains(samplePoint.x, samplePoint.y);
+            })
+            .map(candidate => ({
+                region: candidate,
+                area: this.getRegionArea(candidate),
+                samplePoint: this.getPolygonInteriorPoint(candidate.polygon)
+            }))
+            .filter(candidate => candidate.samplePoint);
+
+        if (!candidateChildren.length) return null;
+
+        const immediateChildren = candidateChildren.filter(candidate => {
+            return !candidateChildren.some(other => {
+                if (other.region === candidate.region) return false;
+                if (other.area <= candidate.area || other.area >= regionArea) return false;
+                return other.region.contains(candidate.samplePoint.x, candidate.samplePoint.y);
+            });
+        });
+
+        if (!immediateChildren.length) return null;
+
+        return {
+            regionId: `${regionId}:nested`,
+            box: { ...region.box },
+            polygon: region.polygon.map(point => ({ ...point })),
+            holePolygons: immediateChildren.map(child => child.region.polygon.map(point => ({ ...point }))),
+            pathIdx: region.pathIdx,
+            path: region.path,
+            primaryPathIdx: region.pathIdx,
+            contains: (x, y) => {
+                if (!region.contains(x, y)) return false;
+                return !immediateChildren.some(child => child.region.contains(x, y));
+            }
+        };
+    }
+
+    cloneExactFillRegion(region) {
+        if (!this.isExactFillRegion(region)) return null;
+        const holePolygons = Array.isArray(region.holePolygons)
+            ? region.holePolygons
+                .filter(polygon => Array.isArray(polygon) && polygon.length >= 3)
+                .map(polygon => polygon.map(point => ({ x: point.x, y: point.y })))
+            : [];
+        const polygon = region.polygon.map(point => ({ x: point.x, y: point.y }));
+        return {
+            regionId: region.regionId,
+            box: region.box ? { ...region.box } : this.getPolygonBox(polygon),
+            polygon,
+            holePolygons,
+            pathIdx: region.pathIdx,
+            path: region.path,
+            primaryPathIdx: Number.isInteger(region.primaryPathIdx) ? region.primaryPathIdx : region.pathIdx,
+            contains: (x, y) => {
+                if (!this.pointInPolygon(x, y, polygon)) return false;
+                return !holePolygons.some(hole => this.pointInPolygon(x, y, hole));
+            }
+        };
+    }
+
+    getExactFaceRegionAt(x, y, allRegions = []) {
+        const exactContainingRegions = allRegions
+            .filter(region => this.isExactFillRegion(region) && region.contains(x, y))
+            .sort((a, b) => this.getRegionArea(a) - this.getRegionArea(b));
+        if (!exactContainingRegions.length) return null;
+
+        const directExactRegion = exactContainingRegions[0];
+        const nestedExactRegion = this.buildNestedExactFillRegion(directExactRegion, allRegions);
+        return nestedExactRegion || this.cloneExactFillRegion(directExactRegion) || directExactRegion;
+    }
+
+    isFillRegionUsable(region, options = {}) {
+        if (!region?.box) return false;
+        const { areaPx, estimatedThicknessPx } = this.getFillRegionRenderMetrics(region);
+        const minAreaPx = Number.isFinite(options?.minAreaPx) ? options.minAreaPx : 90;
+        const minThicknessPx = Number.isFinite(options?.minThicknessPx) ? options.minThicknessPx : 5;
+        return areaPx >= minAreaPx && estimatedThicknessPx >= minThicknessPx;
+    }
+
     getFillSignatureAt(x, y, regions) {
         return regions
             .filter(region => region.contains(x, y))
-            .map(region => region.pathIdx)
-            .sort((a, b) => a - b);
+            .map(region => region.regionId || `${region.pathIdx}`)
+            .sort((a, b) => String(a).localeCompare(String(b)));
     }
 
     getFillSignatureKey(signature) {
         return Array.isArray(signature) ? signature.join('|') : '';
     }
 
-    getCompositeFillRegionAt(x, y) {
-        const regions = this.getClosedFillRegions();
-        if (!regions.length) return null;
+    getCompositeFillRegionAt(x, y, regions = null, options = {}) {
+        const resolvedRegions = Array.isArray(regions) ? regions : this.getClosedFillRegions();
+        if (!resolvedRegions.length) return null;
 
-        const signature = this.getFillSignatureAt(x, y, regions);
+        const signature = this.getFillSignatureAt(x, y, resolvedRegions);
         if (!signature.length) return null;
 
-        const targetKey = this.getFillSignatureKey(signature);
-        const signatureRegions = regions.filter(region => signature.includes(region.pathIdx));
+        const anchorRegion = options?.anchorRegion || null;
+        const anchorArea = this.getRegionArea(anchorRegion);
+        const signatureRegions = resolvedRegions.filter(region => signature.includes(region.regionId || `${region.pathIdx}`));
+        const relevantSignature = signature.filter(regionId => {
+            const region = signatureRegions.find(candidate => (candidate.regionId || `${candidate.pathIdx}`) === regionId);
+            if (!region) return false;
+            if (anchorRegion && (region.regionId || `${region.pathIdx}`) === (anchorRegion.regionId || `${anchorRegion.pathIdx}`)) return true;
+            if (Array.isArray(region.holePolygons) && region.holePolygons.length > 0) return true;
+            if (region.isEmbeddedLoop) return true;
+            const regionArea = this.getRegionArea(region);
+            if (!Number.isFinite(anchorArea) || anchorArea <= 0) return true;
+            return regionArea >= Math.max(0.6, anchorArea * 0.12);
+        });
+        const effectiveSignature = relevantSignature.length ? relevantSignature : signature;
+        const targetKey = this.getFillSignatureKey(effectiveSignature);
+        const matchesEffectiveSignature = (sampleX, sampleY) => {
+            if (anchorRegion && !anchorRegion.contains(sampleX, sampleY)) return false;
+            const sampleSignature = this.getFillSignatureAt(sampleX, sampleY, resolvedRegions);
+            if (!sampleSignature.length) return false;
+            const filteredSampleSignature = sampleSignature.filter(regionId => effectiveSignature.includes(regionId));
+            return this.getFillSignatureKey(filteredSampleSignature) === targetKey;
+        };
         const intersectionBox = signatureRegions.reduce((box, region) => {
             if (!box) return { ...region.box };
             return {
@@ -2101,16 +2566,22 @@ class CanvasManager {
             : { ...signatureRegions[0].box };
 
         const spacing = this.app?.ui?.fillBucketSettings?.spacing || 6;
-        const zoomFactor = Math.max(1, this.viewZoom || 1);
+        const pxPerMM = Math.max(0.0001, (this.scale || 1) * Math.max(1, this.viewZoom || 1));
         const regionWidth = Math.max(0.1, box.maxX - box.minX);
         const regionHeight = Math.max(0.1, box.maxY - box.minY);
         const smallestDimension = Math.max(0.1, Math.min(regionWidth, regionHeight));
+        const estimatedThicknessMM = Math.max(
+            0.05,
+            this.getRegionArea(anchorRegion || signatureRegions[0]) / Math.max(0.01, this.getRegionPerimeter(anchorRegion || signatureRegions[0]))
+        );
+        const prefersFineGrid = smallestDimension < 12 || estimatedThicknessMM < 3.5;
         const cellSize = Math.max(
-            0.04,
+            0.01,
             Math.min(
-                0.45,
-                spacing / Math.max(6, zoomFactor * 5),
-                smallestDimension / 24
+                prefersFineGrid ? 0.16 : 0.3,
+                (prefersFineGrid ? 3 : 5) / pxPerMM,
+                Math.max(prefersFineGrid ? 0.025 : 0.07, spacing / (prefersFineGrid ? 18 : 7)),
+                smallestDimension / (prefersFineGrid ? 96 : 32)
             )
         );
         const cols = Math.max(1, Math.ceil((box.maxX - box.minX) / cellSize));
@@ -2128,9 +2599,43 @@ class CanvasManager {
             x: box.minX + ((cx + 0.5) * cellSize),
             y: box.minY + ((cy + 0.5) * cellSize)
         });
+        const cellSampleOffsets = prefersFineGrid
+            ? [
+                { ox: 0.5, oy: 0.5 },
+                { ox: 0.15, oy: 0.5 },
+                { ox: 0.85, oy: 0.5 },
+                { ox: 0.2, oy: 0.5 },
+                { ox: 0.8, oy: 0.5 },
+                { ox: 0.5, oy: 0.2 },
+                { ox: 0.5, oy: 0.8 },
+                { ox: 0.5, oy: 0.15 },
+                { ox: 0.5, oy: 0.85 },
+                { ox: 0.2, oy: 0.2 },
+                { ox: 0.8, oy: 0.2 },
+                { ox: 0.2, oy: 0.8 },
+                { ox: 0.8, oy: 0.8 }
+            ]
+            : [
+                { ox: 0.5, oy: 0.5 },
+                { ox: 0.25, oy: 0.5 },
+                { ox: 0.75, oy: 0.5 },
+                { ox: 0.5, oy: 0.25 },
+                { ox: 0.5, oy: 0.75 }
+            ];
+        const targetThreshold = prefersFineGrid ? 1 : 1;
         const matchesTarget = (cx, cy) => {
-            const center = cellCenter(cx, cy);
-            return this.getFillSignatureKey(this.getFillSignatureAt(center.x, center.y, regions)) === targetKey;
+            let matches = 0;
+            for (const offset of cellSampleOffsets) {
+                const sample = {
+                    x: box.minX + ((cx + offset.ox) * cellSize),
+                    y: box.minY + ((cy + offset.oy) * cellSize)
+                };
+                if (matchesEffectiveSignature(sample.x, sample.y)) {
+                    matches++;
+                    if (matches >= targetThreshold) return true;
+                }
+            }
+            return false;
         };
 
         const startCell = toCellCoord(x, y);
@@ -2187,9 +2692,9 @@ class CanvasManager {
             },
             gridOriginX: box.minX,
             gridOriginY: box.minY,
-            signature,
+            signature: effectiveSignature,
             signatureKey: targetKey,
-            primaryPathIdx: signature[signature.length - 1],
+            primaryPathIdx: signatureRegions[signatureRegions.length - 1]?.pathIdx,
             cellSize,
             fillCells: targetCells,
             contains: (px, py) => {
@@ -2200,7 +2705,7 @@ class CanvasManager {
         };
     }
 
-    getFillTargetAt(xMM, yMM) {
+    getFillTargetAt(xMM, yMM, options = {}) {
         const allRegions = this.getClosedFillRegions();
         const containingRegions = allRegions.filter(region => region.contains(xMM, yMM));
         if (!containingRegions.length) return null;
@@ -2211,8 +2716,38 @@ class CanvasManager {
         });
 
         const directRegion = containingRegions[0];
-        const region = directRegion || this.getCompositeFillRegionAt(xMM, yMM);
-        if (!region) return null;
+        const previewOnly = options?.previewOnly === true;
+        const exactFaceRegion = this.getExactFaceRegionAt(xMM, yMM, allRegions);
+        const usabilityOptions = previewOnly
+            ? { minAreaPx: 24, minThicknessPx: 1.4 }
+            : { minAreaPx: 24, minThicknessPx: 1.4 };
+
+        if (exactFaceRegion) {
+            const exactPathIdx = Number.isInteger(exactFaceRegion.primaryPathIdx)
+                ? exactFaceRegion.primaryPathIdx
+                : exactFaceRegion?.pathIdx ?? -1;
+            return {
+                pathIdx: exactPathIdx,
+                path: exactPathIdx > -1 ? this.paths[exactPathIdx] : null,
+                region: exactFaceRegion
+            };
+        }
+
+        const directRegionIsExactCompound = Array.isArray(directRegion?.holePolygons) && directRegion.holePolygons.length > 0;
+        const shouldTryComposite = !previewOnly && !directRegionIsExactCompound;
+        const compositeRegion = shouldTryComposite
+            ? this.getCompositeFillRegionAt(xMM, yMM, allRegions, { anchorRegion: directRegion })
+            : null;
+        const directUsable = this.isFillRegionUsable(directRegion, usabilityOptions);
+        const compositeUsable = this.isFillRegionUsable(compositeRegion, usabilityOptions);
+        const directArea = this.getRegionArea(directRegion);
+        const compositeArea = this.getRegionArea(compositeRegion);
+        const shouldPreferDirect = directUsable && (!compositeUsable || directArea <= (compositeArea * 1.35));
+        const preferredRegion = shouldPreferDirect
+            ? directRegion
+            : (compositeUsable ? compositeRegion : directRegion);
+        const region = preferredRegion;
+        if (!region || !this.isFillRegionUsable(region, usabilityOptions)) return null;
         const pathIdx = Number.isInteger(region.primaryPathIdx) ? region.primaryPathIdx : directRegion?.pathIdx;
         return {
             pathIdx,
@@ -2221,21 +2756,40 @@ class CanvasManager {
         };
     }
 
-    drawBucketHoverPreview(mmToPx) {
+    drawBucketHoverPreview() {
+        if (!this.bucketHoverRegion) return;
+        const dpr = window.devicePixelRatio || 1;
+        const screenScale = this.scale * this.viewZoom;
         this.ctx.save();
+        this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         this.ctx.fillStyle = 'rgba(96, 165, 250, 0.18)';
         this.ctx.strokeStyle = 'rgba(96, 165, 250, 0.65)';
-        this.ctx.lineWidth = 1.5 / this.viewZoom;
+        this.ctx.lineWidth = 1.5;
 
         if (Array.isArray(this.bucketHoverRegion?.polygon) && this.bucketHoverRegion.polygon.length >= 3) {
             this.ctx.beginPath();
-            this.ctx.moveTo(this.bucketHoverRegion.polygon[0].x * mmToPx, this.bucketHoverRegion.polygon[0].y * mmToPx);
+            const start = this.mmToCanvasPx(this.bucketHoverRegion.polygon[0].x, this.bucketHoverRegion.polygon[0].y);
+            this.ctx.moveTo(start.x, start.y);
             for (let i = 1; i < this.bucketHoverRegion.polygon.length; i++) {
                 const point = this.bucketHoverRegion.polygon[i];
-                this.ctx.lineTo(point.x * mmToPx, point.y * mmToPx);
+                const screenPoint = this.mmToCanvasPx(point.x, point.y);
+                this.ctx.lineTo(screenPoint.x, screenPoint.y);
             }
             this.ctx.closePath();
-            this.ctx.fill();
+            if (Array.isArray(this.bucketHoverRegion.holePolygons)) {
+                this.bucketHoverRegion.holePolygons.forEach(holePolygon => {
+                    if (!Array.isArray(holePolygon) || holePolygon.length < 3) return;
+                    const holeStart = this.mmToCanvasPx(holePolygon[0].x, holePolygon[0].y);
+                    this.ctx.moveTo(holeStart.x, holeStart.y);
+                    for (let i = 1; i < holePolygon.length; i++) {
+                        const point = holePolygon[i];
+                        const holePoint = this.mmToCanvasPx(point.x, point.y);
+                        this.ctx.lineTo(holePoint.x, holePoint.y);
+                    }
+                    this.ctx.closePath();
+                });
+            }
+            this.ctx.fill('evenodd');
             this.ctx.stroke();
         } else if (this.bucketHoverRegion?.fillCells && this.bucketHoverRegion?.cellSize) {
             const cellSize = this.bucketHoverRegion.cellSize;
@@ -2243,19 +2797,179 @@ class CanvasManager {
                 const [cxRaw, cyRaw] = key.split(',');
                 const cx = parseInt(cxRaw, 10);
                 const cy = parseInt(cyRaw, 10);
+                if (!Number.isFinite(cx) || !Number.isFinite(cy)) return;
                 const x = this.bucketHoverRegion.gridOriginX + (cx * cellSize);
                 const y = this.bucketHoverRegion.gridOriginY + (cy * cellSize);
-                this.ctx.fillRect(x * mmToPx, y * mmToPx, cellSize * mmToPx, cellSize * mmToPx);
+                const screenPoint = this.mmToCanvasPx(x, y);
+                const screenCellSize = Math.max(0.5, cellSize * screenScale);
+                this.ctx.fillRect(screenPoint.x, screenPoint.y, screenCellSize, screenCellSize);
             });
         } else if (this.bucketHoverRegion?.box) {
+            const screenPoint = this.mmToCanvasPx(this.bucketHoverRegion.box.minX, this.bucketHoverRegion.box.minY);
             this.ctx.fillRect(
-                this.bucketHoverRegion.box.minX * mmToPx,
-                this.bucketHoverRegion.box.minY * mmToPx,
-                (this.bucketHoverRegion.box.maxX - this.bucketHoverRegion.box.minX) * mmToPx,
-                (this.bucketHoverRegion.box.maxY - this.bucketHoverRegion.box.minY) * mmToPx
+                screenPoint.x,
+                screenPoint.y,
+                Math.max(0.5, (this.bucketHoverRegion.box.maxX - this.bucketHoverRegion.box.minX) * screenScale),
+                Math.max(0.5, (this.bucketHoverRegion.box.maxY - this.bucketHoverRegion.box.minY) * screenScale)
             );
         }
         this.ctx.restore();
+    }
+
+    buildRegionCoverageMask(region, preferredCellSize = 1) {
+        if (!region?.box) return null;
+
+        const desiredCellSize = Math.max(0.18, preferredCellSize || 1);
+        if (region.fillCells instanceof Set && Number.isFinite(region.cellSize) && region.cellSize > 0 && region.cellSize <= desiredCellSize * 1.2) {
+            return {
+                originX: region.gridOriginX ?? region.box.minX,
+                originY: region.gridOriginY ?? region.box.minY,
+                cellSize: region.cellSize,
+                cols: Math.max(1, Math.ceil((region.box.maxX - region.box.minX) / region.cellSize)),
+                rows: Math.max(1, Math.ceil((region.box.maxY - region.box.minY) / region.cellSize)),
+                cells: new Set(region.fillCells)
+            };
+        }
+
+        const cellSize = Math.max(0.18, Math.min(desiredCellSize, 1.1));
+        const originX = region.box.minX;
+        const originY = region.box.minY;
+        const cols = Math.max(1, Math.ceil((region.box.maxX - region.box.minX) / cellSize));
+        const rows = Math.max(1, Math.ceil((region.box.maxY - region.box.minY) / cellSize));
+        const cells = new Set();
+
+        for (let cy = 0; cy < rows; cy++) {
+            for (let cx = 0; cx < cols; cx++) {
+                const samples = [
+                    { x: originX + ((cx + 0.5) * cellSize), y: originY + ((cy + 0.5) * cellSize) },
+                    { x: originX + ((cx + 0.25) * cellSize), y: originY + ((cy + 0.5) * cellSize) },
+                    { x: originX + ((cx + 0.75) * cellSize), y: originY + ((cy + 0.5) * cellSize) },
+                    { x: originX + ((cx + 0.5) * cellSize), y: originY + ((cy + 0.25) * cellSize) },
+                    { x: originX + ((cx + 0.5) * cellSize), y: originY + ((cy + 0.75) * cellSize) }
+                ];
+                if (samples.some(sample => region.contains(sample.x, sample.y))) {
+                    cells.add(`${cx},${cy}`);
+                }
+            }
+        }
+
+        return { originX, originY, cellSize, cols, rows, cells };
+    }
+
+    getCoverageMaskComponents(mask) {
+        if (!mask?.cells || !(mask.cells instanceof Set) || !mask.cells.size) return [];
+        const visited = new Set();
+        const components = [];
+        const neighborOffsets = [
+            [1, 0], [-1, 0], [0, 1], [0, -1],
+            [1, 1], [1, -1], [-1, 1], [-1, -1]
+        ];
+
+        mask.cells.forEach(startKey => {
+            if (visited.has(startKey)) return;
+            const queue = [startKey];
+            const keys = new Set();
+            let minCX = Infinity;
+            let minCY = Infinity;
+            let maxCX = -Infinity;
+            let maxCY = -Infinity;
+            visited.add(startKey);
+
+            while (queue.length) {
+                const key = queue.shift();
+                keys.add(key);
+                const [cxRaw, cyRaw] = key.split(',');
+                const cx = parseInt(cxRaw, 10);
+                const cy = parseInt(cyRaw, 10);
+                if (cx < minCX) minCX = cx;
+                if (cy < minCY) minCY = cy;
+                if (cx > maxCX) maxCX = cx;
+                if (cy > maxCY) maxCY = cy;
+
+                neighborOffsets.forEach(([dx, dy]) => {
+                    const nextKey = `${cx + dx},${cy + dy}`;
+                    if (!mask.cells.has(nextKey) || visited.has(nextKey)) return;
+                    visited.add(nextKey);
+                    queue.push(nextKey);
+                });
+            }
+
+            components.push({ keys, minCX, minCY, maxCX, maxCY });
+        });
+
+        return components;
+    }
+
+    ensureLineCoverageRuns(region, runs, options = {}) {
+        if (!region?.box || !Array.isArray(runs) || runs.length === 0) return runs;
+
+        const spacing = Math.max(0.8, options.spacing || 6);
+        const angleDeg = Number.isFinite(options.angle) ? options.angle : 0;
+        const pen = options.pen || 1;
+        const patternName = options.patternName || 'lines';
+        const mask = this.buildRegionCoverageMask(region, Math.max(0.22, Math.min(1.0, spacing / 3)));
+        if (!mask?.cells?.size) return runs;
+
+        const getCellKeyForPoint = (point) => {
+            if (!point) return null;
+            const cx = Math.floor((point.x - mask.originX) / mask.cellSize);
+            const cy = Math.floor((point.y - mask.originY) / mask.cellSize);
+            if (cx < 0 || cy < 0 || cx >= mask.cols || cy >= mask.rows) return null;
+            const key = `${cx},${cy}`;
+            return mask.cells.has(key) ? key : null;
+        };
+
+        const coveredCells = new Set();
+        runs.forEach(run => {
+            const points = Array.isArray(run?.points) ? run.points : run;
+            this.densifyPolyline(points, Math.max(0.18, mask.cellSize * 0.65)).forEach(point => {
+                const key = getCellKeyForPoint(point);
+                if (key) coveredCells.add(key);
+            });
+        });
+
+        const angle = angleDeg * Math.PI / 180;
+        const dx = Math.cos(angle);
+        const dy = Math.sin(angle);
+        const augmentedRuns = runs.slice();
+
+        this.getCoverageMaskComponents(mask).forEach(component => {
+            if (Array.from(component.keys).some(key => coveredCells.has(key))) return;
+
+            const centerX = mask.originX + (((component.minCX + component.maxCX + 1) * 0.5) * mask.cellSize);
+            const centerY = mask.originY + (((component.minCY + component.maxCY + 1) * 0.5) * mask.cellSize);
+            const width = (component.maxCX - component.minCX + 1) * mask.cellSize;
+            const height = (component.maxCY - component.minCY + 1) * mask.cellSize;
+            const length = Math.max(spacing * 0.8, Math.hypot(width, height) + (mask.cellSize * 2));
+            const start = { x: centerX - (dx * length), y: centerY - (dy * length) };
+            const end = { x: centerX + (dx * length), y: centerY + (dy * length) };
+            const clippedRuns = this.clipPolylineToRegion([start, end], region, pen, patternName);
+            if (!clippedRuns.length) return;
+
+            let bestRun = null;
+            let bestScore = -1;
+            clippedRuns.forEach(candidate => {
+                const dense = this.densifyPolyline(candidate.points, Math.max(0.18, mask.cellSize * 0.65));
+                let score = 0;
+                dense.forEach(point => {
+                    const key = getCellKeyForPoint(point);
+                    if (key && component.keys.has(key)) score++;
+                });
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestRun = candidate;
+                }
+            });
+
+            if (!bestRun || bestScore <= 0) return;
+            augmentedRuns.push(bestRun);
+            this.densifyPolyline(bestRun.points, Math.max(0.18, mask.cellSize * 0.65)).forEach(point => {
+                const key = getCellKeyForPoint(point);
+                if (key) coveredCells.add(key);
+            });
+        });
+
+        return augmentedRuns;
     }
 
     generateAngledFillPaths(region, options, variant = 'lines') {
@@ -2387,6 +3101,388 @@ class CanvasManager {
         return created;
     }
 
+    generateSerpentineFillPaths(region, options) {
+        const lineRuns = this.generateAngledFillPaths(region, options, 'lines')
+            .map(path => Array.isArray(path?.points) ? path.points.map(point => ({ x: point.x, y: point.y })) : [])
+            .filter(points => points.length >= 2);
+        return this.stitchFillRunsIntoContinuousPaths(region, lineRuns, {
+            pen: options.pen || 1,
+            fillPattern: 'serpentine',
+            sampleStep: Math.max(0.3, Math.min(1.2, Math.max(0.8, options.spacing || 6) / 3)),
+            spacing: Math.max(0.8, options.spacing || 6)
+        });
+    }
+
+    stitchFillRunsIntoContinuousPaths(region, runs, options = {}) {
+        if (!Array.isArray(runs) || runs.length === 0) return [];
+        const pen = options.pen || 1;
+        const fillPattern = options.fillPattern || 'serpentine';
+        const sampleStep = Math.max(0.2, options.sampleStep || 0.6);
+        const joinSpacing = Math.max(0.8, options.joinSpacing || options.spacing || 6);
+        const maxJoinDistance = joinSpacing * 2;
+        const cleanupJoinDistance = Math.max(0.8, joinSpacing * 1.15);
+        const segments = runs
+            .map((points, index) => ({
+                index,
+                points: points.map(point => ({ x: point.x, y: point.y })),
+                start: points[0],
+                end: points[points.length - 1],
+                centerY: points.reduce((sum, point) => sum + point.y, 0) / points.length
+            }))
+            .filter(segment => segment.points.length >= 2)
+            .sort((a, b) => a.centerY - b.centerY || a.start.x - b.start.x);
+        if (!segments.length) return [];
+
+        const makeEndpointKey = (segmentIndex, side) => `${segmentIndex}:${side}`;
+        const endpointUsage = new Map();
+        const connections = new Map();
+        const acceptedConnectors = [];
+        const parent = segments.map((_, index) => index);
+        const find = (index) => {
+            let cursor = index;
+            while (parent[cursor] !== cursor) {
+                parent[cursor] = parent[parent[cursor]];
+                cursor = parent[cursor];
+            }
+            return cursor;
+        };
+        const unite = (a, b) => {
+            const rootA = find(a);
+            const rootB = find(b);
+            if (rootA !== rootB) parent[rootB] = rootA;
+        };
+        const pointEpsilon = 0.001;
+        const pointsEqual = (left, right, epsilon = pointEpsilon) => {
+            if (!left || !right) return false;
+            return Math.hypot(left.x - right.x, left.y - right.y) <= epsilon;
+        };
+        const orientation = (a, b, c) => {
+            const value = ((b.y - a.y) * (c.x - b.x)) - ((b.x - a.x) * (c.y - b.y));
+            if (Math.abs(value) <= pointEpsilon) return 0;
+            return value > 0 ? 1 : 2;
+        };
+        const onSegment = (a, b, c) => (
+            b.x <= Math.max(a.x, c.x) + pointEpsilon
+            && b.x >= Math.min(a.x, c.x) - pointEpsilon
+            && b.y <= Math.max(a.y, c.y) + pointEpsilon
+            && b.y >= Math.min(a.y, c.y) - pointEpsilon
+        );
+        const segmentsIntersect = (p1, q1, p2, q2) => {
+            const o1 = orientation(p1, q1, p2);
+            const o2 = orientation(p1, q1, q2);
+            const o3 = orientation(p2, q2, p1);
+            const o4 = orientation(p2, q2, q1);
+
+            if (o1 !== o2 && o3 !== o4) return true;
+            if (o1 === 0 && onSegment(p1, p2, q1)) return true;
+            if (o2 === 0 && onSegment(p1, q2, q1)) return true;
+            if (o3 === 0 && onSegment(p2, p1, q2)) return true;
+            if (o4 === 0 && onSegment(p2, q1, q2)) return true;
+            return false;
+        };
+        const buildEdgesFromPoints = (points = []) => {
+            const edges = [];
+            for (let i = 1; i < points.length; i++) {
+                const start = points[i - 1];
+                const end = points[i];
+                if (!start || !end || pointsEqual(start, end)) continue;
+                edges.push({ start, end });
+            }
+            return edges;
+        };
+        const staticEdges = segments.flatMap(segment => buildEdgesFromPoints(segment.points));
+        const connectorCrossesExistingGeometry = (connector, allowedEndpoints = []) => {
+            const connectorEdges = buildEdgesFromPoints(connector);
+            if (!connectorEdges.length) return false;
+            const existingEdges = [
+                ...staticEdges,
+                ...acceptedConnectors.flatMap(points => buildEdgesFromPoints(points))
+            ];
+            return connectorEdges.some(connectorEdge => existingEdges.some(existingEdge => {
+                const sharesAllowedEndpoint = allowedEndpoints.some(endpoint => (
+                    pointsEqual(connectorEdge.start, endpoint)
+                    || pointsEqual(connectorEdge.end, endpoint)
+                    || pointsEqual(existingEdge.start, endpoint)
+                    || pointsEqual(existingEdge.end, endpoint)
+                ));
+                if (sharesAllowedEndpoint) return false;
+                return segmentsIntersect(
+                    connectorEdge.start,
+                    connectorEdge.end,
+                    existingEdge.start,
+                    existingEdge.end
+                );
+            }));
+        };
+        const acceptCandidate = (candidate) => {
+            const endpointKey = makeEndpointKey(candidate.a, candidate.sideA);
+            const targetKey = makeEndpointKey(candidate.b, candidate.sideB);
+            if (endpointUsage.has(endpointKey) || endpointUsage.has(targetKey)) return false;
+            if (find(candidate.a) === find(candidate.b)) return false;
+            const pointA = candidate.sideA === 'start' ? segments[candidate.a].start : segments[candidate.a].end;
+            const pointB = candidate.sideB === 'start' ? segments[candidate.b].start : segments[candidate.b].end;
+            if (connectorCrossesExistingGeometry(candidate.connector, [pointA, pointB])) return false;
+            endpointUsage.set(endpointKey, true);
+            endpointUsage.set(targetKey, true);
+            connections.set(endpointKey, {
+                segmentIndex: candidate.b,
+                side: candidate.sideB,
+                connector: candidate.connector
+            });
+            connections.set(targetKey, {
+                segmentIndex: candidate.a,
+                side: candidate.sideA,
+                connector: candidate.connector.slice().reverse()
+            });
+            acceptedConnectors.push(candidate.connector.map(point => ({ x: point.x, y: point.y })));
+            unite(candidate.a, candidate.b);
+            return true;
+        };
+
+        const candidates = [];
+        for (let i = 0; i < segments.length; i++) {
+            for (let j = i + 1; j < segments.length; j++) {
+                const segmentA = segments[i];
+                const segmentB = segments[j];
+                const endpointPairs = [
+                    ['start', 'start'],
+                    ['start', 'end'],
+                    ['end', 'start'],
+                    ['end', 'end']
+                ];
+                endpointPairs.forEach(([sideA, sideB]) => {
+                    const pointA = sideA === 'start' ? segmentA.start : segmentA.end;
+                    const pointB = sideB === 'start' ? segmentB.start : segmentB.end;
+                    const distance = Math.hypot(pointB.x - pointA.x, pointB.y - pointA.y);
+                    if (distance > maxJoinDistance) return;
+                    const connector = this.sampleLineWithinRegion(pointA, pointB, region, sampleStep);
+                    if (!connector || connector.length < 2) return;
+                    candidates.push({
+                        a: i,
+                        b: j,
+                        sideA,
+                        sideB,
+                        distance,
+                        averageY: (pointA.y + pointB.y) / 2,
+                        connector
+                    });
+                });
+            }
+        }
+
+        const candidatesByEndpoint = new Map();
+        candidates.forEach(candidate => {
+            const keyA = makeEndpointKey(candidate.a, candidate.sideA);
+            if (!candidatesByEndpoint.has(keyA)) candidatesByEndpoint.set(keyA, []);
+            candidatesByEndpoint.get(keyA).push(candidate);
+
+            const reverseCandidate = {
+                a: candidate.b,
+                b: candidate.a,
+                sideA: candidate.sideB,
+                sideB: candidate.sideA,
+                distance: candidate.distance,
+                averageY: candidate.averageY,
+                connector: candidate.connector.slice().reverse()
+            };
+            const keyB = makeEndpointKey(reverseCandidate.a, reverseCandidate.sideA);
+            if (!candidatesByEndpoint.has(keyB)) candidatesByEndpoint.set(keyB, []);
+            candidatesByEndpoint.get(keyB).push(reverseCandidate);
+        });
+
+        const sortedEndpointKeys = Array.from(candidatesByEndpoint.keys()).sort((leftKey, rightKey) => {
+            const [leftIndexRaw, leftSide] = leftKey.split(':');
+            const [rightIndexRaw, rightSide] = rightKey.split(':');
+            const leftSegment = segments[parseInt(leftIndexRaw, 10)];
+            const rightSegment = segments[parseInt(rightIndexRaw, 10)];
+            const leftPoint = leftSide === 'start' ? leftSegment.start : leftSegment.end;
+            const rightPoint = rightSide === 'start' ? rightSegment.start : rightSegment.end;
+            if (Math.abs(leftPoint.y - rightPoint.y) > 0.001) return leftPoint.y - rightPoint.y;
+            return rightPoint.x - leftPoint.x;
+        });
+
+        sortedEndpointKeys.forEach(endpointKey => {
+            if (endpointUsage.has(endpointKey)) return;
+            const [segmentIndexRaw, side] = endpointKey.split(':');
+            const segmentIndex = parseInt(segmentIndexRaw, 10);
+            const segment = segments[segmentIndex];
+            const anchorPoint = side === 'start' ? segment.start : segment.end;
+            const preferredDirection = side === 'end' ? 1 : -1;
+            const candidateList = (candidatesByEndpoint.get(endpointKey) || [])
+                .filter(candidate => {
+                    const targetKey = makeEndpointKey(candidate.b, candidate.sideB);
+                    if (endpointUsage.has(targetKey)) return false;
+                    if (find(candidate.a) === find(candidate.b)) return false;
+                    return true;
+                })
+                .sort((left, right) => {
+                    const leftPoint = left.sideB === 'start' ? segments[left.b].start : segments[left.b].end;
+                    const rightPoint = right.sideB === 'start' ? segments[right.b].start : segments[right.b].end;
+                    const leftDelta = leftPoint.x - anchorPoint.x;
+                    const rightDelta = rightPoint.x - anchorPoint.x;
+                    const leftDirectionScore = preferredDirection > 0 ? (leftDelta >= -0.001 ? 0 : 1) : (leftDelta <= 0.001 ? 0 : 1);
+                    const rightDirectionScore = preferredDirection > 0 ? (rightDelta >= -0.001 ? 0 : 1) : (rightDelta <= 0.001 ? 0 : 1);
+                    if (leftDirectionScore !== rightDirectionScore) return leftDirectionScore - rightDirectionScore;
+                    const leftAxisDistance = Math.abs(leftDelta);
+                    const rightAxisDistance = Math.abs(rightDelta);
+                    if (Math.abs(leftAxisDistance - rightAxisDistance) > 0.001) return leftAxisDistance - rightAxisDistance;
+                    return left.distance - right.distance;
+                });
+
+            const bestCandidate = candidateList[0];
+            if (!bestCandidate) return;
+            acceptCandidate(bestCandidate);
+        });
+
+        const cleanupCandidates = candidates
+            .filter(candidate => candidate.distance <= cleanupJoinDistance)
+            .sort((left, right) => {
+                if (Math.abs(left.distance - right.distance) > 0.001) return left.distance - right.distance;
+                return left.averageY - right.averageY;
+            });
+
+        cleanupCandidates.forEach(candidate => {
+            if (endpointUsage.has(makeEndpointKey(candidate.a, candidate.sideA))) return;
+            if (endpointUsage.has(makeEndpointKey(candidate.b, candidate.sideB))) return;
+            acceptCandidate(candidate);
+        });
+
+        const visitedSegments = new Set();
+        const builtPaths = [];
+        const buildPathFrom = (startIndex, startSide) => {
+            let currentIndex = startIndex;
+            let entrySide = startSide;
+            const points = [];
+            while (!visitedSegments.has(currentIndex)) {
+                visitedSegments.add(currentIndex);
+                const segment = segments[currentIndex];
+                const orientedPoints = entrySide === 'start'
+                    ? segment.points.slice()
+                    : segment.points.slice().reverse();
+                if (points.length === 0) {
+                    points.push(...orientedPoints);
+                } else {
+                    points.push(...orientedPoints.slice(1));
+                }
+
+                const exitSide = entrySide === 'start' ? 'end' : 'start';
+                const connection = connections.get(makeEndpointKey(currentIndex, exitSide));
+                if (!connection || visitedSegments.has(connection.segmentIndex)) break;
+                points.push(...connection.connector.slice(1));
+                entrySide = connection.side === 'start' ? 'start' : 'end';
+                currentIndex = connection.segmentIndex;
+            }
+            return points;
+        };
+
+        for (let i = 0; i < segments.length; i++) {
+            if (visitedSegments.has(i)) continue;
+            const hasStartConnection = connections.has(makeEndpointKey(i, 'start'));
+            const hasEndConnection = connections.has(makeEndpointKey(i, 'end'));
+            const startSide = hasStartConnection && !hasEndConnection ? 'end' : 'start';
+            const points = buildPathFrom(i, startSide);
+            if (points.length >= 2) {
+                builtPaths.push({
+                    type: 'polyline',
+                    points,
+                    pen,
+                    generatedBy: 'bucket-fill',
+                    fillPattern
+                });
+            }
+        }
+
+        const postJoinDistance = Math.max(0.8, joinSpacing * 1.5);
+        const orientChainPoints = (points, targetSide) => {
+            if (!Array.isArray(points) || points.length < 2) return [];
+            return targetSide === 'start'
+                ? points.slice().reverse()
+                : points.slice();
+        };
+        const activeChains = builtPaths.map((path, index) => ({
+            id: index,
+            points: path.points.map(point => ({ x: point.x, y: point.y }))
+        }));
+
+        while (activeChains.length > 1) {
+            const mergeCandidates = [];
+            for (let i = 0; i < activeChains.length; i++) {
+                for (let j = i + 1; j < activeChains.length; j++) {
+                    const chainA = activeChains[i];
+                    const chainB = activeChains[j];
+                    const endpointPairs = [
+                        ['start', 'start'],
+                        ['start', 'end'],
+                        ['end', 'start'],
+                        ['end', 'end']
+                    ];
+                    endpointPairs.forEach(([sideA, sideB]) => {
+                        const pointA = sideA === 'start' ? chainA.points[0] : chainA.points[chainA.points.length - 1];
+                        const pointB = sideB === 'start' ? chainB.points[0] : chainB.points[chainB.points.length - 1];
+                        const distance = Math.hypot(pointB.x - pointA.x, pointB.y - pointA.y);
+                        if (distance > postJoinDistance) return;
+                        const connector = this.sampleLineWithinRegion(pointA, pointB, region, sampleStep);
+                        if (!connector || connector.length < 2) return;
+                        mergeCandidates.push({
+                            indexA: i,
+                            indexB: j,
+                            sideA,
+                            sideB,
+                            distance,
+                            averageY: (pointA.y + pointB.y) / 2,
+                            connector
+                        });
+                    });
+                }
+            }
+
+            mergeCandidates.sort((left, right) => {
+                if (Math.abs(left.distance - right.distance) > 0.001) return left.distance - right.distance;
+                return left.averageY - right.averageY;
+            });
+
+            const bestMerge = mergeCandidates.find(candidate => {
+                const chainA = activeChains[candidate.indexA];
+                const chainB = activeChains[candidate.indexB];
+                if (!chainA || !chainB) return false;
+                const pointA = candidate.sideA === 'start' ? chainA.points[0] : chainA.points[chainA.points.length - 1];
+                const pointB = candidate.sideB === 'start' ? chainB.points[0] : chainB.points[chainB.points.length - 1];
+                return !connectorCrossesExistingGeometry(candidate.connector, [pointA, pointB]);
+            });
+
+            if (!bestMerge) break;
+
+            const chainA = activeChains[bestMerge.indexA];
+            const chainB = activeChains[bestMerge.indexB];
+            const orientedA = orientChainPoints(chainA.points, bestMerge.sideA);
+            const orientedB = bestMerge.sideB === 'start'
+                ? chainB.points.slice()
+                : chainB.points.slice().reverse();
+            const mergedPoints = [
+                ...orientedA,
+                ...bestMerge.connector.slice(1),
+                ...orientedB.slice(1)
+            ];
+            acceptedConnectors.push(bestMerge.connector.map(point => ({ x: point.x, y: point.y })));
+
+            activeChains.splice(bestMerge.indexB, 1);
+            activeChains[bestMerge.indexA] = {
+                id: chainA.id,
+                points: mergedPoints
+            };
+        }
+
+        return activeChains
+            .filter(chain => Array.isArray(chain.points) && chain.points.length >= 2)
+            .map(chain => ({
+                type: 'polyline',
+                points: chain.points,
+                pen,
+                generatedBy: 'bucket-fill',
+                fillPattern
+            }));
+    }
+
     generateCircleFillPaths(region, options) {
         const spacing = Math.max(2, options.spacing || 6);
         const radius = Math.max(0.6, spacing * 0.28);
@@ -2443,6 +3539,25 @@ class CanvasManager {
             }
         }
         return dense;
+    }
+
+    sampleLineWithinRegion(start, end, region, maxStep = 1) {
+        if (!start || !end || !region) return null;
+        const distance = Math.hypot(end.x - start.x, end.y - start.y);
+        const steps = Math.max(1, Math.ceil(distance / Math.max(0.2, maxStep)));
+        const samples = [];
+        for (let step = 0; step <= steps; step++) {
+            const t = step / steps;
+            const point = {
+                x: start.x + ((end.x - start.x) * t),
+                y: start.y + ((end.y - start.y) * t)
+            };
+            if (!region.contains(point.x, point.y)) {
+                return null;
+            }
+            samples.push(point);
+        }
+        return samples;
     }
 
     clipPolylineToRegion(points, region, pen, patternName) {
@@ -2745,6 +3860,8 @@ class CanvasManager {
 
     generateBucketFillPaths(region, options) {
         switch (options.pattern) {
+            case 'serpentine':
+                return this.generateSerpentineFillPaths(region, options);
             case 'crosshatch':
                 return [
                     ...this.generateAngledFillPaths(region, options, 'lines'),
@@ -2778,7 +3895,7 @@ class CanvasManager {
         }
     }
 
-    applyBucketFillAt(xMM, yMM) {
+    async applyBucketFillAt(xMM, yMM) {
         const target = this.getFillTargetAt(xMM, yMM);
         if (!target) {
             if (this.app?.ui) this.app.ui.logToConsole('System: Pattern bucket works on closed shapes only.');
@@ -2791,7 +3908,6 @@ class CanvasManager {
             if (this.app?.ui) this.app.ui.logToConsole('System: No fill paths were generated for that area.');
             return false;
         }
-
         this.ensureUndoCheckpoint();
         const groupId = options.groupPatterns === false ? null : `fill_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
         fillPaths.forEach(path => {
@@ -2953,6 +4069,10 @@ class CanvasManager {
         this.pixelW = rectW;
         this.pixelH = rectH;
         this.scale = scale;
+        this.bedRenderWidthPx = this.bedWidth * scale;
+        this.bedRenderHeightPx = this.bedHeight * scale;
+        this.viewportHorizontalShift = 0;
+        this.viewportVerticalShift = Math.max(0, rectH - this.bedRenderHeightPx);
 
         this.canvas.width = this.pixelW * dpr;
         this.canvas.height = this.pixelH * dpr;
@@ -2960,6 +4080,7 @@ class CanvasManager {
         this.canvas.style.height = `${this.pixelH}px`;
 
         this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // Reset transform and apply DPR
+        this.clearBucketHoverPreview();
     }
 
     draw(immediate = false) {
@@ -3070,7 +4191,7 @@ class CanvasManager {
 
         this.drawPaths();
         if (!showMachineOutput) {
-            this.drawBucketHoverPreview(mmToPx);
+            this.drawBucketHoverPreview();
         }
 
         // Draw Snap Hint
@@ -3415,12 +4536,18 @@ class CanvasManager {
                 const drawLength = Math.min(remainingDistance, segment.length);
                 const penCfg = this.app.ui.visPenConfig[(segment.pen || 1) - 1] || { color: '#3b82f6', thickness: 0.3 };
 
-                if (penCfg.visible === false) continue;
+                if (segment.penDown && penCfg.visible === false) {
+                    remainingDistance -= drawLength;
+                    continue;
+                }
 
-                this.ctx.strokeStyle = penCfg.color;
-                this.ctx.lineWidth = Math.max(0.5, penCfg.thickness * mmToPx);
+                this.ctx.strokeStyle = segment.penDown ? penCfg.color : 'rgba(148, 163, 184, 0.6)';
+                this.ctx.lineWidth = segment.penDown
+                    ? Math.max(0.5, penCfg.thickness * mmToPx)
+                    : Math.max(0.35, 0.18 * mmToPx);
                 this.ctx.shadowColor = 'transparent';
                 this.ctx.shadowBlur = 0;
+                this.ctx.setLineDash(segment.penDown ? [] : [6 / Math.max(1, this.viewZoom), 5 / Math.max(1, this.viewZoom)]);
                 this.ctx.beginPath();
                 this.ctx.moveTo(segment.x1 * mmToPx, segment.y1 * mmToPx);
 
@@ -3436,6 +4563,7 @@ class CanvasManager {
                 this.ctx.stroke();
                 remainingDistance -= drawLength;
             }
+            this.ctx.setLineDash([]);
         }
 
         // Draw Marquee Box on Top
@@ -3744,102 +4872,56 @@ class CanvasManager {
     }
 
     buildSimulationRoute() {
-        const orderedPaths = [];
-        const pens = [...new Set(this.paths.map(p => p.pen || 1))].sort((a, b) => a - b);
-        pens.forEach(penID => {
-            this.paths.forEach(path => {
-                if ((path.pen || 1) === penID) orderedPaths.push(path);
-            });
-        });
-
         const segments = [];
-        const addSegment = (x1, y1, x2, y2, pen) => {
+        const addSegment = (x1, y1, x2, y2, pen, penDown = true) => {
             const length = Math.hypot(x2 - x1, y2 - y1);
             if (!Number.isFinite(length) || length <= 0) return;
-            segments.push({ x1, y1, x2, y2, length, pen: pen || 1 });
+            segments.push({ x1, y1, x2, y2, length, pen: pen || 1, penDown });
         };
 
-        orderedPaths.forEach(path => {
+        const optimizedPlotItems = this.app?.hpgl?.optimizePlotPaths
+            ? this.app.hpgl.optimizePlotPaths(this.paths)
+            : this.paths.map(path => ({ path }));
+
+        let currentPoint = null;
+        optimizedPlotItems.forEach(item => {
+            const path = item.path;
             const pen = path.pen || 1;
-            if (path.type === 'circle') {
-                const steps = 96;
-                let prev = null;
-                for (let i = 0; i <= steps; i++) {
-                    const theta = (i / steps) * Math.PI * 2;
-                    const point = {
-                        x: path.x + Math.cos(theta) * path.r,
-                        y: path.y + Math.sin(theta) * path.r
-                    };
-                    if (prev) addSegment(prev.x, prev.y, point.x, point.y, pen);
-                    prev = point;
-                }
-            } else if (path.type === 'rectangle') {
-                const x = path.x;
-                const y = path.y;
-                const w = path.w || 0;
-                const h = path.h || 0;
-                addSegment(x, y, x + w, y, pen);
-                addSegment(x + w, y, x + w, y + h, pen);
-                addSegment(x + w, y + h, x, y + h, pen);
-                addSegment(x, y + h, x, y, pen);
-            } else if (path.type === 'text') {
-                this.getVectorTextSegments(path).forEach(segment => {
-                    addSegment(segment.x1, segment.y1, segment.x2, segment.y2, pen);
-                });
-            } else if (path.type === 'path' && Array.isArray(path.segments) && path.segments.length > 0) {
-                let currentPoint = null;
-                let subpathStart = null;
+            let tracePoints = Array.isArray(item.plotPoints) && item.plotPoints.length >= 2
+                ? item.plotPoints
+                : null;
 
-                const sampleCurve = (pointAt, steps = 24) => {
-                    if (!currentPoint) return;
-                    let prev = { ...currentPoint };
-                    for (let step = 1; step <= steps; step++) {
-                        const t = step / steps;
-                        const next = pointAt(t);
-                        addSegment(prev.x, prev.y, next.x, next.y, pen);
-                        prev = next;
+            if (!tracePoints || tracePoints.length < 2) {
+                if (path.type === 'circle' || path.type === 'rectangle' || path.type === 'line' || path.type === 'polyline' || path.type === 'path') {
+                    tracePoints = this.app?.hpgl?.getExportTracePointsForPath?.(path) || null;
+                } else if (path.type === 'text') {
+                    const textSegments = this.getVectorTextSegments(path);
+                    if (Array.isArray(textSegments) && textSegments.length > 0) {
+                        textSegments.forEach(segment => {
+                            const start = { x: segment.x1, y: segment.y1 };
+                            const end = { x: segment.x2, y: segment.y2 };
+                            if (currentPoint && Math.hypot(currentPoint.x - start.x, currentPoint.y - start.y) > 0.001) {
+                                addSegment(currentPoint.x, currentPoint.y, start.x, start.y, pen, false);
+                            }
+                            addSegment(start.x, start.y, end.x, end.y, pen, true);
+                            currentPoint = end;
+                        });
                     }
-                    currentPoint = prev;
-                };
-
-                path.segments.forEach(segment => {
-                    if (segment.type === 'M') {
-                        currentPoint = { x: segment.x, y: segment.y };
-                        subpathStart = { ...currentPoint };
-                    } else if (segment.type === 'L') {
-                        if (currentPoint) addSegment(currentPoint.x, currentPoint.y, segment.x, segment.y, pen);
-                        currentPoint = { x: segment.x, y: segment.y };
-                    } else if (segment.type === 'C') {
-                        const start = currentPoint ? { ...currentPoint } : { x: segment.x, y: segment.y };
-                        sampleCurve((t) => {
-                            const mt = 1 - t;
-                            return {
-                                x: (mt ** 3) * start.x + 3 * (mt ** 2) * t * segment.x1 + 3 * mt * (t ** 2) * segment.x2 + (t ** 3) * segment.x,
-                                y: (mt ** 3) * start.y + 3 * (mt ** 2) * t * segment.y1 + 3 * mt * (t ** 2) * segment.y2 + (t ** 3) * segment.y
-                            };
-                        }, 28);
-                    } else if (segment.type === 'Q') {
-                        const start = currentPoint ? { ...currentPoint } : { x: segment.x, y: segment.y };
-                        sampleCurve((t) => {
-                            const mt = 1 - t;
-                            return {
-                                x: (mt ** 2) * start.x + 2 * mt * t * segment.x1 + (t ** 2) * segment.x,
-                                y: (mt ** 2) * start.y + 2 * mt * t * segment.y1 + (t ** 2) * segment.y
-                            };
-                        }, 24);
-                    } else if (segment.type === 'A') {
-                        if (currentPoint) addSegment(currentPoint.x, currentPoint.y, segment.x, segment.y, pen);
-                        currentPoint = { x: segment.x, y: segment.y };
-                    } else if (segment.type === 'Z' && currentPoint && subpathStart) {
-                        addSegment(currentPoint.x, currentPoint.y, subpathStart.x, subpathStart.y, pen);
-                        currentPoint = { ...subpathStart };
-                    }
-                });
-            } else if (path.points && path.points.length >= 2) {
-                for (let i = 1; i < path.points.length; i++) {
-                    addSegment(path.points[i - 1].x, path.points[i - 1].y, path.points[i].x, path.points[i].y, pen);
+                    return;
                 }
             }
+
+            if (!Array.isArray(tracePoints) || tracePoints.length < 2) return;
+
+            const firstPoint = tracePoints[0];
+            if (currentPoint && Math.hypot(currentPoint.x - firstPoint.x, currentPoint.y - firstPoint.y) > 0.001) {
+                addSegment(currentPoint.x, currentPoint.y, firstPoint.x, firstPoint.y, pen, false);
+            }
+
+            for (let i = 1; i < tracePoints.length; i++) {
+                addSegment(tracePoints[i - 1].x, tracePoints[i - 1].y, tracePoints[i].x, tracePoints[i].y, pen, true);
+            }
+            currentPoint = tracePoints[tracePoints.length - 1];
         });
 
         return segments;

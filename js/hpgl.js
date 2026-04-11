@@ -46,6 +46,136 @@ class HpglParser {
         return points.map(point => this.transformOutputPoint(point.x, point.y));
     }
 
+    transformSvgExportPoint(xMM, yMM) {
+        return { x: xMM, y: yMM };
+    }
+
+    transformSvgExportPoints(points = []) {
+        return points.map(point => this.transformSvgExportPoint(point.x, point.y));
+    }
+
+    escapeSvgText(value = '') {
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    }
+
+    buildSvgPathDataFromPolygon(points = []) {
+        if (!Array.isArray(points) || points.length < 3) return '';
+        const validPoints = points.filter(point => Number.isFinite(point?.x) && Number.isFinite(point?.y));
+        if (validPoints.length < 3) return '';
+        const commands = [`M ${validPoints[0].x.toFixed(3)} ${validPoints[0].y.toFixed(3)}`];
+        for (let i = 1; i < validPoints.length; i++) {
+            commands.push(`L ${validPoints[i].x.toFixed(3)} ${validPoints[i].y.toFixed(3)}`);
+        }
+        commands.push('Z');
+        return commands.join(' ');
+    }
+
+    buildSvgPathDataFromRegion(region) {
+        if (!Array.isArray(region?.polygon) || region.polygon.length < 3) return '';
+        const outerPath = this.buildSvgPathDataFromPolygon(this.transformSvgExportPoints(region.polygon));
+        if (!outerPath) return '';
+        const holePaths = Array.isArray(region.holePolygons)
+            ? region.holePolygons
+                .map(polygon => this.buildSvgPathDataFromPolygon(this.transformSvgExportPoints(polygon)))
+                .filter(Boolean)
+            : [];
+        return [outerPath, ...holePaths].join(' ');
+    }
+
+    getFillDebugColor(index = 0, alpha = 0.22) {
+        const hue = (index * 57) % 360;
+        return `hsla(${hue}, 80%, 55%, ${alpha})`;
+    }
+
+    exportFillDebugSVG(paths, canvasManager = null) {
+        const canvas = canvasManager || this.app?.canvas;
+        if (!canvas || !paths || paths.length === 0) {
+            this.app.ui.logToConsole('System: No paths to export.');
+            return '';
+        }
+
+        const bedWidth = this.app?.settings?.bedWidth || canvas?.bedWidth || 432;
+        const bedHeight = this.app?.settings?.bedHeight || canvas?.bedHeight || 297;
+        const regions = Array.isArray(canvas?.getClosedFillRegions?.()) ? canvas.getClosedFillRegions() : [];
+        const hoverRegion = canvas?.bucketHoverRegion || null;
+        const hoverRegionId = hoverRegion?.regionId || '';
+        const elements = [
+            `<rect x="0" y="0" width="${bedWidth}" height="${bedHeight}" fill="#ffffff" />`
+        ];
+
+        const sourceElements = [];
+        paths.forEach(path => {
+            const pen = path.pen || 1;
+            const penCfg = this.app?.ui?.visPenConfig?.[pen - 1];
+            if (penCfg && penCfg.visible === false) return;
+
+            const stroke = penCfg?.color || '#7c3aed';
+            const strokeWidth = Math.max(0.08, (penCfg?.thickness || 0.3) * 0.65);
+
+            if (path.type === 'circle') {
+                const center = this.transformSvgExportPoint(path.x, path.y);
+                sourceElements.push(`<circle cx="${center.x.toFixed(3)}" cy="${center.y.toFixed(3)}" r="${(path.r || 0).toFixed(3)}" fill="none" stroke="${stroke}" stroke-width="${strokeWidth.toFixed(3)}" opacity="0.85" />`);
+                return;
+            }
+
+            if (path.type === 'rectangle') {
+                const points = this.transformSvgExportPoints(this.getRectanglePoints(path.x, path.y, path.x + (path.w || 0), path.y + (path.h || 0)));
+                sourceElements.push(`<polyline points="${points.map(point => `${point.x.toFixed(3)},${point.y.toFixed(3)}`).join(' ')}" fill="none" stroke="${stroke}" stroke-width="${strokeWidth.toFixed(3)}" opacity="0.85" />`);
+                return;
+            }
+
+            const points = this.getExportTracePointsForPath(path);
+            if (!points || points.length < 2) return;
+            const transformedPoints = this.transformSvgExportPoints(points);
+            sourceElements.push(`<polyline points="${transformedPoints.map(point => `${point.x.toFixed(3)},${point.y.toFixed(3)}`).join(' ')}" fill="none" stroke="${stroke}" stroke-width="${strokeWidth.toFixed(3)}" opacity="0.85" />`);
+        });
+        if (sourceElements.length) {
+            elements.push(`<g id="source-geometry">${sourceElements.join('\n')}</g>`);
+        }
+
+        const regionElements = [];
+        const labelElements = [];
+        regions.forEach((region, index) => {
+            const pathData = this.buildSvgPathDataFromRegion(region);
+            if (!pathData) return;
+            const isHoverRegion = hoverRegionId && hoverRegionId === (region.regionId || '');
+            const fill = this.getFillDebugColor(index, isHoverRegion ? 0.3 : 0.18);
+            const stroke = isHoverRegion ? '#0ea5e9' : (region.isEmbeddedLoop ? '#f97316' : '#2563eb');
+            const strokeWidth = isHoverRegion ? 0.8 : 0.35;
+            regionElements.push(`<path d="${pathData}" fill="${fill}" fill-rule="evenodd" stroke="${stroke}" stroke-width="${strokeWidth.toFixed(3)}" vector-effect="non-scaling-stroke" />`);
+
+            const labelSource = canvas?.getPolygonInteriorPoint?.(region.polygon);
+            if (labelSource && Number.isFinite(labelSource.x) && Number.isFinite(labelSource.y)) {
+                const labelPoint = this.transformSvgExportPoint(labelSource.x, labelSource.y);
+                const label = this.escapeSvgText(`${index + 1}: ${region.regionId || `p${region.pathIdx}`}`);
+                labelElements.push(`<text x="${labelPoint.x.toFixed(3)}" y="${labelPoint.y.toFixed(3)}" font-size="3.2" fill="${isHoverRegion ? '#075985' : '#111827'}" stroke="#ffffff" stroke-width="0.35" paint-order="stroke fill">${label}</text>`);
+            }
+        });
+        if (regionElements.length) {
+            elements.push(`<g id="fill-regions">${regionElements.join('\n')}</g>`);
+        }
+        if (labelElements.length) {
+            elements.push(`<g id="fill-region-labels">${labelElements.join('\n')}</g>`);
+        }
+
+        const summaryLines = [
+            `Detected fill regions: ${regions.length}`,
+            hoverRegionId ? `Hovered target: ${hoverRegionId}` : 'Hovered target: none'
+        ];
+        elements.push(`<g id="debug-summary"><rect x="4" y="4" width="90" height="${(summaryLines.length * 5) + 6}" fill="rgba(255,255,255,0.88)" stroke="#cbd5e1" stroke-width="0.3" />${summaryLines.map((line, index) => `<text x="7" y="${10 + (index * 5)}" font-size="3.2" fill="#111827">${this.escapeSvgText(line)}</text>`).join('')}</g>`);
+
+        return [
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            `<svg xmlns="http://www.w3.org/2000/svg" version="1.1" viewBox="0 0 ${bedWidth} ${bedHeight}" width="${bedWidth}mm" height="${bedHeight}mm">`,
+            ...elements,
+            '</svg>'
+        ].join('\n');
+    }
+
     transformOutputRotation(rotation = 0) {
         const { horizontal, vertical } = this.getOutputFlipSettings();
         const radians = (rotation || 0) * (Math.PI / 180);
@@ -387,7 +517,10 @@ class HpglParser {
     }
 
     pathContainsText(paths = []) {
-        return paths.some(path => path && path.type === 'text');
+        return paths.some(entry => {
+            const path = entry?.path || entry;
+            return path && path.type === 'text';
+        });
     }
 
     buildHpglHeader(paths = []) {
@@ -483,19 +616,13 @@ class HpglParser {
             return "";
         }
 
-        // 1. Group paths by pen to minimize pen changes
-        const groupedPaths = [];
-        const pens = [...new Set(paths.map(p => p.pen || 1))].sort((a, b) => a - b);
-        pens.forEach(penID => {
-            paths.forEach(p => {
-                if ((p.pen || 1) === penID) groupedPaths.push(p);
-            });
-        });
+        const groupedPaths = this.optimizePlotPaths(paths);
 
         let hpglCommands = this.buildHpglHeader(groupedPaths);
         let lastPen = -1;
 
-        groupedPaths.forEach(p => {
+        groupedPaths.forEach(item => {
+            const p = item.path;
             const reqPen = p.pen || 1;
 
             // Check if this pen layer is currently hidden
@@ -518,9 +645,11 @@ class HpglParser {
                     this.generateRectangle(p.x, p.y, p.x + (p.w || 0), p.y + (p.h || 0))
                 );
             } else if (p.type === 'line' || p.type === 'polyline' || p.type === 'path') {
-                const pts = p.points;
+                const pts = Array.isArray(item.plotPoints) && item.plotPoints.length >= 2
+                    ? item.plotPoints
+                    : this.getTracePointsForPath(p);
                 if (pts && pts.length >= 2) {
-                    if (this.pathShouldUseCurve(p)) {
+                    if (!item.plotPoints && this.pathShouldUseCurve(p)) {
                         hpglCommands = hpglCommands.concat(this.generateCurve(pts, this.isClosedPath(p)));
                         hpglCommands.push('PU;');
                     } else {
@@ -532,6 +661,163 @@ class HpglParser {
 
         hpglCommands.push("SP0;"); // Pen home
         return hpglCommands.join("\n");
+    }
+
+    getPathRepresentativePoint(path, tracePoints = null) {
+        if (Array.isArray(tracePoints) && tracePoints.length > 0) {
+            return tracePoints[0];
+        }
+        if (path?.type === 'circle') {
+            return { x: path.x + (path.r || 0), y: path.y };
+        }
+        if (path?.type === 'rectangle') {
+            return { x: path.x, y: path.y };
+        }
+        if (path?.type === 'text') {
+            return { x: path.x || 0, y: path.y || 0 };
+        }
+        if (Array.isArray(path?.points) && path.points.length > 0) {
+            return path.points[0];
+        }
+        return { x: 0, y: 0 };
+    }
+
+    isPathReversibleForPlot(path, tracePoints = null) {
+        if (!path || !['line', 'polyline', 'path'].includes(path.type)) return false;
+        if (this.isClosedPath(path)) return false;
+        return Array.isArray(tracePoints) && tracePoints.length >= 2;
+    }
+
+    orientPlotItemFromPoint(item, currentPoint = null) {
+        const tracePoints = Array.isArray(item.tracePoints) ? item.tracePoints : [];
+        const reversible = item.reversible === true;
+        if (!tracePoints.length) {
+            const point = this.getPathRepresentativePoint(item.path, tracePoints);
+            return {
+                path: item.path,
+                plotPoints: null,
+                startPoint: point,
+                endPoint: point
+            };
+        }
+
+        const forwardStart = tracePoints[0];
+        const forwardEnd = tracePoints[tracePoints.length - 1];
+        if (!reversible || !currentPoint) {
+            return {
+                path: item.path,
+                plotPoints: tracePoints,
+                startPoint: forwardStart,
+                endPoint: forwardEnd
+            };
+        }
+
+        const distanceToStart = Math.hypot((forwardStart.x || 0) - currentPoint.x, (forwardStart.y || 0) - currentPoint.y);
+        const distanceToEnd = Math.hypot((forwardEnd.x || 0) - currentPoint.x, (forwardEnd.y || 0) - currentPoint.y);
+        if (distanceToEnd + 0.001 < distanceToStart) {
+            const reversed = tracePoints.slice().reverse();
+            return {
+                path: item.path,
+                plotPoints: reversed,
+                startPoint: reversed[0],
+                endPoint: reversed[reversed.length - 1]
+            };
+        }
+
+        return {
+            path: item.path,
+            plotPoints: tracePoints,
+            startPoint: forwardStart,
+            endPoint: forwardEnd
+        };
+    }
+
+    optimizePlotUnitItems(items = [], currentPoint = null) {
+        const remaining = items.slice();
+        const ordered = [];
+        let cursor = currentPoint;
+        while (remaining.length > 0) {
+            let bestIndex = 0;
+            let bestCandidate = null;
+            let bestScore = Infinity;
+
+            remaining.forEach((item, index) => {
+                const candidate = this.orientPlotItemFromPoint(item, cursor);
+                const anchor = cursor || { x: 0, y: 0 };
+                const distance = Math.hypot((candidate.startPoint.x || 0) - anchor.x, (candidate.startPoint.y || 0) - anchor.y);
+                const tieBreaker = ((candidate.startPoint.y || 0) * 10000) + (candidate.startPoint.x || 0);
+                const score = (distance * 1000000) + tieBreaker;
+                if (score < bestScore) {
+                    bestScore = score;
+                    bestIndex = index;
+                    bestCandidate = candidate;
+                }
+            });
+
+            const [selected] = remaining.splice(bestIndex, 1);
+            ordered.push(bestCandidate || this.orientPlotItemFromPoint(selected, cursor));
+            cursor = ordered[ordered.length - 1].endPoint;
+        }
+
+        return {
+            items: ordered,
+            entryPoint: ordered[0]?.startPoint || currentPoint || { x: 0, y: 0 },
+            exitPoint: ordered[ordered.length - 1]?.endPoint || currentPoint || { x: 0, y: 0 }
+        };
+    }
+
+    optimizePlotPaths(paths = []) {
+        if (!Array.isArray(paths) || paths.length === 0) return [];
+
+        const visiblePaths = paths.filter(path => {
+            const penCfg = this.app?.ui?.visPenConfig?.[(path?.pen || 1) - 1];
+            return !(penCfg && penCfg.visible === false);
+        });
+
+        const optimized = [];
+        const pens = [...new Set(visiblePaths.map(path => path.pen || 1))].sort((a, b) => a - b);
+        pens.forEach(penID => {
+            const penPaths = visiblePaths.filter(path => (path.pen || 1) === penID);
+            const unitMap = new Map();
+            penPaths.forEach((path, index) => {
+                const tracePoints = this.getExportTracePointsForPath(path);
+                const reversible = this.isPathReversibleForPlot(path, tracePoints);
+                const groupKey = path?.groupId ? `group:${path.groupId}` : `path:${index}`;
+                if (!unitMap.has(groupKey)) {
+                    unitMap.set(groupKey, []);
+                }
+                unitMap.get(groupKey).push({
+                    path,
+                    tracePoints,
+                    reversible
+                });
+            });
+
+            const remainingUnits = Array.from(unitMap.values());
+            let cursor = { x: 0, y: 0 };
+            while (remainingUnits.length > 0) {
+                let bestIndex = 0;
+                let bestOptimizedUnit = null;
+                let bestDistance = Infinity;
+                remainingUnits.forEach((unitItems, index) => {
+                    const optimizedUnit = this.optimizePlotUnitItems(unitItems, cursor);
+                    const entry = optimizedUnit.entryPoint || cursor;
+                    const distance = Math.hypot((entry.x || 0) - cursor.x, (entry.y || 0) - cursor.y);
+                    if (distance < bestDistance) {
+                        bestDistance = distance;
+                        bestIndex = index;
+                        bestOptimizedUnit = optimizedUnit;
+                    }
+                });
+
+                const [selectedUnit] = remainingUnits.splice(bestIndex, 1);
+                const optimizedUnit = bestOptimizedUnit || this.optimizePlotUnitItems(selectedUnit, cursor);
+                optimized.push(...optimizedUnit.items);
+                cursor = optimizedUnit.exitPoint || cursor;
+            }
+        });
+
+        return optimized;
     }
 
     getExportTracePointsForPath(path) {
@@ -565,11 +851,14 @@ class HpglParser {
             `G0 Z${zUp}`
         ];
 
-        paths.forEach(path => {
+        this.optimizePlotPaths(paths).forEach(item => {
+            const path = item.path;
             const penCfg = this.app?.ui?.visPenConfig?.[(path.pen || 1) - 1];
             if (penCfg && penCfg.visible === false) return;
 
-            const tracePoints = this.getExportTracePointsForPath(path);
+            const tracePoints = Array.isArray(item.plotPoints) && item.plotPoints.length >= 2
+                ? item.plotPoints
+                : this.getExportTracePointsForPath(path);
             if (!tracePoints || tracePoints.length < 2) return;
 
             const transformedPoints = this.transformOutputPoints(tracePoints);
@@ -608,32 +897,32 @@ class HpglParser {
             const strokeWidth = Math.max(0.1, penCfg?.thickness || 0.3);
 
             if (path.type === 'circle') {
-                const center = this.transformOutputPoint(path.x, path.y);
+                const center = this.transformSvgExportPoint(path.x, path.y);
                 elements.push(`<circle cx="${center.x.toFixed(3)}" cy="${center.y.toFixed(3)}" r="${(path.r || 0).toFixed(3)}" fill="none" stroke="${stroke}" stroke-width="${strokeWidth.toFixed(3)}" />`);
                 return;
             }
 
             if (path.type === 'rectangle') {
-                const points = this.transformOutputPoints(this.getRectanglePoints(path.x, path.y, path.x + (path.w || 0), path.y + (path.h || 0)));
+                const points = this.transformSvgExportPoints(this.getRectanglePoints(path.x, path.y, path.x + (path.w || 0), path.y + (path.h || 0)));
                 elements.push(`<polyline points="${points.map(point => `${point.x.toFixed(3)},${point.y.toFixed(3)}`).join(' ')}" fill="none" stroke="${stroke}" stroke-width="${strokeWidth.toFixed(3)}" />`);
                 return;
             }
 
             if (path.type === 'text') {
-                const point = this.transformOutputPoint(path.x, path.y);
+                const point = this.transformSvgExportPoint(path.x, path.y);
                 const safeText = String(path.text || '')
                     .replace(/&/g, '&amp;')
                     .replace(/</g, '&lt;')
                     .replace(/>/g, '&gt;')
                     .replace(/"/g, '&quot;');
-                const rotation = this.transformOutputRotation(path.rotation || 0);
+                const rotation = path.rotation || 0;
                 elements.push(`<text x="${point.x.toFixed(3)}" y="${point.y.toFixed(3)}" font-size="${(path.fontSize || 10).toFixed(3)}" fill="none" stroke="${stroke}" stroke-width="${Math.max(0.1, strokeWidth * 0.35).toFixed(3)}" transform="rotate(${rotation} ${point.x.toFixed(3)} ${point.y.toFixed(3)})">${safeText}</text>`);
                 return;
             }
 
             const points = this.getExportTracePointsForPath(path);
             if (!points || points.length < 2) return;
-            const transformedPoints = this.transformOutputPoints(points);
+            const transformedPoints = this.transformSvgExportPoints(points);
             elements.push(`<polyline points="${transformedPoints.map(point => `${point.x.toFixed(3)},${point.y.toFixed(3)}`).join(' ')}" fill="none" stroke="${stroke}" stroke-width="${strokeWidth.toFixed(3)}" />`);
         });
 
@@ -657,20 +946,14 @@ class HpglParser {
             return false;
         }
 
-        // 1. Group paths by pen to minimize pen changes
-        const groupedPaths = [];
-        const pens = [...new Set(paths.map(p => p.pen || 1))].sort((a, b) => a - b);
-        pens.forEach(penID => {
-            paths.forEach(p => {
-                if ((p.pen || 1) === penID) groupedPaths.push(p);
-            });
-        });
+        const groupedPaths = this.optimizePlotPaths(paths);
 
         let hpglQueue = this.buildHpglHeader(groupedPaths);
         let commandsFound = 0;
         let lastPen = -1;
 
-        groupedPaths.forEach(p => {
+        groupedPaths.forEach(item => {
+            const p = item.path;
             const reqPen = p.pen || 1;
 
             // Check if this pen layer is currently hidden
@@ -698,7 +981,9 @@ class HpglParser {
                 );
                 commandsFound++;
             } else if (p.type === 'line' || p.type === 'polyline' || p.type === 'path') {
-                const pts = this.getTracePointsForPath(p);
+                const pts = Array.isArray(item.plotPoints) && item.plotPoints.length >= 2
+                    ? item.plotPoints
+                    : this.getTracePointsForPath(p);
                 if (pts && pts.length >= 2) {
                     hpglQueue = hpglQueue.concat(this.generatePolylineStreamCommands(pts));
                     commandsFound += pts.length;
@@ -755,6 +1040,14 @@ class HpglParser {
         const assignedPen = Math.min(penCount, colorPenMap.size + 1);
         colorPenMap.set(colorKey, assignedPen);
         return assignedPen;
+    }
+
+    isClosedPointLoop(points = [], tolerance = 0.5) {
+        if (!Array.isArray(points) || points.length < 3) return false;
+        const first = points[0];
+        const last = points[points.length - 1];
+        if (!first || !last) return false;
+        return Math.hypot((last.x || 0) - (first.x || 0), (last.y || 0) - (first.y || 0)) <= tolerance;
     }
 
     // Convert an SVG file content into HPGL
@@ -835,7 +1128,11 @@ class HpglParser {
                 if (segment && typeof segment === 'object' && !Array.isArray(segment)) {
                     allPaths.push({ ...segment, sourceColor });
                 } else {
-                    allPaths.push({ points: ptsArr, sourceColor });
+                    allPaths.push({
+                        points: ptsArr,
+                        sourceColor,
+                        closed: this.isClosedPointLoop(ptsArr)
+                    });
                 }
             });
 
@@ -910,6 +1207,7 @@ class HpglParser {
                 type: scaledSegments ? 'path' : 'polyline',
                 points: scaledPoly,
                 segments: scaledSegments,
+                closed: poly.closed === true || this.isClosedPointLoop(scaledPoly),
                 pen: assignedPen,
                 groupId,
                 sourceColor: poly.sourceColor || null
@@ -2144,6 +2442,7 @@ class HpglParser {
                 const pathObj = {
                     type: scaledSegments ? 'path' : 'polyline',
                     points: scaledPoly,
+                    closed: poly.closed === true || this.isClosedPointLoop(scaledPoly),
                     pen: visPen,
                     groupId
                 };

@@ -360,6 +360,11 @@ class App {
                         content: this.hpgl.exportSVG(this.canvas.paths),
                         extension: 'svg',
                         label: 'SVG'
+                    }),
+                    'fill-debug-svg': () => ({
+                        content: this.hpgl.exportFillDebugSVG(this.canvas.paths, this.canvas),
+                        extension: 'svg',
+                        label: 'Fill Debug SVG'
                     })
                 };
                 const exporter = exporters[exportFormat] || exporters.hpgl;
