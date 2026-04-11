@@ -114,23 +114,23 @@ If you want a modern Roland DXY controller in the browser, this project provides
 
 ## Project Structure
 
-- [index.html](C:/Users/myles/OneDrive/NEWTech/Roland/WEB interface v2/index.html)  
+- `index.html`  
   Main app layout and panels
-- [css/main.css](C:/Users/myles/OneDrive/NEWTech/Roland/WEB interface v2/css/main.css)  
+- `css/main.css`  
   Application styling
-- [js/app.js](C:/Users/myles/OneDrive/NEWTech/Roland/WEB interface v2/js/app.js)  
+- `js/app.js`  
   App bootstrapping and settings
-- [js/ui.js](C:/Users/myles/OneDrive/NEWTech/Roland/WEB interface v2/js/ui.js)  
+- `js/ui.js`  
   UI control wiring and panel behavior
-- [js/canvas.js](C:/Users/myles/OneDrive/NEWTech/Roland/WEB interface v2/js/canvas.js)  
+- `js/canvas.js`  
   Drawing engine, editing tools, simulation, bucket fill, and preview
-- [js/serial.js](C:/Users/myles/OneDrive/NEWTech/Roland/WEB interface v2/js/serial.js)  
+- `js/serial.js`  
   Serial communication and live run logic
-- [js/hpgl.js](C:/Users/myles/OneDrive/NEWTech/Roland/WEB interface v2/js/hpgl.js)  
+- `js/hpgl.js`  
   HPGL parsing, generation, and export
-- [js/image-vector](C:/Users/myles/OneDrive/NEWTech/Roland/WEB interface v2/js/image-vector)  
+- `js/image-vector`  
   Image vectorisation tools
-- [js/handwriting](C:/Users/myles/OneDrive/NEWTech/Roland/WEB interface v2/js/handwriting)  
+- `js/handwriting`  
   Handwriting generation tools
 
 ## Compatibility
