@@ -155,17 +155,6 @@ This is an actively evolving creative tool. Features and behavior are still bein
 - 3D vector tooling
 - imported vector edge cases
 
-## Roadmap Ideas
-
-- More refined handwriting alphabets and styles
-- Additional plotter-safe fill and hatch strategies
-- Continued Live Tracker improvements and overlay tooling
-- Further plot-order optimization and smarter travel reduction
-- Expanded 3D vector tool workflow
-- Better project import/export options
-- More machine presets and hardware setup helpers
-- Further optimization for large or complex plots
-
 ## Credits
 
 Created by NEWTech Creative
