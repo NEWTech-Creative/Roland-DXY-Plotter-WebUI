@@ -25,6 +25,7 @@ class App {
             simBackgroundOpacity: 0.25,
             paperSize: 'A3',
             customPaperSizes: [],
+            creativePanelsTabbed: true,
             panelVisibility: {
                 'panel-connection': true,
                 'panel-machine-jog': true,
@@ -50,6 +51,16 @@ class App {
     init() {
         this.ui.initGridStack();
         this.ui.initPenSlots();
+        if (typeof CreativeTextEngine !== 'undefined') {
+            void CreativeTextEngine.hydratePersistedFonts().then((restoredFonts) => {
+                if (restoredFonts.length > 0) {
+                    this.ui.refreshCreativeFontOptions?.();
+                    this.ui.refreshTextToolMenuState?.();
+                    this.canvas.draw?.();
+                    this.ui.logToConsole(`System: Restored ${restoredFonts.length} cached creative font(s).`);
+                }
+            });
+        }
 
         const modelSelect = document.getElementById('sel-model');
         if (modelSelect) {
@@ -360,11 +371,6 @@ class App {
                         content: this.hpgl.exportSVG(this.canvas.paths),
                         extension: 'svg',
                         label: 'SVG'
-                    }),
-                    'fill-debug-svg': () => ({
-                        content: this.hpgl.exportFillDebugSVG(this.canvas.paths, this.canvas),
-                        extension: 'svg',
-                        label: 'Fill Debug SVG'
                     })
                 };
                 const exporter = exporters[exportFormat] || exporters.hpgl;
@@ -387,6 +393,7 @@ class App {
         document.getElementById('btn-simulate').addEventListener('click', () => {
             this.canvas.startSimulation();
         });
+        this.canvas.refreshSimulationButton();
 
         document.getElementById('btn-simulate-speed').addEventListener('click', (e) => {
             if (!this.canvas.simulationSpeedMultiplier) this.canvas.simulationSpeedMultiplier = 1;

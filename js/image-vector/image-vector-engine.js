@@ -1,5 +1,6 @@
 class ImageVectorEngine {
-    constructor() {
+    constructor(app = null) {
+        this.app = app;
         this.imageData = null;
         this.width = 0;
         this.height = 0;
@@ -8,6 +9,8 @@ class ImageVectorEngine {
         this.lineCache = null;           // Cache for string art lines
         this.lastPinCount = -1;
         this.lastSamplingStep = -1;
+        this.traceWorker = null;
+        this.traceWorkerUrl = null;
     }
 
     setImageData(imageData, channel = 'bw') {
@@ -110,7 +113,7 @@ class ImageVectorEngine {
         this.brightnessMap = new Float32Array(this.sourceBrightnessMap);
 
         // 2. Apply contrast if requested
-        const contrast = params.contrast || 50; // 0-100
+        const contrast = Number.isFinite(Number(params.contrast)) ? Number(params.contrast) : 50; // 0-100
         if (contrast !== 50) {
             this._applyContrast(contrast);
         } else {
@@ -123,11 +126,17 @@ class ImageVectorEngine {
         this.currentLayerIndex = params.layerIndex || 0;
 
         switch (method) {
+            case 'trace': return await this.generateTrace(params);
             case 'contour': return this.generateContours(params);
             case 'hatch': return this.generateHatch(params);
             case 'spiral': return this.generateSpiral(params);
+            case 'squiggle': return this.generateSquiggle(params);
             case 'wave': return this.generateWaves(params);
+            case 'longwave': return this.generateLongWave(params);
             case 'stipple': return this.generateStippling(params);
+            case 'dots': return this.generateDots(params);
+            case 'mosaic': return this.generateMosaic(params);
+            case 'woven': return this.generateWoven(params);
             case 'flow': return this.generateFlowField(params);
             case 'shape': return this.generateShapeReplacement(params);
             case 'voronoi': return this.generateVoronoi(params);
@@ -135,6 +144,177 @@ class ImageVectorEngine {
             case 'string': return await this.generateStringArt(params);
             default: return [];
         }
+    }
+
+    async generateTrace(params = {}) {
+        if (!this.imageData || !this.app?.hpgl?.parsePathData) return [];
+
+        const preparedImageData = this._prepareTraceImageData(params);
+        const traceResult = await this._runTraceWorker(preparedImageData, {
+            turdsize: Math.max(0, Math.round(params.traceSpeckle ?? 4)),
+            alphamax: this._mapTraceCornerSmoothness(params.traceCornerSmooth ?? 100),
+            turnpolicy: 4,
+            opttolerance: this._mapTraceSimplify(params.simplify ?? 10),
+            opticurve: 1,
+            extractcolors: false,
+            pathonly: true
+        });
+
+        const pathStrings = Array.isArray(traceResult)
+            ? traceResult
+            : (typeof traceResult === 'string' ? [traceResult] : []);
+
+        const tracedPaths = [];
+        pathStrings.forEach((pathData) => {
+            if (!pathData) return;
+            const parsed = this.app.hpgl.parsePathData(pathData) || [];
+            parsed.forEach((path) => {
+                if (path?.points?.length >= 2) {
+                    this._applyTracePathTransform(path);
+                    path.type = 'path';
+                    tracedPaths.push(path);
+                }
+            });
+        });
+
+        return tracedPaths;
+    }
+
+    _applyTracePathTransform(path) {
+        if (!path) return path;
+
+        // SVGcode/Potrace pathonly coordinates are emitted in a 10x space and
+        // rely on an outer SVG transform equivalent to:
+        // translate(0, height) scale(0.1, -0.1)
+        // Apply that here so traced paths overlay the source bitmap directly.
+        const traceScale = 0.1;
+        const mapX = (value) => value * traceScale;
+        const mapY = (value) => this.height - (value * traceScale);
+
+        if (Array.isArray(path.points)) {
+            path.points = path.points.map(point => ({
+                ...point,
+                x: mapX(point.x),
+                y: mapY(point.y)
+            }));
+        }
+
+        if (Array.isArray(path.segments)) {
+            path.segments = path.segments.map(segment => {
+                if (!segment) return segment;
+                const flipped = { ...segment };
+                if (typeof segment.x === 'number') flipped.x = mapX(segment.x);
+                if (typeof segment.y === 'number') flipped.y = mapY(segment.y);
+                if (typeof segment.x1 === 'number') flipped.x1 = mapX(segment.x1);
+                if (typeof segment.y1 === 'number') flipped.y1 = mapY(segment.y1);
+                if (typeof segment.x2 === 'number') flipped.x2 = mapX(segment.x2);
+                if (typeof segment.y2 === 'number') flipped.y2 = mapY(segment.y2);
+                return flipped;
+            });
+        }
+
+        return path;
+    }
+
+    _prepareTraceImageData(params = {}) {
+        const normalized = this._normalizeBrightnessMap(this.brightnessMap);
+        const rawThreshold = Number.isFinite(Number(params.threshold)) ? Number(params.threshold) : 128;
+        const threshold = Math.max(0, Math.min(255, rawThreshold));
+        const rgba = new Uint8ClampedArray(this.width * this.height * 4);
+
+        for (let i = 0; i < normalized.length; i++) {
+            const value = normalized[i] <= threshold ? 0 : 255;
+            const offset = i * 4;
+            rgba[offset] = value;
+            rgba[offset + 1] = value;
+            rgba[offset + 2] = value;
+            rgba[offset + 3] = 255;
+        }
+
+        return new ImageData(rgba, this.width, this.height);
+    }
+
+    _normalizeBrightnessMap(sourceMap) {
+        if (!sourceMap || sourceMap.length === 0) return new Float32Array();
+
+        const sampleStep = Math.max(1, Math.floor(sourceMap.length / 12000));
+        const samples = [];
+        for (let i = 0; i < sourceMap.length; i += sampleStep) {
+            samples.push(sourceMap[i]);
+        }
+        samples.sort((a, b) => a - b);
+
+        const lowIndex = Math.max(0, Math.floor(samples.length * 0.02));
+        const highIndex = Math.min(samples.length - 1, Math.floor(samples.length * 0.98));
+        const low = samples[lowIndex];
+        const high = Math.max(low + 1, samples[highIndex]);
+        const scale = 255 / (high - low);
+
+        const normalized = new Float32Array(sourceMap.length);
+        for (let i = 0; i < sourceMap.length; i++) {
+            const value = (sourceMap[i] - low) * scale;
+            normalized[i] = Math.max(0, Math.min(255, value));
+        }
+        return normalized;
+    }
+
+    _mapTraceSimplify(simplifyValue) {
+        const normalized = Math.max(0, Math.min(100, Number(simplifyValue) || 0)) / 100;
+        return 0.03 + (normalized * 0.92);
+    }
+
+    _mapTraceCornerSmoothness(value) {
+        const clamped = Math.max(0, Math.min(133, Number(value) || 0));
+        return 1.3334 * (clamped / 133);
+    }
+
+    async _runTraceWorker(imageData, params) {
+        this._terminateTraceWorker();
+
+        const workerUrl = this._resolveTraceWorkerUrl();
+        this.traceWorker = new Worker(workerUrl);
+
+        return new Promise((resolve, reject) => {
+            const cleanup = () => {
+                this._terminateTraceWorker();
+            };
+
+            this.traceWorker.onerror = (event) => {
+                cleanup();
+                reject(new Error(event?.message || 'Image trace worker failed.'));
+            };
+
+            const channel = new MessageChannel();
+            channel.port1.onmessage = ({ data }) => {
+                channel.port1.close();
+                cleanup();
+                resolve(data?.result || []);
+            };
+
+            this.traceWorker.postMessage({ imageData, params }, [channel.port2]);
+        });
+    }
+
+    _terminateTraceWorker() {
+        if (this.traceWorker) {
+            this.traceWorker.terminate();
+            this.traceWorker = null;
+        }
+        if (this.traceWorkerUrl && this.traceWorkerUrl.startsWith('blob:')) {
+            URL.revokeObjectURL(this.traceWorkerUrl);
+            this.traceWorkerUrl = null;
+        }
+    }
+
+    _resolveTraceWorkerUrl() {
+        if (window.location.protocol === 'file:' && typeof window.__IV_TRACE_WORKER_SOURCE__ === 'string') {
+            if (!this.traceWorkerUrl) {
+                const blob = new Blob([window.__IV_TRACE_WORKER_SOURCE__], { type: 'text/javascript' });
+                this.traceWorkerUrl = URL.createObjectURL(blob);
+            }
+            return this.traceWorkerUrl;
+        }
+        return new URL('js/image-vector/trace-worker.js', window.location.href).toString();
     }
 
     _applyContrast(value) {
@@ -668,43 +848,350 @@ class ImageVectorEngine {
     }
 
     generateSpiral(params) {
-        const spacing = params.spacing || 5;
-        const threshold = params.threshold || 128;
-        const centerX = this.width / 2;
-        const centerY = this.height / 2;
-        const maxRadius = Math.sqrt(centerX * centerX + centerY * centerY);
-        const paths = [];
-        let currentPath = [];
-        
-        const layerPhase = (Math.PI * 2 / 3) * (this.currentLayerIndex || 0);
+        const settings = this._buildSpiralHalftoneSettings(params);
+        const baseSamples = this._generateSpiralHalftoneBase(settings);
+        if (baseSamples.length < 2) return [];
 
-        for (let i = 0; i < (maxRadius / spacing) * 100; i++) {
-            const angle = i * 0.1 + layerPhase;
-            const rBase = (angle / (Math.PI * 2)) * spacing;
-            const xBase = centerX + Math.cos(angle) * rBase;
-            const yBase = centerY + Math.sin(angle) * rBase;
+        const rawDarkness = baseSamples.map(sample => {
+            const tone = this._sampleSpiralTone(sample.sampleX, sample.sampleY, settings);
+            return 1 - tone;
+        });
 
-            if (xBase >= 0 && xBase < this.width && yBase >= 0 && yBase < this.height) {
-                const b = this.getBrightness(xBase, yBase);
+        const smoothedDarkness = this._smoothValueSeries(
+            rawDarkness,
+            settings.toneSmoothingRadius,
+            settings.toneSmoothingPasses
+        );
 
-                // Only distort/draw if below threshold
-                if (b < threshold) {
-                    const distortion = (1 - b / 255) * spacing * 0.8;
-                    const r = rBase + Math.sin(angle * 8) * distortion;
-                    currentPath.push({
-                        x: centerX + Math.cos(angle) * r,
-                        y: centerY + Math.sin(angle) * r
-                    });
-                } else {
-                    if (currentPath.length > 1) paths.push(currentPath);
-                    currentPath = [];
+        let path = baseSamples.map((sample, index) =>
+            this._applySpiralHalftoneModulation(sample, smoothedDarkness[index], settings)
+        );
+
+        if (settings.pathSmoothingPasses > 0) {
+            path = this._smoothOpenPath(path, settings.pathSmoothingPasses);
+        }
+
+        if (settings.exportSimplify > 0) {
+            path = this._simplifyPath(path, settings.exportSimplify);
+        }
+
+        if (!path || path.length < 2) return [];
+        return [this._pointsToSmoothSegments(path, 'curves')];
+    }
+
+    _buildSpiralHalftoneSettings(params = {}) {
+        const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+        const lerp = (a, b, t) => a + ((b - a) * t);
+
+        const baseSpacing = clamp(Number(params.spacing ?? 4), 0.8, 30);
+        const requestedTurns = clamp(Number(params.turns ?? 120), 8, 600);
+        const margin = clamp(Number(params.margin ?? 10), 0, Math.min(this.width, this.height) * 0.45);
+        const centerOffsetX = clamp(Number(params.centerOffsetX ?? 0), -100, 100);
+        const centerOffsetY = clamp(Number(params.centerOffsetY ?? 0), -100, 100);
+        const centerX = (this.width * 0.5) + ((centerOffsetX / 100) * Math.max(0, (this.width * 0.5) - margin));
+        const centerY = (this.height * 0.5) + ((centerOffsetY / 100) * Math.max(0, (this.height * 0.5) - margin));
+
+        let maxRadius = Math.max(8,
+            Math.min(
+                centerX - margin,
+                (this.width - margin) - centerX,
+                centerY - margin,
+                (this.height - margin) - centerY
+            )
+        );
+
+        const cropMode = params.cropMode || 'fit';
+        if (cropMode === 'square') {
+            maxRadius = Math.min(maxRadius, Math.max(8, ((Math.min(this.width, this.height) * 0.5) - margin)));
+        }
+
+        const spacingFromTurns = maxRadius / requestedTurns;
+        const radialStep = clamp((baseSpacing * 0.72) + (spacingFromTurns * 0.28), 0.6, 24);
+        const totalTurns = Math.max(6, maxRadius / radialStep);
+
+        const detailNorm = clamp(Number(params.detail ?? 62), 1, 100) / 100;
+        const thetaStep = lerp(0.24, 0.05, detailNorm);
+        const direction = (params.direction === 'ccw') ? -1 : 1;
+        const influence = clamp(Number(params.influence ?? 75), 0, 100) / 100;
+        const gamma = clamp(Number(params.gamma ?? 100), 25, 300) / 100;
+        const minMod = clamp(Number(params.minMod ?? 0.3), 0, 20);
+        const maxModRaw = clamp(Number(params.maxMod ?? 4.5), 0, 40);
+        const maxMod = Math.min(Math.max(minMod, maxModRaw), radialStep * 0.48);
+        const oscillationAmplitude = clamp(Number(params.oscAmplitude ?? 1.6), 0, Math.max(0, radialStep * 0.45));
+        const oscillationFrequency = clamp(Number(params.oscFrequency ?? 7), 0, 40);
+        const edgeDetail = clamp(Number(params.detail ?? 62), 0, 100) / 100;
+        const smoothing = clamp(Number(params.smoothing ?? 58), 0, 100) / 100;
+        const invert = Boolean(params.invert);
+
+        return {
+            centerX,
+            centerY,
+            margin,
+            maxRadius,
+            cropMode,
+            radialStep,
+            totalTurns,
+            thetaStep,
+            direction,
+            influence,
+            gamma,
+            minMod,
+            maxMod,
+            oscillationAmplitude,
+            oscillationFrequency,
+            edgeDetail,
+            invert,
+            previewStrokeWidth: clamp(Number(params.previewStrokeWidth ?? 1.2), 0.1, 12),
+            toneSmoothingRadius: Math.max(1, Math.round(lerp(1, 10, smoothing))),
+            toneSmoothingPasses: 1 + Math.round(lerp(0, 2, smoothing)),
+            pathSmoothingPasses: Math.round(lerp(0, 3, smoothing)),
+            exportSimplify: Math.max(0, (Number(params.simplify ?? 0) / 20) * lerp(0.4, 1.4, 1 - detailNorm)),
+            sourceScaleX: cropMode === 'square'
+                ? (Math.min(this.width, this.height) * 0.5) / Math.max(1, maxRadius)
+                : (Math.max(1, (this.width * 0.5) - margin) / Math.max(1, maxRadius)),
+            sourceScaleY: cropMode === 'square'
+                ? (Math.min(this.width, this.height) * 0.5) / Math.max(1, maxRadius)
+                : (Math.max(1, (this.height * 0.5) - margin) / Math.max(1, maxRadius))
+        };
+    }
+
+    _generateSpiralHalftoneBase(settings) {
+        const samples = [];
+        const maxTheta = settings.totalTurns * Math.PI * 2;
+
+        for (let thetaMag = 0; thetaMag <= maxTheta; thetaMag += settings.thetaStep) {
+            const theta = thetaMag * settings.direction;
+            const radius = (thetaMag / (Math.PI * 2)) * settings.radialStep;
+            if (radius > settings.maxRadius) break;
+
+            const cos = Math.cos(theta);
+            const sin = Math.sin(theta);
+            const localX = cos * radius;
+            const localY = sin * radius;
+
+            samples.push({
+                theta,
+                radius,
+                localX,
+                localY,
+                x: settings.centerX + localX,
+                y: settings.centerY + localY,
+                sampleX: settings.centerX + (localX * settings.sourceScaleX),
+                sampleY: settings.centerY + (localY * settings.sourceScaleY)
+            });
+        }
+
+        return samples;
+    }
+
+    _sampleSpiralTone(x, y, settings) {
+        const tone = this._sampleMapBilinear(this.brightnessMap, x, y) / 255;
+        const edge = this.edgeMap ? (this._sampleMapBilinear(this.edgeMap, x, y) / 255) : 0;
+        const detail = this.detailMap ? (Math.min(255, Math.abs(this._sampleMapBilinear(this.detailMap, x, y))) / 255) : 0;
+
+        let adjusted = tone;
+        adjusted = Math.pow(Math.max(0, Math.min(1, adjusted)), settings.gamma);
+
+        if (settings.edgeDetail > 0) {
+            const detailBoost = ((edge * 0.7) + (detail * 0.3)) * settings.edgeDetail * 0.22;
+            adjusted = Math.max(0, Math.min(1, adjusted - detailBoost));
+        }
+
+        if (settings.invert) adjusted = 1 - adjusted;
+        return Math.max(0, Math.min(1, adjusted));
+    }
+
+    _sampleMapBilinear(map, x, y) {
+        if (!map || map.length === 0) return 255;
+
+        const clampX = Math.max(0, Math.min(this.width - 1, x));
+        const clampY = Math.max(0, Math.min(this.height - 1, y));
+        const x0 = Math.floor(clampX);
+        const y0 = Math.floor(clampY);
+        const x1 = Math.min(this.width - 1, x0 + 1);
+        const y1 = Math.min(this.height - 1, y0 + 1);
+        const tx = clampX - x0;
+        const ty = clampY - y0;
+
+        const idx00 = y0 * this.width + x0;
+        const idx10 = y0 * this.width + x1;
+        const idx01 = y1 * this.width + x0;
+        const idx11 = y1 * this.width + x1;
+
+        const top = (map[idx00] * (1 - tx)) + (map[idx10] * tx);
+        const bottom = (map[idx01] * (1 - tx)) + (map[idx11] * tx);
+        return (top * (1 - ty)) + (bottom * ty);
+    }
+
+    _smoothValueSeries(values, radius = 2, passes = 1) {
+        if (!Array.isArray(values) || values.length < 3) return values || [];
+
+        let result = values.slice();
+        const safeRadius = Math.max(1, Math.round(radius));
+        const safePasses = Math.max(1, Math.round(passes));
+
+        for (let pass = 0; pass < safePasses; pass++) {
+            const next = result.slice();
+            for (let i = 0; i < result.length; i++) {
+                let sum = 0;
+                let weightSum = 0;
+                for (let j = -safeRadius; j <= safeRadius; j++) {
+                    const idx = Math.max(0, Math.min(result.length - 1, i + j));
+                    const weight = safeRadius + 1 - Math.abs(j);
+                    sum += result[idx] * weight;
+                    weightSum += weight;
                 }
-            } else {
-                if (currentPath.length > 1) paths.push(currentPath);
-                currentPath = [];
+                next[i] = weightSum > 0 ? (sum / weightSum) : result[i];
+            }
+            result = next;
+        }
+
+        return result;
+    }
+
+    _applySpiralHalftoneModulation(sample, darkness, settings) {
+        const clampedDarkness = Math.max(0, Math.min(1, darkness));
+        const easedDarkness = Math.pow(clampedDarkness, Math.max(0.35, 1.15 - (settings.influence * 0.65)));
+        const modulation = settings.minMod + ((settings.maxMod - settings.minMod) * easedDarkness * settings.influence);
+        const oscillation = settings.oscillationAmplitude > 0
+            ? Math.sin(sample.theta * settings.oscillationFrequency) * settings.oscillationAmplitude * easedDarkness
+            : 0;
+
+        const prevTheta = sample.theta - (settings.thetaStep * settings.direction);
+        const nextTheta = sample.theta + (settings.thetaStep * settings.direction);
+        const prevRadius = Math.max(0, ((Math.abs(prevTheta) / (Math.PI * 2)) * settings.radialStep));
+        const nextRadius = ((Math.abs(nextTheta) / (Math.PI * 2)) * settings.radialStep);
+        const prevPoint = {
+            x: settings.centerX + Math.cos(prevTheta) * prevRadius,
+            y: settings.centerY + Math.sin(prevTheta) * prevRadius
+        };
+        const nextPoint = {
+            x: settings.centerX + Math.cos(nextTheta) * nextRadius,
+            y: settings.centerY + Math.sin(nextTheta) * nextRadius
+        };
+
+        let tangentX = nextPoint.x - prevPoint.x;
+        let tangentY = nextPoint.y - prevPoint.y;
+        const tangentLength = Math.hypot(tangentX, tangentY) || 1;
+        tangentX /= tangentLength;
+        tangentY /= tangentLength;
+
+        const normalX = -tangentY;
+        const normalY = tangentX;
+        const totalOffset = modulation + oscillation;
+
+        return {
+            x: sample.x + (normalX * totalOffset),
+            y: sample.y + (normalY * totalOffset)
+        };
+    }
+
+    _smoothOpenPath(path, iterations = 1) {
+        if (!Array.isArray(path) || path.length < 3) return path;
+
+        let result = path.slice();
+        const safeIterations = Math.max(1, Math.round(iterations));
+
+        for (let i = 0; i < safeIterations; i++) {
+            const first = result[0];
+            const last = result[result.length - 1];
+            const smoothed = this._smoothPath(result);
+            if (!smoothed || smoothed.length < 2) break;
+            smoothed[0] = first;
+            smoothed[smoothed.length - 1] = last;
+            result = smoothed;
+        }
+
+        return result;
+    }
+
+    generateSquiggle(params) {
+        const lineCount = Math.max(4, Math.round(params.squiggleLineCount || 50));
+        const amplitude = Math.max(0, Number(params.squiggleAmplitude || 1));
+        const frequency = Math.max(5, Number(params.squiggleFrequency || 150));
+        const sampling = Math.max(0.5, Number(params.squiggleSampling || 1));
+        const modulation = params.squiggleModulation || 'both';
+        const amplitudeMod = modulation !== 'fm';
+        const frequencyMod = modulation !== 'am';
+        const rowStep = Math.max(1, this.height / lineCount);
+        const paths = [];
+
+        for (let y = rowStep * 0.5; y < this.height; y += rowStep) {
+            let phase = 0;
+            const line = [];
+
+            for (let x = 0; x <= this.width; x += sampling) {
+                const brightness = this._sampleMapBilinear(this.brightnessMap, x, y);
+                const darkness = 1 - (brightness / 255);
+                const localAmp = amplitude * (amplitudeMod ? darkness : 1) * rowStep * 0.8;
+                const phaseStep = ((frequencyMod ? (0.2 + darkness * 0.8) : 1) / frequency) * Math.PI * 2 * sampling * 18;
+                phase += phaseStep;
+                line.push({ x, y: y + Math.sin(phase) * localAmp });
+            }
+
+            const processed = this._smoothOpenPath(line, 1);
+            paths.push(this._pointsToSmoothSegments(processed, 'curves'));
+        }
+
+        return paths;
+    }
+
+    generateLongWave(params) {
+        const stepSize = Math.max(1, Number(params.longWaveStep || 5));
+        const lineSpacing = stepSize * 2;
+        const waveSpeed = Math.max(1, Number(params.longWaveSpeed || 20));
+        const waveAmplitude = Math.max(0, Number(params.longWaveAmplitude || 10));
+        const depth = Math.max(1, Math.round(params.longWaveDepth || 3));
+        const direction = params.longWaveDirection || 'vertical';
+        const simplify = Math.max(1, Number(params.longWaveSimplify || 10));
+        const waveFreq = Math.pow(waveSpeed, 0.8) / Math.max(1, this.width);
+        const waveRange = waveAmplitude / 50 / Math.max(waveFreq, 0.0001);
+        const thresholds = [];
+        for (let i = 0; i < depth; i++) thresholds.push(0.25 + (i * (0.5 / Math.max(1, depth - 1))));
+        const mirrored = thresholds.concat(thresholds.slice(0, -1).reverse());
+        const paths = [];
+        let lineIndex = 0;
+
+        if (direction !== 'horizontal') {
+            for (let startX = -waveRange; startX <= this.width + waveRange; startX += lineSpacing) {
+                const threshold = mirrored[lineIndex++ % mirrored.length];
+                const line = [];
+                let hysteresis = 0;
+                for (let y = 0; y <= this.height; y += 1) {
+                    const x = startX + Math.sin(y * waveFreq) * waveRange;
+                    const darkness = 1 - (this._sampleMapBilinear(this.brightnessMap, x, y) / 255);
+                    hysteresis += darkness > threshold ? 1 : -1;
+                    hysteresis = Math.max(-simplify, Math.min(simplify, hysteresis));
+                    if (x >= 0 && x <= this.width && hysteresis > 0) line.push({ x, y });
+                    else if (line.length > 1) {
+                        paths.push(this._pointsToSmoothSegments(this._smoothOpenPath(line, 1), 'curves'));
+                        line.length = 0;
+                    }
+                }
+                if (line.length > 1) paths.push(this._pointsToSmoothSegments(this._smoothOpenPath(line, 1), 'curves'));
             }
         }
-        if (currentPath.length > 1) paths.push(currentPath);
+
+        if (direction !== 'vertical') {
+            for (let startY = -waveRange; startY <= this.height + waveRange; startY += lineSpacing) {
+                const threshold = mirrored[lineIndex++ % mirrored.length];
+                const line = [];
+                let hysteresis = 0;
+                for (let x = 0; x <= this.width; x += 1) {
+                    const y = startY + Math.sin(x * waveFreq) * waveRange;
+                    const darkness = 1 - (this._sampleMapBilinear(this.brightnessMap, x, y) / 255);
+                    hysteresis += darkness > threshold ? 1 : -1;
+                    hysteresis = Math.max(-simplify, Math.min(simplify, hysteresis));
+                    if (y >= 0 && y <= this.height && hysteresis > 0) line.push({ x, y });
+                    else if (line.length > 1) {
+                        paths.push(this._pointsToSmoothSegments(this._smoothOpenPath(line, 1), 'curves'));
+                        line.length = 0;
+                    }
+                }
+                if (line.length > 1) paths.push(this._pointsToSmoothSegments(this._smoothOpenPath(line, 1), 'curves'));
+            }
+        }
+
         return paths;
     }
 
@@ -755,30 +1242,259 @@ class ImageVectorEngine {
     }
 
     generateStippling(params) {
-        const density = params.spacing || 10;
-        const threshold = params.threshold || 128;
+        const maxStipples = Math.max(100, Math.round(params.maxStipples || 1800));
+        const minDotSize = Math.max(0.2, Number(params.minDotSize || 1.5));
+        const dotSizeRange = Math.max(0, Number(params.dotSizeRange || 4));
+        const stippleType = params.stippleType || 'circles';
+        const seed = String(params.stippleSeed || 1);
+        const rand = this._createSeededRandom(seed);
+        const cellSize = Math.max(2, Math.sqrt((this.width * this.height) / maxStipples));
         const simplify = (params.simplify || 0) / 20;
         const paths = [];
-        for (let y = 0; y < this.height; y += density) {
-            for (let x = 0; x < this.width; x += density) {
-                const b = this.getBrightness(x, y);
-                if (b < threshold) {
-                    const r = (1 - b / 255) * (density / 2);
-                    if (r < 0.5) continue;
-                    const circle = [];
-                    const detail = 8;
-                    for (let a = 0; a < Math.PI * 2; a += (Math.PI * 2 / detail)) {
-                        circle.push({ x: x + Math.cos(a) * r, y: y + Math.sin(a) * r });
-                    }
-                    circle.push(circle[0]);
 
-                    let p = circle;
-                    if (simplify > 0) p = this._simplifyPath(p, simplify);
-                    paths.push(p);
-                }
+        for (let y = cellSize * 0.5; y < this.height; y += cellSize) {
+            for (let x = cellSize * 0.5; x < this.width; x += cellSize) {
+                const sampleX = x + ((rand() - 0.5) * cellSize * 0.5);
+                const sampleY = y + ((rand() - 0.5) * cellSize * 0.5);
+                const darkness = 1 - (this._sampleMapBilinear(this.brightnessMap, sampleX, sampleY) / 255);
+                if (darkness <= 0.08 || rand() > Math.pow(darkness, 0.85)) continue;
+
+                const r = minDotSize + (darkness * dotSizeRange);
+                let shape = this._buildStippleShape(sampleX, sampleY, r, stippleType);
+                if (!shape || shape.length < 2) continue;
+                if (simplify > 0) shape = this._simplifyPath(shape, simplify);
+                paths.push(shape);
             }
         }
         return paths;
+    }
+
+    generateDots(params) {
+        const spacing = Math.max(1, Math.round(params.dotsResolution || 2));
+        const baseAngle = (Number(params.dotsDirection || 0) * Math.PI) / 180;
+        const randomDirection = Boolean(params.dotsRandomDirection);
+        const rand = this._createSeededRandom(String(params.dotsSeed || 50));
+        const paths = [];
+
+        for (let y = 0; y <= this.height - spacing; y += spacing) {
+            for (let x = 0; x <= this.width - spacing; x += spacing) {
+                const darkness = 1 - (this._sampleMapBilinear(this.brightnessMap, x, y) / 255);
+                const probability = Math.min(1, Math.pow(darkness, 2.2) * Math.max(0.35, spacing * 0.22));
+                if (rand() > probability) continue;
+
+                const angle = randomDirection ? rand() * Math.PI : baseAngle;
+                const length = spacing * (0.7 + darkness * 0.8);
+                const cx = x + (spacing * 0.5);
+                const cy = y + (spacing * 0.5);
+                const dx = Math.cos(angle) * length * 0.5;
+                const dy = Math.sin(angle) * length * 0.5;
+                paths.push([
+                    { x: cx - dx, y: cy - dy },
+                    { x: cx + dx, y: cy + dy }
+                ]);
+            }
+        }
+
+        return paths;
+    }
+
+    generateMosaic(params) {
+        const scale = Math.max(2, Number(params.mosaicScale || 10));
+        const hatches = Math.max(2, Math.round(params.mosaicHatches || 6));
+        const outlines = Boolean(params.mosaicOutlines);
+        const major = (this.width + this.height) / scale / 2;
+        const minor = Math.max(1, major / hatches);
+        const half = major / 2;
+        const paths = [];
+        let toggleStart = false;
+
+        for (let y = half; y < this.height; y += major) {
+            toggleStart = !toggleStart;
+            const xStart = toggleStart ? half : (Math.floor(this.width / major) * major + half);
+            const xEnd = toggleStart ? this.width : 0;
+            const xStep = toggleStart ? major : -major;
+
+            for (let x = xStart; toggleStart ? (x <= xEnd) : (x >= xEnd); x += xStep) {
+                const darkness = 1 - (this._sampleMapBilinear(this.brightnessMap, x, y) / 255);
+                if (darkness <= 0.15) continue;
+
+                if (outlines) {
+                    paths.push([
+                        { x: x - half, y: y - half },
+                        { x: x + half, y: y - half },
+                        { x: x + half, y: y + half },
+                        { x: x - half, y: y + half },
+                        { x: x - half, y: y - half }
+                    ]);
+                }
+
+                const levels = Math.floor(darkness * 5);
+                let toggle = false;
+                if (levels >= 1) {
+                    for (let k = 0; k < major; k += minor) {
+                        toggle = !toggle;
+                        paths.push(toggle
+                            ? [{ x: x - half, y: y - half + k }, { x: x + half, y: y - half + k }]
+                            : [{ x: x + half, y: y - half + k }, { x: x - half, y: y - half + k }]);
+                    }
+                }
+                if (levels >= 2) {
+                    for (let k = 0; k < major; k += minor) {
+                        toggle = !toggle;
+                        paths.push(toggle
+                            ? [{ x: x - half + k, y: y - half }, { x: x - half + k, y: y + half }]
+                            : [{ x: x - half + k, y: y + half }, { x: x - half + k, y: y - half }]);
+                    }
+                }
+                if (levels >= 3) {
+                    for (let k = 0; k < major; k += minor) {
+                        toggle = !toggle;
+                        paths.push(toggle
+                            ? [{ x: x - half, y: y - half + k }, { x: x - half + k, y: y - half }]
+                            : [{ x: x - half + k, y: y - half }, { x: x - half, y: y - half + k }]);
+                    }
+                    for (let k = 0; k < major; k += minor) {
+                        toggle = !toggle;
+                        paths.push(toggle
+                            ? [{ x: x - half + k, y: y + half }, { x: x + half, y: y - half + k }]
+                            : [{ x: x + half, y: y - half + k }, { x: x - half + k, y: y + half }]);
+                    }
+                }
+                if (levels >= 4) {
+                    for (let k = 0; k < major; k += minor) {
+                        toggle = !toggle;
+                        paths.push(toggle
+                            ? [{ x: x + half, y: y - half + k }, { x: x + half - k, y: y - half }]
+                            : [{ x: x + half - k, y: y - half }, { x: x + half, y: y - half + k }]);
+                    }
+                    for (let k = 0; k < major; k += minor) {
+                        toggle = !toggle;
+                        paths.push(toggle
+                            ? [{ x: x - half, y: y - half + k }, { x: x + half - k, y: y + half }]
+                            : [{ x: x + half - k, y: y + half }, { x: x - half, y: y - half + k }]);
+                    }
+                }
+            }
+        }
+
+        return paths;
+    }
+
+    generateWoven(params) {
+        const lineCount = Math.max(3, Math.round(params.wovenLineCount || 8));
+        const frequency = Math.max(2, Math.round(params.wovenFrequency || 24));
+        const cosine = Boolean(params.wovenCosine);
+        const randomMode = Boolean(params.wovenRandom);
+        const power = Number(params.wovenPower || 2);
+        const rand = this._createSeededRandom(String(params.wovenSeed || 1));
+        const rowStep = Math.max(2, Math.floor(this.height / lineCount));
+        let order = Array.from({ length: lineCount }, (_, i) => i);
+        const columns = [];
+
+        for (let x = 0; x < this.width; x += frequency) {
+            columns.push([...order]);
+            for (let row = 0; row < lineCount - 1; row++) {
+                const sampleY = Math.min(this.height - 1, row * rowStep);
+                const darkness = 1 - (this._sampleMapBilinear(this.brightnessMap, x, sampleY) / 255);
+                const shouldSwap = randomMode ? (Math.pow(darkness, power) > rand()) : (darkness > 0.4);
+                if (shouldSwap) {
+                    [order[row], order[row + 1]] = [order[row + 1], order[row]];
+                    row++;
+                }
+            }
+        }
+
+        const lineMap = columns.map(column => {
+            const map = [];
+            for (let i = 0; i < lineCount; i++) map[column[i]] = i;
+            return map;
+        });
+
+        const paths = [];
+        for (let lineIdx = 0; lineIdx < lineCount; lineIdx++) {
+            const line = [{ x: 0, y: lineIdx * rowStep }];
+            for (let col = 1; col < lineMap.length; col++) {
+                const prevY = lineMap[col - 1][lineIdx] * rowStep;
+                const nextY = lineMap[col][lineIdx] * rowStep;
+                if (cosine && prevY !== nextY) {
+                    const mid = (prevY + nextY) * 0.5;
+                    const delta = prevY - nextY;
+                    for (let p = 1; p < frequency; p++) {
+                        line.push({
+                            x: (col - 1) * frequency + p,
+                            y: mid + ((delta * 0.5) * Math.cos((p * Math.PI) / frequency))
+                        });
+                    }
+                }
+                line.push({ x: col * frequency, y: nextY });
+            }
+            paths.push(this._pointsToSmoothSegments(line, cosine ? 'curves' : 'lines'));
+        }
+
+        return paths;
+    }
+
+    _createSeededRandom(seedString) {
+        let h = 1779033703 ^ seedString.length;
+        for (let i = 0; i < seedString.length; i++) {
+            h = Math.imul(h ^ seedString.charCodeAt(i), 3432918353);
+            h = (h << 13) | (h >>> 19);
+        }
+        return () => {
+            h = Math.imul(h ^ (h >>> 16), 2246822507);
+            h = Math.imul(h ^ (h >>> 13), 3266489909);
+            return ((h ^= h >>> 16) >>> 0) / 4294967295;
+        };
+    }
+
+    _buildStippleShape(x, y, r, type) {
+        const circle = (segments = 18) => {
+            const pts = [];
+            for (let i = 0; i <= segments; i++) {
+                const a = (i / segments) * Math.PI * 2;
+                pts.push({ x: x + Math.cos(a) * r, y: y + Math.sin(a) * r });
+            }
+            return pts;
+        };
+
+        switch ((type || 'circles').toLowerCase()) {
+            case 'spirals': {
+                const pts = [];
+                let theta = 0;
+                let radius = r;
+                while (radius >= 0.15) {
+                    pts.push({ x: x + radius * Math.cos(theta), y: y + radius * Math.sin(theta) });
+                    theta += 0.5;
+                    if (theta > Math.PI * 2) radius -= 0.12;
+                }
+                return pts;
+            }
+            case 'hexagons': {
+                const pts = [];
+                for (let i = 0; i <= 6; i++) {
+                    const a = (i / 6) * Math.PI * 2;
+                    pts.push({ x: x + Math.cos(a) * r, y: y + Math.sin(a) * r });
+                }
+                return pts;
+            }
+            case 'pentagrams': {
+                const order = [0, 3, 1, 4, 2, 0];
+                return order.map(idx => {
+                    const a = ((idx / 5) * Math.PI * 2) - (Math.PI / 2);
+                    return { x: x + Math.cos(a) * r, y: y + Math.sin(a) * r };
+                });
+            }
+            case 'snowflakes':
+                return [
+                    { x: x - r, y }, { x: x + r, y },
+                    { x, y },
+                    { x: x + (r * 0.5), y: y + (r * 0.866) }, { x: x - (r * 0.5), y: y - (r * 0.866) },
+                    { x, y },
+                    { x: x - (r * 0.5), y: y + (r * 0.866) }, { x: x + (r * 0.5), y: y - (r * 0.866) }
+                ];
+            default:
+                return circle();
+        }
     }
 
     generateFlowField(params) {

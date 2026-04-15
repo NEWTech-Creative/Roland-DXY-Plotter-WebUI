@@ -42,6 +42,7 @@ class CanvasManager {
         this.pendingBezierSegmentIdx = -1;
         this.bezierDragAnchor = null;
         this.bezierPreviewPoint = null;
+        this.isFreeDrawBezier = false;
         this.isPanning = false;
         this.dragStartX = 0;
         this.dragStartY = 0;
@@ -90,6 +91,11 @@ class CanvasManager {
         this.bucketHoverPendingPos = null;
         this.editingPathIdx = -1;
         this.displayedCrosshairPoint = null;
+        this.warpHandlePositions = null;
+        this.warpOriginalHandlePositions = null;
+        this.warpOriginalBox = null;
+        this.warpActiveHandleIndex = -1;
+        this.isWarpDragging = false;
         this.closedFillRegionsCache = null;
         this.viewportHorizontalShift = 0;
         this.viewportVerticalShift = 0;
@@ -99,6 +105,7 @@ class CanvasManager {
         this.drawFramePending = false;
         this.lastSavedCanvasJson = '';
         this.persistenceEventsBound = false;
+        this.textEditOriginalSnapshot = null;
         this.cursorTimer = setInterval(() => { this.cursorBlink = !this.cursorBlink; if (this.editingPathIdx !== -1) this.draw(); }, 500);
         this.autoSaveTimer = setInterval(() => this.saveCurrentStateIfChanged(), 5000);
     }
@@ -235,6 +242,7 @@ class CanvasManager {
         this.pendingBezierSegmentIdx = -1;
         this.bezierDragAnchor = null;
         this.bezierPreviewPoint = null;
+        this.isFreeDrawBezier = false;
     }
 
     offsetPathGeometry(path, dx, dy) {
@@ -385,16 +393,116 @@ class CanvasManager {
         return finalized;
     }
 
+    startFreeDrawBezier(anchor) {
+        const start = anchor ? { x: anchor.x, y: anchor.y } : { x: 0, y: 0 };
+        const visPen = this.app?.ui?.activeVisualizerPen || 1;
+        this.paths.push({
+            type: 'polyline',
+            points: [{ ...start }],
+            pen: visPen,
+            generatedBy: 'free-draw'
+        });
+        this.currentBezierPathIdx = this.paths.length - 1;
+        this.isCreatingBezier = true;
+        this.isFreeDrawBezier = true;
+        this.isAdjustingBezierHandle = false;
+        this.pendingBezierSegmentIdx = -1;
+        this.bezierDragAnchor = null;
+        this.bezierPreviewPoint = null;
+        this.selectedPaths = [this.currentBezierPathIdx];
+        this.selectedNodes = [];
+    }
+
+    appendFreeDrawBezierPoint(point) {
+        const path = this.paths[this.currentBezierPathIdx];
+        if (!path || !Array.isArray(path.points) || !point) return;
+        const lastPoint = path.points[path.points.length - 1];
+        if (lastPoint && Math.hypot((point.x || 0) - lastPoint.x, (point.y || 0) - lastPoint.y) < 0.35) return;
+        path.points.push({ x: point.x, y: point.y });
+    }
+
+    simplifyFreeDrawBezierPath(path) {
+        if (!path || !Array.isArray(path.points) || path.points.length < 2) return path;
+        const rawPoints = path.points
+            .filter(point => Number.isFinite(point?.x) && Number.isFinite(point?.y))
+            .map(point => ({ x: point.x, y: point.y }));
+        if (rawPoints.length < 2) return path;
+
+        const scope = this.getPaperBooleanScope();
+        if (!scope) {
+            path.points = rawPoints;
+            return path;
+        }
+
+        try {
+            this.clearPaperBooleanScope(scope);
+            const paperPath = new scope.Path({ insert: true });
+            rawPoints.forEach((point, index) => {
+                if (index === 0) paperPath.moveTo(new scope.Point(point.x, point.y));
+                else paperPath.lineTo(new scope.Point(point.x, point.y));
+            });
+            paperPath.closed = false;
+            paperPath.simplify(1.2);
+            const simplified = this.buildAppPathFromPaperPath(scope, paperPath, { pen: path.pen });
+            paperPath.remove();
+            this.clearPaperBooleanScope(scope);
+            if (simplified) {
+                delete simplified.groupId;
+                delete simplified.parentGroupId;
+                delete simplified.closed;
+                simplified.generatedBy = 'free-draw';
+                return simplified;
+            }
+        } catch (error) {
+            console.warn('Free draw simplify failed, using raw stroke.', error);
+            this.clearPaperBooleanScope(scope);
+        }
+
+        path.points = rawPoints;
+        return path;
+    }
+
+    finalizeFreeDrawBezierPath(saveUndo = true) {
+        const pathIdx = this.currentBezierPathIdx;
+        const path = pathIdx >= 0 ? this.paths[pathIdx] : null;
+        let finalized = false;
+
+        if (path) {
+            if (!Array.isArray(path.points) || path.points.length < 2) {
+                this.paths.splice(pathIdx, 1);
+                this.selectedPaths = [];
+            } else {
+                this.paths[pathIdx] = this.simplifyFreeDrawBezierPath(path);
+                finalized = true;
+                this.selectedPaths = [pathIdx];
+                this.selectedNodes = [];
+            }
+        }
+
+        this.resetBezierToolState();
+
+        if (finalized && saveUndo) {
+            this.saveUndoState();
+            this.app?.ui?.logToConsole('System: Free draw path finalized.');
+        }
+
+        this.draw();
+        return finalized;
+    }
+
     saveUndoState() {
         this.invalidateFillRegionCache();
-        this.undoStack.push(JSON.stringify(this.paths));
+        const snapshot = this.serializePathsSnapshot();
+        if (this.undoStack.length === 0 || this.undoStack[this.undoStack.length - 1] !== snapshot) {
+            this.undoStack.push(snapshot);
+            if (this.undoStack.length > this.maxUndo) this.undoStack.shift();
+        }
         this.redoStack = []; // Clear redo stack on new action
-        if (this.undoStack.length > this.maxUndo) this.undoStack.shift();
         this.saveCurrentState(); // Also persist to localStorage on edit
     }
 
     ensureUndoCheckpoint() {
-        const current = JSON.stringify(this.paths);
+        const current = this.serializePathsSnapshot();
         if (this.undoStack.length === 0 || this.undoStack[this.undoStack.length - 1] !== current) {
             this.undoStack.push(current);
             this.redoStack = [];
@@ -403,9 +511,39 @@ class CanvasManager {
         }
     }
 
+    initializeHistoryFromCurrentState() {
+        const current = this.serializePathsSnapshot();
+        this.undoStack = [current];
+        this.redoStack = [];
+        this.lastSavedCanvasJson = current;
+    }
+
+    restoreSnapshot(snapshot, { logMessage = null } = {}) {
+        this.paths = snapshot ? JSON.parse(snapshot) : [];
+        this.normalizeLoadedPaths();
+        this.invalidateFillRegionCache();
+        this.selectedPaths = [];
+        this.selectedNodes = [];
+        this.editingPathIdx = -1;
+        this.textEditOriginalSnapshot = null;
+        this.patternPreviewPaths = [];
+        this.draw();
+        this.saveCurrentState();
+        if (logMessage && this.app?.ui) {
+            this.app.ui.logToConsole(logMessage);
+        }
+    }
+
+    serializePathsSnapshot() {
+        return JSON.stringify(this.paths, (key, value) => {
+            if (typeof key === 'string' && key.startsWith('_')) return undefined;
+            return value;
+        });
+    }
+
     saveCurrentState() {
         try {
-            const serialized = JSON.stringify(this.paths);
+            const serialized = this.serializePathsSnapshot();
             localStorage.setItem('canvasBackup', serialized);
             this.lastSavedCanvasJson = serialized;
         } catch (e) {
@@ -415,7 +553,7 @@ class CanvasManager {
 
     saveCurrentStateIfChanged() {
         try {
-            const serialized = JSON.stringify(this.paths);
+            const serialized = this.serializePathsSnapshot();
             if (serialized === this.lastSavedCanvasJson) return;
             localStorage.setItem('canvasBackup', serialized);
             this.lastSavedCanvasJson = serialized;
@@ -429,15 +567,20 @@ class CanvasManager {
             const saved = localStorage.getItem('canvasBackup');
             if (saved) {
                 this.paths = JSON.parse(saved);
+                this.normalizeLoadedPaths();
                 this.lastSavedCanvasJson = saved;
                 this.invalidateFillRegionCache();
                 this.draw();
+                this.initializeHistoryFromCurrentState();
                 if (this.app && this.app.ui) {
                     this.app.ui.logToConsole('System: Previous canvas drawing restored.');
                 }
+            } else {
+                this.initializeHistoryFromCurrentState();
             }
         } catch (e) {
             // Load fail
+            this.initializeHistoryFromCurrentState();
         }
     }
 
@@ -447,19 +590,7 @@ class CanvasManager {
             const current = this.undoStack.pop();
             this.redoStack.push(current);
             const prev = this.undoStack[this.undoStack.length - 1];
-            this.paths = JSON.parse(prev);
-            this.invalidateFillRegionCache();
-            this.selectedPaths = [];
-            this.draw();
-            if (this.app.ui) this.app.ui.logToConsole('System: Undo action performed.');
-        } else if (this.undoStack.length === 1) {
-            const current = this.undoStack.pop();
-            this.redoStack.push(current);
-            this.paths = [];
-            this.invalidateFillRegionCache();
-            this.selectedPaths = [];
-            this.draw();
-            if (this.app.ui) this.app.ui.logToConsole('System: Undo back to empty canvas.');
+            this.restoreSnapshot(prev, { logMessage: 'System: Undo action performed.' });
         }
     }
 
@@ -468,15 +599,12 @@ class CanvasManager {
         if (this.redoStack.length > 0) {
             const next = this.redoStack.pop();
             this.undoStack.push(next);
-            this.paths = JSON.parse(next);
-            this.invalidateFillRegionCache();
-            this.selectedPaths = [];
-            this.draw();
-            if (this.app.ui) this.app.ui.logToConsole('System: Redo action performed.');
+            this.restoreSnapshot(next, { logMessage: 'System: Redo action performed.' });
         }
     }
 
     addPath(pathObj) {
+        this.normalizePathData(pathObj);
         this.paths.push(pathObj);
         this.invalidateFillRegionCache();
         this.saveUndoState();
@@ -503,6 +631,11 @@ class CanvasManager {
         this.currentShapeIdx = -1;
         this.isDragging = false;
         this.isRotating = false;
+        this.isWarpDragging = false;
+        this.warpActiveHandleIndex = -1;
+        this.warpHandlePositions = null;
+        this.warpOriginalHandlePositions = null;
+        this.warpOriginalBox = null;
         this.isMarqueeSelecting = false;
         this.snapPoint = null;
         this.bucketHoverRegion = null;
@@ -516,6 +649,28 @@ class CanvasManager {
         }
 
         this.draw();
+    }
+
+    finishTextEditing({ removeIfEmpty = true, save = true } = {}) {
+        if (this.editingPathIdx === -1) return false;
+        const path = this.paths[this.editingPathIdx];
+        const isEmpty = !path || path.type !== 'text' || !String(path.text || '').trim();
+        const originalSnapshot = this.textEditOriginalSnapshot;
+
+        if (removeIfEmpty && isEmpty && this.editingPathIdx >= 0 && this.editingPathIdx < this.paths.length) {
+            this.paths.splice(this.editingPathIdx, 1);
+            this.selectedPaths = this.selectedPaths.filter(idx => idx !== this.editingPathIdx).map(idx => idx > this.editingPathIdx ? idx - 1 : idx);
+        }
+
+        this.editingPathIdx = -1;
+        this.textEditOriginalSnapshot = null;
+        if (save) {
+            const currentSnapshot = this.serializePathsSnapshot();
+            if (currentSnapshot !== originalSnapshot) this.saveUndoState();
+            else this.saveCurrentState();
+        }
+        this.draw();
+        return true;
     }
 
     bindEvents() {
@@ -633,7 +788,8 @@ class CanvasManager {
             if (!e.ctrlKey && !e.metaKey && this.isCreatingBezier && (e.key === 'Enter' || e.key === 'Escape')) {
                 e.preventDefault();
                 if (e.key === 'Enter') {
-                    this.finalizeBezierPath(true);
+                    if (this.isFreeDrawBezier) this.finalizeFreeDrawBezierPath(true);
+                    else this.finalizeBezierPath(true);
                 } else {
                     this.cancelCurrentOperation();
                 }
@@ -645,16 +801,14 @@ class CanvasManager {
                 e.preventDefault();
                 const p = this.paths[this.editingPathIdx];
                 if (e.key === 'Enter' || e.key === 'Escape') {
-                    if (p.text.length === 0) this.paths.splice(this.editingPathIdx, 1);
-                    this.editingPathIdx = -1;
-                    this.saveCurrentState();
+                    this.finishTextEditing({ removeIfEmpty: true, save: true });
                 } else if (e.key === 'Backspace') {
                     p.text = p.text.slice(0, -1);
-                    delete p._vectorTextCache;
+                    this.invalidateTextPathCache(p);
                     this.saveCurrentState();
                 } else if (e.key.length === 1) {
                     p.text += e.key;
-                    delete p._vectorTextCache;
+                    this.invalidateTextPathCache(p);
                     this.saveCurrentState();
                 }
                 this.draw();
@@ -663,6 +817,11 @@ class CanvasManager {
 
             // Escape / Cancel
             if (e.key === 'Escape') {
+                if (this.simulationActive) {
+                    e.preventDefault();
+                    this.stopSimulation('escape');
+                    return;
+                }
                 if (this.isCreatingShape || this.isDragging || this.isRotating || this.isMarqueeSelecting) {
                     this.cancelCurrentOperation();
                 } else if (this.app.ui.activeTool !== 'select') {
@@ -683,9 +842,24 @@ class CanvasManager {
 
         document.addEventListener('dblclick', (e) => {
             if (!checkTarget(e)) return;
-            if (this.app.ui.activeTool === 'bezier' && this.isCreatingBezier) {
+            if (this.app.ui.activeTool === 'bezier' && this.isCreatingBezier && !this.isFreeDrawBezier) {
                 e.preventDefault();
                 this.finalizeBezierPath(true);
+                return;
+            }
+
+            const pos = this.getMousePosMM(e);
+            const hitIdx = this.hitTest(pos.xMM, pos.yMM);
+            if (hitIdx !== -1) {
+                const hitPath = this.paths[hitIdx];
+                if (hitPath?.type === 'text') {
+                    e.preventDefault();
+                    this.selectedPaths = [hitIdx];
+                    this.textEditOriginalSnapshot = this.serializePathsSnapshot();
+                    this.editingPathIdx = hitIdx;
+                    this.app.ui?.setTool?.('select');
+                    this.draw();
+                }
             }
         });
 
@@ -755,6 +929,12 @@ class CanvasManager {
             }
 
             if (this.app.ui.activeTool === 'bezier' && e.button === 0) {
+                if (this.app.ui?.bezierToolMode === 'free-draw') {
+                    this.startFreeDrawBezier({ x: pos.xMM, y: pos.yMM });
+                    this.app.ui.logToConsole('System: Free draw started. Drag to sketch and release to finish.');
+                    this.draw();
+                    return;
+                }
                 let anchorX = pos.xMM;
                 let anchorY = pos.yMM;
                 const excludeNodeIdx = this.isCreatingBezier && this.currentBezierPathIdx >= 0
@@ -787,7 +967,7 @@ class CanvasManager {
             }
 
             // Toggle Panning on Middle Mouse
-            if (e.button === 1 || (this.app.ui.activeTool === 'select' || this.app.ui.activeTool === 'node' || this.app.ui.activeTool === 'shape')) {
+            if (e.button === 1 || (this.isSelectionInteractionTool() || this.app.ui.activeTool === 'node' || this.app.ui.activeTool === 'shape')) {
                 if (this.app.ui.activeTool === 'node' && this.selectedPaths.length >= 1) {
                     // Find the nearest node across all selected paths
                     let clickedPathIdx = -1;
@@ -828,9 +1008,19 @@ class CanvasManager {
                     }
                 }
 
-                if (this.app.ui.activeTool === 'select') {
+                if (this.app.ui.activeTool === 'warp' && this.selectedPaths.length >= 1) {
+                    const warpHandleIdx = this.hitTestWarpHandle(this.selectedPaths, pos.xMM, pos.yMM);
+                    if (warpHandleIdx > -1 && this.beginWarpDrag(warpHandleIdx)) {
+                        this.dragStartX = pos.xMM;
+                        this.dragStartY = pos.yMM;
+                        this.draw();
+                        return;
+                    }
+                }
+
+                if (this.isSelectionInteractionTool()) {
                     // 1. Check Resize Handles FIRST
-                    if (this.selectedPaths.length >= 1) {
+                    if (this.app.ui.activeTool === 'select' && this.selectedPaths.length >= 1) {
                         const box = this.getGroupBoundingBox(this.selectedPaths);
                         if (box) {
                             const cornerIdx = this.hitTestResizeGroup(this.selectedPaths, pos.xMM, pos.yMM);
@@ -886,8 +1076,8 @@ class CanvasManager {
                     } else {
                         // 3. Clicked empty space - DESELECT and start Marquee
                         if (!e.shiftKey) {
+                            this.finishTextEditing({ removeIfEmpty: true, save: true });
                             this.selectedPaths = [];
-                            this.editingPathIdx = -1; // Stop editing text if clicked outside
                         }
                         this.isMarqueeSelecting = true;
                         this.dragStartX = pos.xMM;
@@ -1019,11 +1209,14 @@ class CanvasManager {
             let cursor = 'default';
             if (this.isPanning) cursor = 'grabbing';
             else if (this.isRotating) cursor = 'alias';
-            else if (this.isDragging) cursor = 'move';
+            else if (this.isDragging) cursor = this.isWarpDragging ? 'grabbing' : 'move';
             else if (this.isMarqueeSelecting) cursor = 'crosshair';
             else if (this.editingPathIdx !== -1) cursor = 'text'; // Text editing cursor
             else if (this.app.ui.activeTool === 'bezier') cursor = 'crosshair';
-            else if (this.app.ui.activeTool === 'select' && this.selectedPaths.length >= 1) {
+            else if (this.app.ui.activeTool === 'warp' && this.selectedPaths.length >= 1) {
+                const warpHandleIdx = this.hitTestWarpHandle(this.selectedPaths, pos.xMM, pos.yMM);
+                cursor = warpHandleIdx > -1 ? 'grab' : (this.hitTest(pos.xMM, pos.yMM) !== -1 ? 'pointer' : 'default');
+            } else if (this.app.ui.activeTool === 'select' && this.selectedPaths.length >= 1) {
                 const box = this.getGroupBoundingBox(this.selectedPaths);
                 if (box) {
                     const cornerIdx = this.hitTestResizeGroup(this.selectedPaths, pos.xMM, pos.yMM);
@@ -1043,10 +1236,18 @@ class CanvasManager {
                 } else if (this.hitTest(pos.xMM, pos.yMM) !== -1) {
                     cursor = 'pointer';
                 }
+            } else if (this.app.ui.activeTool === 'boolean' && this.hitTest(pos.xMM, pos.yMM) !== -1) {
+                cursor = 'pointer';
             } else if (this.hitTest(pos.xMM, pos.yMM) !== -1) {
                 cursor = 'pointer';
             }
             this.canvas.style.cursor = cursor;
+
+            if (this.app.ui.activeTool === 'bezier' && this.isCreatingBezier && this.isFreeDrawBezier) {
+                this.appendFreeDrawBezierPoint({ x: pos.xMM, y: pos.yMM });
+                this.draw();
+                return;
+            }
 
             if (this.app.ui.activeTool === 'bezier' && this.isCreatingBezier) {
                 let previewX = pos.xMM;
@@ -1121,7 +1322,11 @@ class CanvasManager {
                             const newPos = rotatePoint({ x: orig.x, y: orig.y });
                             p.x = newPos.x;
                             p.y = newPos.y;
-                            p.rotation = this.normalizeTextRotation((orig.rotation || 0) + (deltaAngle * 180 / Math.PI));
+                            p.rotation = this.getAppliedTextRotation(
+                                p,
+                                (orig.rotation || 0) + (deltaAngle * 180 / Math.PI)
+                            );
+                            this.invalidateTextPathCache(p);
                         }
                     }
                 });
@@ -1206,7 +1411,12 @@ class CanvasManager {
                 const dx = pos.xMM - this.dragStartX;
                 const dy = pos.yMM - this.dragStartY;
 
-                if (this.app.ui.activeTool === 'node' && this.selectedNodes.length > 0) {
+                if (this.isWarpDragging && this.app.ui.activeTool === 'warp' && this.warpActiveHandleIndex > -1) {
+                    if (this.warpHandlePositions && this.warpHandlePositions[this.warpActiveHandleIndex]) {
+                        this.warpHandlePositions[this.warpActiveHandleIndex] = { x: pos.xMM, y: pos.yMM };
+                        this.applyWarpToSelectedPaths();
+                    }
+                } else if (this.app.ui.activeTool === 'node' && this.selectedNodes.length > 0) {
                     this.snapPoint = null;
                     // Update all selected nodes based on original positions
                     this.selectedNodes.forEach(nodeRef => {
@@ -1385,11 +1595,18 @@ class CanvasManager {
         }, true);
 
         document.addEventListener('mouseup', (e) => {
-            if (!this.isPanning && !this.isMarqueeSelecting && !this.isDragging) {
+            if (!this.isPanning && !this.isMarqueeSelecting && !this.isDragging && !this.isCreatingBezier) {
                 if (!checkTarget(e)) return;
             }
 
             this.snapPoint = null;
+
+            if (this.app.ui.activeTool === 'bezier' && this.isFreeDrawBezier && this.isCreatingBezier) {
+                if (e.button === 0) {
+                    this.finalizeFreeDrawBezierPath(true);
+                }
+                return;
+            }
 
             if (this.app.ui.activeTool === 'bezier' && this.isAdjustingBezierHandle) {
                 this.isAdjustingBezierHandle = false;
@@ -1456,11 +1673,12 @@ class CanvasManager {
                 this.draw();
             }
             if (this.isDragging || this.isRotating) {
-                this.saveUndoState(); // Done editing node/drag/resize/rotate
+                this.saveUndoState(); // Done editing node/drag/resize/rotate/warp
             }
             this.isDragging = false;
             this.isRotating = false;
             this.isMarqueeSelecting = false;
+            if (this.isWarpDragging) this.endWarpDrag();
 
             if (this.canvas) this.canvas.classList.remove('rotating');
             if (this.app.ui) this.app.ui.updatePatternPanelState();
@@ -1526,13 +1744,80 @@ class CanvasManager {
         return (((quarterTurns % 4) + 4) % 4) * 90;
     }
 
+    getAppliedTextRotation(pathOrMode, rotation) {
+        const mode = typeof pathOrMode === 'string'
+            ? pathOrMode
+            : (pathOrMode?.textMode || 'roland');
+        const safeRotation = Number.isFinite(rotation) ? rotation : 0;
+        return mode === 'creative' ? safeRotation : this.normalizeTextRotation(safeRotation);
+    }
+
+    normalizeTextPath(path) {
+        if (!path || path.type !== 'text') return path;
+        path.textMode = path.textMode === 'creative' ? 'creative' : 'roland';
+        path.creativeFontId = path.creativeFontId || this.app?.ui?.textToolSettings?.creativeFontId || 'bungee';
+        path.fontSize = Number.isFinite(path.fontSize) ? path.fontSize : 10;
+        path.rotation = this.getAppliedTextRotation(path, Number.isFinite(path.rotation) ? path.rotation : 0);
+        path.letterSpacing = Number.isFinite(path.letterSpacing) ? path.letterSpacing : 0;
+        path.curve = Number.isFinite(path.curve) ? path.curve : 0;
+        path.exploded = path.exploded === true;
+        return path;
+    }
+
+    pathSupportsCurve(path) {
+        return !!(path && ['line', 'polyline', 'path'].includes(path.type));
+    }
+
+    normalizePathCurve(path) {
+        if (!this.pathSupportsCurve(path)) return path;
+        path.curve = Number.isFinite(path.curve) ? path.curve : 0;
+        return path;
+    }
+
+    normalizePathData(path) {
+        if (!path) return path;
+        this.normalizePathCurve(path);
+        if (path.type === 'text') this.normalizeTextPath(path);
+        return path;
+    }
+
+    normalizeLoadedPaths() {
+        this.paths.forEach(path => this.normalizePathData(path));
+    }
+
+    isCreativeTextPath(path) {
+        return !!(path && path.type === 'text' && path.textMode === 'creative' && path.exploded !== true);
+    }
+
+    invalidateTextPathCache(path) {
+        if (!path || path.type !== 'text') return;
+        delete path._vectorTextCache;
+        delete path._creativeOutlineCache;
+    }
+
     handleCanvasClick(xMM, yMM) {
         const tool = this.app.ui.activeTool;
         if (tool === 'text') {
             const visPen = this.app.ui.activeVisualizerPen || 1;
-            this.paths.push({ type: 'text', text: '', x: xMM, y: yMM, pen: visPen, fontSize: 10, rotation: 0 });
+            const textSettings = this.app.ui?.textToolSettings || {};
+            this.textEditOriginalSnapshot = this.serializePathsSnapshot();
+            const textPath = this.normalizeTextPath({
+                type: 'text',
+                text: '',
+                x: xMM,
+                y: yMM,
+                pen: visPen,
+                textMode: textSettings.mode || 'roland',
+                creativeFontId: textSettings.creativeFontId || 'bungee',
+                fontSize: Number.isFinite(textSettings.fontSize) ? textSettings.fontSize : 10,
+                rotation: Number.isFinite(textSettings.rotation) ? textSettings.rotation : 0,
+                letterSpacing: Number.isFinite(textSettings.letterSpacing) ? textSettings.letterSpacing : 0,
+                curve: Number.isFinite(textSettings.curve) ? textSettings.curve : 0
+            });
+            this.paths.push(textPath);
             this.editingPathIdx = this.paths.length - 1;
             this.selectedPaths = [this.editingPathIdx];
+            this.app?.ui?.resetTextToolTransientSettings?.({ persist: true, applyToSelection: false });
             this.draw();
         } else if (tool === 'shape') {
             // Handled by mouse down/drag
@@ -1549,9 +1834,7 @@ class CanvasManager {
                 const dist = Math.sqrt((xMM - p.x) ** 2 + (yMM - p.y) ** 2);
                 if (Math.abs(dist - p.r) <= tol) return i;
             } else if (p.type === 'line' || p.type === 'polyline' || p.type === 'path') {
-                const hitPoints = (p.type === 'path' && Array.isArray(p.segments) && p.segments.length > 0)
-                    ? this.flattenPathForFill(p)
-                    : p.points;
+                const hitPoints = this.getPathTracePoints(p);
                 for (let j = 0; j < hitPoints.length - 1; j++) {
                     const p1 = hitPoints[j];
                     const p2 = hitPoints[j + 1];
@@ -1559,6 +1842,7 @@ class CanvasManager {
                     if (d <= tol) return i;
                 }
             } else if (p.type === 'text') {
+                this.normalizeTextPath(p);
                 const textSegments = this.getVectorTextSegments(p);
                 if (textSegments.length > 0) {
                     for (let j = 0; j < textSegments.length; j++) {
@@ -1638,6 +1922,133 @@ class CanvasManager {
         return hit ? hit.nodeIdx : -1;
     }
 
+    applyCurveToPoints(points, curve) {
+        const sourcePoints = Array.isArray(points)
+            ? points.filter(point => Number.isFinite(point?.x) && Number.isFinite(point?.y))
+            : [];
+        if (sourcePoints.length === 0) return [];
+
+        const curveAmount = Number.isFinite(curve) ? curve : 0;
+        if (Math.abs(curveAmount) < 0.001) {
+            return sourcePoints.map(point => ({ x: point.x, y: point.y }));
+        }
+
+        let minX = Infinity;
+        let minY = Infinity;
+        let maxX = -Infinity;
+        let maxY = -Infinity;
+        sourcePoints.forEach(point => {
+            if (point.x < minX) minX = point.x;
+            if (point.x > maxX) maxX = point.x;
+            if (point.y < minY) minY = point.y;
+            if (point.y > maxY) maxY = point.y;
+        });
+
+        const width = Math.max(0.001, maxX - minX);
+        const height = Math.max(0.001, maxY - minY);
+        const bendAlongX = width >= height;
+        const axisMin = bendAlongX ? minX : minY;
+        const axisSize = bendAlongX ? width : height;
+        const axisCenter = axisMin + (axisSize / 2);
+
+        return sourcePoints.map(point => {
+            const axisValue = bendAlongX ? point.x : point.y;
+            const normalized = (axisValue - axisCenter) / Math.max(0.001, axisSize / 2);
+            const offset = -curveAmount * Math.max(0, 1 - (normalized * normalized));
+            return bendAlongX
+                ? { x: point.x, y: point.y + offset }
+                : { x: point.x + offset, y: point.y };
+        });
+    }
+
+    getPathTracePoints(path, { applyCurve = true } = {}) {
+        if (!path) return [];
+        let points = [];
+
+        if (path.type === 'rectangle') {
+            points = [
+                { x: path.x, y: path.y },
+                { x: path.x + (path.w || 0), y: path.y },
+                { x: path.x + (path.w || 0), y: path.y + (path.h || 0) },
+                { x: path.x, y: path.y + (path.h || 0) }
+            ];
+        } else if (path.type === 'circle') {
+            const radius = Math.max(0.1, path.r || 0);
+            const circumference = Math.PI * 2 * radius;
+            const steps = Math.max(64, Math.min(512, Math.ceil(circumference / 1.2)));
+            for (let i = 0; i < steps; i++) {
+                const angle = (i / steps) * Math.PI * 2;
+                points.push({
+                    x: path.x + Math.cos(angle) * path.r,
+                    y: path.y + Math.sin(angle) * path.r
+                });
+            }
+        } else if (path.type === 'path' && Array.isArray(path.segments) && path.segments.length > 0) {
+            let currentPoint = null;
+            let subpathStart = null;
+            const estimateSegmentSteps = (lengthEstimate, minSteps, maxSteps) => {
+                return Math.max(minSteps, Math.min(maxSteps, Math.ceil(Math.max(0.1, lengthEstimate) / 1.2)));
+            };
+            const addPoint = (pt) => {
+                if (!pt) return;
+                const prev = points[points.length - 1];
+                if (!prev || Math.hypot(prev.x - pt.x, prev.y - pt.y) > 0.01) points.push({ x: pt.x, y: pt.y });
+            };
+            path.segments.forEach(segment => {
+                if (segment.type === 'M') {
+                    currentPoint = { x: segment.x, y: segment.y };
+                    subpathStart = { ...currentPoint };
+                    addPoint(currentPoint);
+                } else if (segment.type === 'L') {
+                    currentPoint = { x: segment.x, y: segment.y };
+                    addPoint(currentPoint);
+                } else if (segment.type === 'C' && currentPoint) {
+                    const start = { ...currentPoint };
+                    const controlSpan = Math.hypot(segment.x1 - start.x, segment.y1 - start.y)
+                        + Math.hypot(segment.x2 - segment.x1, segment.y2 - segment.y1)
+                        + Math.hypot(segment.x - segment.x2, segment.y - segment.y2);
+                    const steps = estimateSegmentSteps(controlSpan, 24, 240);
+                    for (let i = 1; i <= steps; i++) {
+                        const t = i / steps;
+                        const mt = 1 - t;
+                        addPoint({
+                            x: (mt ** 3) * start.x + 3 * (mt ** 2) * t * segment.x1 + 3 * mt * (t ** 2) * segment.x2 + (t ** 3) * segment.x,
+                            y: (mt ** 3) * start.y + 3 * (mt ** 2) * t * segment.y1 + 3 * mt * (t ** 2) * segment.y2 + (t ** 3) * segment.y
+                        });
+                    }
+                    currentPoint = { x: segment.x, y: segment.y };
+                } else if (segment.type === 'Q' && currentPoint) {
+                    const start = { ...currentPoint };
+                    const controlSpan = Math.hypot(segment.x1 - start.x, segment.y1 - start.y)
+                        + Math.hypot(segment.x - segment.x1, segment.y - segment.y1);
+                    const steps = estimateSegmentSteps(controlSpan, 20, 180);
+                    for (let i = 1; i <= steps; i++) {
+                        const t = i / steps;
+                        const mt = 1 - t;
+                        addPoint({
+                            x: (mt ** 2) * start.x + 2 * mt * t * segment.x1 + (t ** 2) * segment.x,
+                            y: (mt ** 2) * start.y + 2 * mt * t * segment.y1 + (t ** 2) * segment.y
+                        });
+                    }
+                    currentPoint = { x: segment.x, y: segment.y };
+                } else if (segment.type === 'A') {
+                    currentPoint = { x: segment.x, y: segment.y };
+                    addPoint(currentPoint);
+                } else if (segment.type === 'Z' && subpathStart) {
+                    addPoint({ ...subpathStart });
+                    currentPoint = { ...subpathStart };
+                }
+            });
+        } else if (Array.isArray(path.points)) {
+            points = path.points.map(point => ({ x: point.x, y: point.y }));
+        }
+
+        if (applyCurve && this.pathSupportsCurve(path)) {
+            return this.applyCurveToPoints(points, path.curve);
+        }
+        return points;
+    }
+
     getBoundingBox(p) {
         if (p.type === 'circle') {
             return { minX: p.x - p.r, minY: p.y - p.r, maxX: p.x + p.r, maxY: p.y + p.r };
@@ -1654,31 +2065,18 @@ class CanvasManager {
             };
         } else if (p.type === 'line' || p.type === 'polyline' || p.type === 'path') {
             let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-            if (p.points && p.points.length > 0) {
-                p.points.forEach(pt => {
-                    if (pt.x < minX) minX = pt.x; if (pt.x > maxX) maxX = pt.x;
-                    if (pt.y < minY) minY = pt.y; if (pt.y > maxY) maxY = pt.y;
-                });
-            }
-            if (p.segments && p.segments.length > 0) {
-                p.segments.forEach(s => {
-                    if (s.x !== undefined) {
-                        if (s.x < minX) minX = s.x; if (s.x > maxX) maxX = s.x;
-                        if (s.y < minY) minY = s.y; if (s.y > maxY) maxY = s.y;
-                    }
-                    if (s.x1 !== undefined) {
-                        if (s.x1 < minX) minX = s.x1; if (s.x1 > maxX) maxX = s.x1;
-                        if (s.y1 !== undefined) { if (s.y1 < minY) minY = s.y1; if (s.y1 > maxY) maxY = s.y1; }
-                    }
-                    if (s.x2 !== undefined) {
-                        if (s.x2 < minX) minX = s.x2; if (s.x2 > maxX) maxX = s.x2;
-                        if (s.y2 !== undefined) { if (s.y2 < minY) minY = s.y2; if (s.y2 > maxY) maxY = s.y2; }
-                    }
-                });
-            }
+            this.getPathTracePoints(p).forEach(pt => {
+                if (pt.x < minX) minX = pt.x; if (pt.x > maxX) maxX = pt.x;
+                if (pt.y < minY) minY = pt.y; if (pt.y > maxY) maxY = pt.y;
+            });
             if (minX === Infinity) return null;
             return { minX, minY, maxX, maxY };
         } else if (p.type === 'text') {
+            this.normalizeTextPath(p);
+            if (this.isCreativeTextPath(p) && typeof CreativeTextEngine !== 'undefined') {
+                const creativeBox = CreativeTextEngine.getBoundingBox(p);
+                if (creativeBox) return creativeBox;
+            }
             const n = Math.max(0, Math.min(127, Math.round((p.fontSize || 10) / 0.8) - 1));
             const charH = (n + 1) * 0.8;
             const stepH = (n + 1) * 0.6;
@@ -1766,6 +2164,200 @@ class CanvasManager {
         };
     }
 
+    isSelectionInteractionTool(tool = this.app?.ui?.activeTool) {
+        return tool === 'select' || tool === 'warp' || tool === 'boolean';
+    }
+
+    getEightHandlePositions(box) {
+        if (!box) return [];
+        return [
+            { x: box.minX, y: box.minY },
+            { x: box.minX + ((box.maxX - box.minX) / 2), y: box.minY },
+            { x: box.maxX, y: box.minY },
+            { x: box.maxX, y: box.minY + ((box.maxY - box.minY) / 2) },
+            { x: box.maxX, y: box.maxY },
+            { x: box.minX + ((box.maxX - box.minX) / 2), y: box.maxY },
+            { x: box.minX, y: box.maxY },
+            { x: box.minX, y: box.minY + ((box.maxY - box.minY) / 2) }
+        ];
+    }
+
+    hitTestWarpHandle(indices, xMM, yMM) {
+        const handlePositions = this.warpHandlePositions
+            || this.getEightHandlePositions(this.getGroupBoundingBox(indices));
+        if (!Array.isArray(handlePositions) || handlePositions.length !== 8) return -1;
+        const tol = 7;
+        for (let i = 0; i < handlePositions.length; i++) {
+            const handle = handlePositions[i];
+            if (Math.abs(handle.x - xMM) <= tol && Math.abs(handle.y - yMM) <= tol) return i;
+        }
+        return -1;
+    }
+
+    makeClosedPolylinePath(points, sourcePath = {}) {
+        const normalized = Array.isArray(points)
+            ? points.filter(point => Number.isFinite(point?.x) && Number.isFinite(point?.y)).map(point => ({ x: point.x, y: point.y }))
+            : [];
+        if (normalized.length < 3) return null;
+        const first = normalized[0];
+        const last = normalized[normalized.length - 1];
+        if (Math.hypot((last.x || 0) - first.x, (last.y || 0) - first.y) > 0.01) {
+            normalized.push({ ...first });
+        }
+        return {
+            type: 'polyline',
+            points: normalized,
+            pen: sourcePath.pen || this.app?.ui?.activeVisualizerPen || 1,
+            closed: true,
+            groupId: sourcePath.groupId,
+            parentGroupId: sourcePath.parentGroupId
+        };
+    }
+
+    convertPathToEditablePolyline(path) {
+        if (!path) return null;
+        if (path.type === 'polyline') {
+            const clone = JSON.parse(JSON.stringify(path));
+            clone.closed = this.isPathClosed(clone);
+            return clone;
+        }
+        if (path.type === 'line') {
+            const clone = JSON.parse(JSON.stringify(path));
+            clone.type = 'polyline';
+            clone.closed = this.isPathClosed(clone);
+            return clone;
+        }
+        if (path.type === 'rectangle' || path.type === 'circle') {
+            return this.makeClosedPolylinePath(this.flattenPathForFill(path), path);
+        }
+        if (path.type === 'path') {
+            const clone = JSON.parse(JSON.stringify(path));
+            clone.points = this.getPathTracePoints(clone, { applyCurve: false });
+            clone.closed = this.isPathClosed(clone);
+            return clone;
+        }
+        return null;
+    }
+
+    prepareSelectedPathsForWarp() {
+        if (!Array.isArray(this.selectedPaths) || this.selectedPaths.length === 0) return false;
+        const replacements = [];
+        for (const pathIdx of this.selectedPaths) {
+            const path = this.paths[pathIdx];
+            if (!path) continue;
+            if (path.type === 'text') {
+                this.app?.ui?.logToConsole('Warp Tool: Text objects need to be converted to outlines first.', 'error');
+                return false;
+            }
+            if (path.type === 'rectangle' || path.type === 'circle' || path.type === 'line') {
+                const converted = this.convertPathToEditablePolyline(path);
+                if (!converted) {
+                    this.app?.ui?.logToConsole('Warp Tool: Unable to convert the selected shape for warping.', 'error');
+                    return false;
+                }
+                replacements.push({ pathIdx, converted });
+            }
+        }
+        replacements.forEach(({ pathIdx, converted }) => {
+            this.paths[pathIdx] = converted;
+        });
+        return true;
+    }
+
+    beginWarpDrag(handleIndex) {
+        if (handleIndex < 0 || this.selectedPaths.length === 0) return false;
+        if (!this.prepareSelectedPathsForWarp()) return false;
+        const box = this.getGroupBoundingBox(this.selectedPaths);
+        if (!box) return false;
+        this.warpOriginalBox = { ...box };
+        this.warpOriginalHandlePositions = this.getEightHandlePositions(box);
+        this.warpHandlePositions = this.warpOriginalHandlePositions.map(handle => ({ ...handle }));
+        this.warpActiveHandleIndex = handleIndex;
+        this.isWarpDragging = true;
+        this.isDragging = true;
+        this.dragOriginalPaths = this.selectedPaths.map(idx => JSON.parse(JSON.stringify(this.paths[idx])));
+        return true;
+    }
+
+    warpPointFromHandles(point, originalBox, originalHandles, warpedHandles) {
+        if (!point || !originalBox || !Array.isArray(originalHandles) || !Array.isArray(warpedHandles)) return point;
+        const width = Math.max(0.001, originalBox.maxX - originalBox.minX);
+        const height = Math.max(0.001, originalBox.maxY - originalBox.minY);
+        let offsetX = 0;
+        let offsetY = 0;
+        let totalWeight = 0;
+        for (let i = 0; i < originalHandles.length; i++) {
+            const source = originalHandles[i];
+            const target = warpedHandles[i];
+            if (!source || !target) continue;
+            const distance = Math.hypot(point.x - source.x, point.y - source.y);
+            if (distance <= 0.0001) return { x: target.x, y: target.y };
+            const weight = 1 / Math.pow(distance + 0.35, 1.35);
+            offsetX += (target.x - source.x) * weight;
+            offsetY += (target.y - source.y) * weight;
+            totalWeight += weight;
+        }
+        if (totalWeight <= 0) return { x: point.x, y: point.y };
+
+        const u = Math.max(0, Math.min(1, (point.x - originalBox.minX) / width));
+        const v = Math.max(0, Math.min(1, (point.y - originalBox.minY) / height));
+        const edgeBias = 0.55 + (0.45 * Math.max(Math.abs((u * 2) - 1), Math.abs((v * 2) - 1)));
+
+        return {
+            x: point.x + ((offsetX / totalWeight) * edgeBias),
+            y: point.y + ((offsetY / totalWeight) * edgeBias)
+        };
+    }
+
+    applyWarpToSelectedPaths() {
+        if (!this.warpOriginalBox || !this.warpOriginalHandlePositions || !this.warpHandlePositions) return;
+        this.selectedPaths.forEach((pathIdx, selectionIndex) => {
+            const path = this.paths[pathIdx];
+            const original = this.dragOriginalPaths?.[selectionIndex];
+            if (!path || !original) return;
+
+            const warpPoint = (sourcePoint) => this.warpPointFromHandles(
+                sourcePoint,
+                this.warpOriginalBox,
+                this.warpOriginalHandlePositions,
+                this.warpHandlePositions
+            );
+
+            if (Array.isArray(path.points) && Array.isArray(original.points)) {
+                path.points = original.points.map(point => warpPoint(point));
+            }
+            if (Array.isArray(path.segments) && Array.isArray(original.segments)) {
+                path.segments = original.segments.map(segment => {
+                    const next = { ...segment };
+                    if (Number.isFinite(segment.x) && Number.isFinite(segment.y)) {
+                        const warped = warpPoint({ x: segment.x, y: segment.y });
+                        next.x = warped.x;
+                        next.y = warped.y;
+                    }
+                    if (Number.isFinite(segment.x1) && Number.isFinite(segment.y1)) {
+                        const warped = warpPoint({ x: segment.x1, y: segment.y1 });
+                        next.x1 = warped.x;
+                        next.y1 = warped.y;
+                    }
+                    if (Number.isFinite(segment.x2) && Number.isFinite(segment.y2)) {
+                        const warped = warpPoint({ x: segment.x2, y: segment.y2 });
+                        next.x2 = warped.x;
+                        next.y2 = warped.y;
+                    }
+                    return next;
+                });
+            }
+        });
+    }
+
+    endWarpDrag() {
+        this.isWarpDragging = false;
+        this.warpActiveHandleIndex = -1;
+        this.warpHandlePositions = null;
+        this.warpOriginalHandlePositions = null;
+        this.warpOriginalBox = null;
+    }
+
     scaleSelectedPaths(anchorX, anchorY, sx, sy) {
         for (let i = 0; i < this.selectedPaths.length; i++) {
             const selIdx = this.selectedPaths[i];
@@ -1806,6 +2398,7 @@ class CanvasManager {
                 p.fontSize = Math.max(1, orig.fontSize * s);
                 p.x = anchorX + (orig.x - anchorX) * sx;
                 p.y = anchorY + (orig.y - anchorY) * sy;
+                this.invalidateTextPathCache(p);
             }
         }
     }
@@ -1885,90 +2478,40 @@ class CanvasManager {
         return false;
     }
 
+    shouldTreatPathAsClosedForOffset(path) {
+        if (this.isPathClosed(path)) return true;
+        if (!Array.isArray(path?.points) || path.points.length < 6) return false;
+
+        const validPoints = path.points.filter(point => Number.isFinite(point?.x) && Number.isFinite(point?.y));
+        if (validPoints.length < 6) return false;
+
+        const first = validPoints[0];
+        const last = validPoints[validPoints.length - 1];
+        const closureGap = Math.hypot((last.x || 0) - (first.x || 0), (last.y || 0) - (first.y || 0));
+
+        let perimeter = 0;
+        for (let i = 1; i < validPoints.length; i++) {
+            perimeter += Math.hypot(validPoints[i].x - validPoints[i - 1].x, validPoints[i].y - validPoints[i - 1].y);
+        }
+        const averageSegment = perimeter / Math.max(1, validPoints.length - 1);
+        const tolerance = Math.max(0.08, Math.min(2.5, averageSegment * 2.5));
+
+        return closureGap <= tolerance;
+    }
+
+    isImportedVectorPathForOffset(path) {
+        if (!path) return false;
+        const groupId = String(path.groupId || '');
+        return !!(
+            path.sourceColor
+            || groupId.startsWith('import_')
+            || groupId.startsWith('import_color_')
+            || path.machinePreviewSource
+        );
+    }
+
     flattenPathForFill(path) {
-        if (!path) return [];
-        if (path.type === 'rectangle') {
-            return [
-                { x: path.x, y: path.y },
-                { x: path.x + (path.w || 0), y: path.y },
-                { x: path.x + (path.w || 0), y: path.y + (path.h || 0) },
-                { x: path.x, y: path.y + (path.h || 0) }
-            ];
-        }
-        if (path.type === 'circle') {
-            const points = [];
-            const radius = Math.max(0.1, path.r || 0);
-            const circumference = Math.PI * 2 * radius;
-            const steps = Math.max(64, Math.min(512, Math.ceil(circumference / 1.2)));
-            for (let i = 0; i < steps; i++) {
-                const angle = (i / steps) * Math.PI * 2;
-                points.push({
-                    x: path.x + Math.cos(angle) * path.r,
-                    y: path.y + Math.sin(angle) * path.r
-                });
-            }
-            return points;
-        }
-        if (path.type === 'path' && Array.isArray(path.segments) && path.segments.length > 0) {
-            const points = [];
-            let currentPoint = null;
-            let subpathStart = null;
-            const estimateSegmentSteps = (lengthEstimate, minSteps, maxSteps) => {
-                return Math.max(minSteps, Math.min(maxSteps, Math.ceil(Math.max(0.1, lengthEstimate) / 1.2)));
-            };
-            const addPoint = (pt) => {
-                if (!pt) return;
-                const prev = points[points.length - 1];
-                if (!prev || Math.hypot(prev.x - pt.x, prev.y - pt.y) > 0.01) points.push(pt);
-            };
-            path.segments.forEach(segment => {
-                if (segment.type === 'M') {
-                    currentPoint = { x: segment.x, y: segment.y };
-                    subpathStart = { ...currentPoint };
-                    addPoint(currentPoint);
-                } else if (segment.type === 'L') {
-                    currentPoint = { x: segment.x, y: segment.y };
-                    addPoint(currentPoint);
-                } else if (segment.type === 'C' && currentPoint) {
-                    const start = { ...currentPoint };
-                    const controlSpan = Math.hypot(segment.x1 - start.x, segment.y1 - start.y)
-                        + Math.hypot(segment.x2 - segment.x1, segment.y2 - segment.y1)
-                        + Math.hypot(segment.x - segment.x2, segment.y - segment.y2);
-                    const steps = estimateSegmentSteps(controlSpan, 24, 240);
-                    for (let i = 1; i <= steps; i++) {
-                        const t = i / steps;
-                        const mt = 1 - t;
-                        addPoint({
-                            x: (mt ** 3) * start.x + 3 * (mt ** 2) * t * segment.x1 + 3 * mt * (t ** 2) * segment.x2 + (t ** 3) * segment.x,
-                            y: (mt ** 3) * start.y + 3 * (mt ** 2) * t * segment.y1 + 3 * mt * (t ** 2) * segment.y2 + (t ** 3) * segment.y
-                        });
-                    }
-                    currentPoint = { x: segment.x, y: segment.y };
-                } else if (segment.type === 'Q' && currentPoint) {
-                    const start = { ...currentPoint };
-                    const controlSpan = Math.hypot(segment.x1 - start.x, segment.y1 - start.y)
-                        + Math.hypot(segment.x - segment.x1, segment.y - segment.y1);
-                    const steps = estimateSegmentSteps(controlSpan, 20, 180);
-                    for (let i = 1; i <= steps; i++) {
-                        const t = i / steps;
-                        const mt = 1 - t;
-                        addPoint({
-                            x: (mt ** 2) * start.x + 2 * mt * t * segment.x1 + (t ** 2) * segment.x,
-                            y: (mt ** 2) * start.y + 2 * mt * t * segment.y1 + (t ** 2) * segment.y
-                        });
-                    }
-                    currentPoint = { x: segment.x, y: segment.y };
-                } else if (segment.type === 'A') {
-                    currentPoint = { x: segment.x, y: segment.y };
-                    addPoint(currentPoint);
-                } else if (segment.type === 'Z' && subpathStart) {
-                    addPoint({ ...subpathStart });
-                    currentPoint = { ...subpathStart };
-                }
-            });
-            return points;
-        }
-        return Array.isArray(path.points) ? path.points.map(pt => ({ x: pt.x, y: pt.y })) : [];
+        return this.getPathTracePoints(path);
     }
 
     pointInPolygon(x, y, polygon) {
@@ -2273,6 +2816,61 @@ class CanvasManager {
         return Math.abs(area) * 0.5;
     }
 
+    removeCollinearLoopPoints(points = []) {
+        if (!Array.isArray(points) || points.length < 4) return Array.isArray(points) ? points.slice() : [];
+        const cleaned = [];
+        for (let i = 0; i < points.length; i++) {
+            const prev = points[(i - 1 + points.length) % points.length];
+            const current = points[i];
+            const next = points[(i + 1) % points.length];
+            if (!prev || !current || !next) continue;
+            const cross = ((current.x - prev.x) * (next.y - current.y)) - ((current.y - prev.y) * (next.x - current.x));
+            if (Math.abs(cross) <= 1e-6) continue;
+            cleaned.push({ x: current.x, y: current.y });
+        }
+        return cleaned.length >= 3 ? cleaned : points.slice();
+    }
+
+    simplifyLoopPoints(points = [], epsilon = 0.06) {
+        if (!Array.isArray(points) || points.length < 4) return Array.isArray(points) ? points.slice() : [];
+
+        const perpendicularDistance = (point, lineStart, lineEnd) => {
+            const dx = lineEnd.x - lineStart.x;
+            const dy = lineEnd.y - lineStart.y;
+            if (Math.abs(dx) < 1e-9 && Math.abs(dy) < 1e-9) {
+                return Math.hypot(point.x - lineStart.x, point.y - lineStart.y);
+            }
+            const t = ((point.x - lineStart.x) * dx + (point.y - lineStart.y) * dy) / ((dx * dx) + (dy * dy));
+            const projX = lineStart.x + (t * dx);
+            const projY = lineStart.y + (t * dy);
+            return Math.hypot(point.x - projX, point.y - projY);
+        };
+
+        const rdp = (pts) => {
+            if (pts.length <= 2) return pts.slice();
+            let maxDistance = -1;
+            let splitIndex = -1;
+            for (let i = 1; i < pts.length - 1; i++) {
+                const distance = perpendicularDistance(pts[i], pts[0], pts[pts.length - 1]);
+                if (distance > maxDistance) {
+                    maxDistance = distance;
+                    splitIndex = i;
+                }
+            }
+            if (maxDistance <= epsilon || splitIndex === -1) {
+                return [pts[0], pts[pts.length - 1]];
+            }
+            const left = rdp(pts.slice(0, splitIndex + 1));
+            const right = rdp(pts.slice(splitIndex));
+            return left.slice(0, -1).concat(right);
+        };
+
+        const openLoop = points.concat([points[0]]);
+        const simplifiedOpen = rdp(openLoop);
+        const simplified = simplifiedOpen.slice(0, -1);
+        return this.removeCollinearLoopPoints(simplified);
+    }
+
     getEmbeddedLoopFillRegions(path, pathIdx) {
         if (!path || !Array.isArray(path.points) || path.points.length < 6) return [];
         // Imported/explicitly closed contours already produce exact fill faces.
@@ -2346,6 +2944,1484 @@ class CanvasManager {
         }
         this.closedFillRegionsCache = regions;
         return regions;
+    }
+
+    getFillRegionsForPath(path, pathIdx = 0) {
+        const regions = [];
+        this.getBaseFillRegions(path, pathIdx).forEach(region => regions.push(region));
+        this.getEmbeddedLoopFillRegions(path, pathIdx).forEach(region => regions.push(region));
+        return regions;
+    }
+
+    isPointInsidePathRegionSet(x, y, path) {
+        const regions = this.getFillRegionsForPath(path, -1)
+            .filter(region => typeof region.contains === 'function');
+        return regions.some(region => region.contains(x, y));
+    }
+
+    traceCoverageMaskLoops(mask) {
+        if (!mask?.cells || !(mask.cells instanceof Set) || !mask.cells.size) return [];
+        const adjacency = new Map();
+        const edges = [];
+        const addAdjacency = (startKey, endKey) => {
+            if (!adjacency.has(startKey)) adjacency.set(startKey, []);
+            adjacency.get(startKey).push(endKey);
+        };
+
+        mask.cells.forEach(key => {
+            const [cxRaw, cyRaw] = key.split(',');
+            const cx = parseInt(cxRaw, 10);
+            const cy = parseInt(cyRaw, 10);
+            const x = mask.originX + (cx * mask.cellSize);
+            const y = mask.originY + (cy * mask.cellSize);
+            const leftEmpty = !mask.cells.has(`${cx - 1},${cy}`);
+            const rightEmpty = !mask.cells.has(`${cx + 1},${cy}`);
+            const topEmpty = !mask.cells.has(`${cx},${cy - 1}`);
+            const bottomEmpty = !mask.cells.has(`${cx},${cy + 1}`);
+
+            const cellEdges = [];
+            if (topEmpty) cellEdges.push([{ x, y }, { x: x + mask.cellSize, y }]);
+            if (rightEmpty) cellEdges.push([{ x: x + mask.cellSize, y }, { x: x + mask.cellSize, y: y + mask.cellSize }]);
+            if (bottomEmpty) cellEdges.push([{ x: x + mask.cellSize, y: y + mask.cellSize }, { x, y: y + mask.cellSize }]);
+            if (leftEmpty) cellEdges.push([{ x, y: y + mask.cellSize }, { x, y }]);
+
+            cellEdges.forEach(([start, end]) => {
+                const startKey = `${start.x.toFixed(4)},${start.y.toFixed(4)}`;
+                const endKey = `${end.x.toFixed(4)},${end.y.toFixed(4)}`;
+                edges.push({ start, end, startKey, endKey });
+                addAdjacency(startKey, endKey);
+            });
+        });
+
+        const edgeMap = new Map(edges.map(edge => [`${edge.startKey}>${edge.endKey}`, edge]));
+        const visited = new Set();
+        const loops = [];
+
+        edgeMap.forEach((edge, edgeKey) => {
+            if (visited.has(edgeKey)) return;
+            const loop = [{ ...edge.start }];
+            let currentEdge = edge;
+            visited.add(edgeKey);
+            loop.push({ ...currentEdge.end });
+
+            while (true) {
+                const nextCandidates = (adjacency.get(currentEdge.endKey) || [])
+                    .map(nextKey => edgeMap.get(`${currentEdge.endKey}>${nextKey}`))
+                    .filter(Boolean)
+                    .filter(nextEdge => !visited.has(`${nextEdge.startKey}>${nextEdge.endKey}`));
+                if (!nextCandidates.length) break;
+                const nextEdge = nextCandidates[0];
+                visited.add(`${nextEdge.startKey}>${nextEdge.endKey}`);
+                currentEdge = nextEdge;
+                loop.push({ ...currentEdge.end });
+                if (currentEdge.endKey === edge.startKey) break;
+            }
+
+            if (loop.length >= 4) {
+                const first = loop[0];
+                const last = loop[loop.length - 1];
+                if (Math.hypot(last.x - first.x, last.y - first.y) > 0.001) {
+                    loop.push({ ...first });
+                }
+                if (this.getPolygonArea(loop) >= Math.max(0.5, mask.cellSize * mask.cellSize)) {
+                    loops.push(loop);
+                }
+            }
+        });
+
+        return loops;
+    }
+
+    traceBooleanGridLoops(grid) {
+        if (!grid || !Array.isArray(grid.samples) || !grid.samples.length) return [];
+
+        const getSample = (x, y) => {
+            if (x < 0 || y < 0 || x > grid.cols || y > grid.rows) return false;
+            return !!grid.samples[(y * (grid.cols + 1)) + x];
+        };
+        const edgePoint = (cellX, cellY, edgeIdx) => {
+            const x = grid.originX + (cellX * grid.cellSize);
+            const y = grid.originY + (cellY * grid.cellSize);
+            switch (edgeIdx) {
+                case 0: return { x: x + (grid.cellSize * 0.5), y };
+                case 1: return { x: x + grid.cellSize, y: y + (grid.cellSize * 0.5) };
+                case 2: return { x: x + (grid.cellSize * 0.5), y: y + grid.cellSize };
+                case 3: return { x, y: y + (grid.cellSize * 0.5) };
+                default: return { x, y };
+            }
+        };
+        const caseSegments = {
+            1: [[3, 2]],
+            2: [[2, 1]],
+            3: [[3, 1]],
+            4: [[0, 1]],
+            5: [[0, 3], [1, 2]],
+            6: [[0, 2]],
+            7: [[0, 3]],
+            8: [[0, 3]],
+            9: [[0, 2]],
+            10: [[0, 1], [2, 3]],
+            11: [[0, 1]],
+            12: [[3, 1]],
+            13: [[2, 1]],
+            14: [[3, 2]]
+        };
+
+        const segments = [];
+        for (let y = 0; y < grid.rows; y++) {
+            for (let x = 0; x < grid.cols; x++) {
+                const tl = getSample(x, y);
+                const tr = getSample(x + 1, y);
+                const br = getSample(x + 1, y + 1);
+                const bl = getSample(x, y + 1);
+                const caseIndex = (tl ? 8 : 0) | (tr ? 4 : 0) | (br ? 2 : 0) | (bl ? 1 : 0);
+                const mappings = caseSegments[caseIndex];
+                if (!mappings) continue;
+                mappings.forEach(([startEdge, endEdge]) => {
+                    segments.push({
+                        start: edgePoint(x, y, startEdge),
+                        end: edgePoint(x, y, endEdge)
+                    });
+                });
+            }
+        }
+
+        if (!segments.length) return [];
+
+        const keyForPoint = (point) => `${point.x.toFixed(5)},${point.y.toFixed(5)}`;
+        const adjacency = new Map();
+        segments.forEach((segment, index) => {
+            const startKey = keyForPoint(segment.start);
+            const endKey = keyForPoint(segment.end);
+            if (!adjacency.has(startKey)) adjacency.set(startKey, []);
+            if (!adjacency.has(endKey)) adjacency.set(endKey, []);
+            adjacency.get(startKey).push({ index, point: segment.end, key: endKey });
+            adjacency.get(endKey).push({ index, point: segment.start, key: startKey });
+        });
+
+        const visited = new Set();
+        const loops = [];
+        for (let i = 0; i < segments.length; i++) {
+            if (visited.has(i)) continue;
+            visited.add(i);
+            const loop = [{ ...segments[i].start }, { ...segments[i].end }];
+            let currentKey = keyForPoint(segments[i].end);
+            const startKey = keyForPoint(segments[i].start);
+
+            while (currentKey !== startKey) {
+                const candidates = (adjacency.get(currentKey) || []).filter(candidate => !visited.has(candidate.index));
+                if (!candidates.length) break;
+                const next = candidates[0];
+                visited.add(next.index);
+                loop.push({ ...next.point });
+                currentKey = next.key;
+            }
+
+            if (loop.length >= 4) {
+                const first = loop[0];
+                const last = loop[loop.length - 1];
+                if (Math.hypot(last.x - first.x, last.y - first.y) > 0.001) {
+                    loop.push({ ...first });
+                }
+                if (this.getPolygonArea(loop) >= Math.max(0.05, grid.cellSize * grid.cellSize)) {
+                    loops.push(loop);
+                }
+            }
+        }
+
+        return loops;
+    }
+
+    buildBooleanResultPathsFromMask(mask, pen = 1) {
+        let loops = Array.isArray(mask?.samples)
+            ? this.traceBooleanGridLoops(mask)
+            : [];
+        if (!loops.length) {
+            loops = this.traceCoverageMaskLoops(mask);
+        }
+        if (!loops.length) return [];
+        return loops.map(points => {
+            const openLoop = Array.isArray(points) && points.length > 1 ? points.slice(0, -1) : [];
+            const simplified = this.simplifyLoopPoints(openLoop, Math.max(0.02, (mask?.cellSize || 0.1) * 0.35));
+            const finalPoints = simplified.length >= 3 ? simplified.concat([{ ...simplified[0] }]) : points;
+            return {
+                type: 'polyline',
+                points: finalPoints,
+                pen,
+                closed: true,
+                generatedBy: 'boolean-op'
+            };
+        });
+    }
+
+    getPaperBooleanScope() {
+        if (this._paperBooleanScope && typeof paper !== 'undefined') return this._paperBooleanScope;
+        if (typeof paper === 'undefined' || typeof paper.PaperScope !== 'function') return null;
+        const scope = new paper.PaperScope();
+        const offscreenCanvas = document.createElement('canvas');
+        offscreenCanvas.width = 8;
+        offscreenCanvas.height = 8;
+        scope.setup(offscreenCanvas);
+        this._paperBooleanScope = scope;
+        return scope;
+    }
+
+    clearPaperBooleanScope(scope) {
+        if (!scope?.project) return;
+        if (typeof scope.project.clear === 'function') {
+            scope.project.clear();
+            return;
+        }
+        if (scope.project.activeLayer?.removeChildren) {
+            scope.project.activeLayer.removeChildren();
+        }
+    }
+
+    getClipperScope() {
+        if (typeof ClipperLib === 'undefined' || !ClipperLib?.ClipperOffset) return null;
+        return ClipperLib;
+    }
+
+    getMakerJsScope() {
+        if (typeof makerjs === 'undefined' || !makerjs?.model?.outline) return null;
+        return makerjs;
+    }
+
+    getBooleanSourcePoints(path) {
+        if (!path) return [];
+        if ((path.type === 'line' || path.type === 'polyline') && Array.isArray(path.points)) {
+            let points = path.points
+                .filter(point => Number.isFinite(point?.x) && Number.isFinite(point?.y))
+                .map(point => ({ x: point.x, y: point.y }));
+            if (this.pathSupportsCurve(path) && Math.abs(path.curve || 0) >= 0.001) {
+                points = this.getPathTracePoints(path);
+            }
+            if (this.isPathClosed(path) && points.length > 2) {
+                const first = points[0];
+                const last = points[points.length - 1];
+                if (Math.hypot(last.x - first.x, last.y - first.y) <= 0.01) {
+                    points = points.slice(0, -1);
+                }
+            }
+            return points;
+        }
+        if (path.type === 'path' && Array.isArray(path.segments) && Math.abs(path.curve || 0) < 0.001) {
+            return null;
+        }
+        let traced = this.getPathTracePoints(path, { applyCurve: true });
+        if (this.isPathClosed(path) && traced.length > 2) {
+            const first = traced[0];
+            const last = traced[traced.length - 1];
+            if (Math.hypot(last.x - first.x, last.y - first.y) <= 0.01) {
+                traced = traced.slice(0, -1);
+            }
+        }
+        return traced;
+    }
+
+    densifyPolylinePoints(points, maxSegmentLength = 0.18) {
+        if (!Array.isArray(points) || points.length < 2) return Array.isArray(points) ? points.slice() : [];
+        const densified = [{ x: points[0].x, y: points[0].y }];
+        for (let i = 1; i < points.length; i++) {
+            const start = points[i - 1];
+            const end = points[i];
+            if (!start || !end) continue;
+            const dx = end.x - start.x;
+            const dy = end.y - start.y;
+            const distance = Math.hypot(dx, dy);
+            const steps = Math.max(1, Math.ceil(distance / Math.max(0.05, maxSegmentLength)));
+            for (let step = 1; step <= steps; step++) {
+                densified.push({
+                    x: start.x + ((dx * step) / steps),
+                    y: start.y + ((dy * step) / steps)
+                });
+            }
+        }
+        return densified;
+    }
+
+    convertAppPathToClipperPath(path, scale = 100000) {
+        let points = this.getBooleanSourcePoints(path);
+        if (!Array.isArray(points) || points.length < 2) return null;
+
+        let normalized = points
+            .filter(point => Number.isFinite(point?.x) && Number.isFinite(point?.y))
+            .map(point => ({ x: point.x, y: point.y }));
+        if (path?.type === 'circle') {
+            const radius = Math.max(0.1, Math.abs(path.r || 0));
+            const circumference = Math.PI * 2 * radius;
+            const steps = Math.max(360, Math.min(8192, Math.ceil(circumference / 0.1)));
+            normalized = [];
+            for (let i = 0; i < steps; i++) {
+                const angle = (i / steps) * Math.PI * 2;
+                normalized.push({
+                    x: path.x + Math.cos(angle) * radius,
+                    y: path.y + Math.sin(angle) * radius
+                });
+            }
+        } else {
+            const maxSegmentLength = this.isPathClosed(path) ? 0.12 : 0.1;
+            normalized = this.densifyPolylinePoints(normalized, maxSegmentLength);
+        }
+        if (this.shouldTreatPathAsClosedForOffset(path) && normalized.length > 2) {
+            const first = normalized[0];
+            const last = normalized[normalized.length - 1];
+            if (Math.hypot(last.x - first.x, last.y - first.y) > 0.0001) {
+                normalized.push({ ...first });
+            }
+        }
+        if (this.shouldTreatPathAsClosedForOffset(path) && normalized.length > 2) {
+            const first = normalized[0];
+            const last = normalized[normalized.length - 1];
+            if (Math.hypot(last.x - first.x, last.y - first.y) <= 0.01) {
+                normalized = normalized.slice(0, -1);
+            }
+        }
+        if (normalized.length < 2) return null;
+
+        return normalized.map(point => ({
+            X: Math.round(point.x * scale),
+            Y: Math.round(point.y * scale)
+        }));
+    }
+
+    buildAppPathsFromClipperPaths(paths, pen, scale = 100000) {
+        if (!Array.isArray(paths) || !paths.length) return [];
+        return paths
+            .map(path => {
+                const cleanedPath = typeof ClipperLib !== 'undefined' && ClipperLib?.Clipper?.CleanPolygon
+                    ? ClipperLib.Clipper.CleanPolygon(path || [], 2)
+                    : (path || []);
+                const points = cleanedPath
+                    .filter(point => Number.isFinite(point?.X) && Number.isFinite(point?.Y))
+                    .map(point => ({
+                        x: point.X / scale,
+                        y: point.Y / scale
+                    }));
+                if (points.length < 3) return null;
+                const cleaned = this.removeCollinearLoopPoints(points);
+                if (!Array.isArray(cleaned) || cleaned.length < 3) return null;
+                const closedPoints = cleaned.concat([{ ...cleaned[0] }]);
+                return {
+                    type: 'polyline',
+                    points: closedPoints,
+                    pen,
+                    closed: true,
+                    generatedBy: 'boolean-op-clipper'
+                };
+            })
+            .filter(Boolean);
+    }
+
+    convertAppPathToMakerModel(path) {
+        if (!path) return null;
+        const maker = this.getMakerJsScope();
+        if (!maker) return null;
+
+        if (path.type === 'circle') {
+            return {
+                paths: {
+                    c0: new maker.paths.Circle([path.x, path.y], Math.abs(path.r || 0))
+                }
+            };
+        }
+
+        if (path.type === 'path' && Array.isArray(path.segments) && path.segments.length > 0) {
+            const model = { paths: {}, models: {} };
+            let pathCount = 0;
+            let modelCount = 0;
+            let currentPoint = null;
+            let subpathStart = null;
+
+            const toMakerPoint = (x, y) => [x, y];
+            const addLine = (start, end) => {
+                if (!start || !end) return;
+                if (Math.hypot((end.x || 0) - (start.x || 0), (end.y || 0) - (start.y || 0)) <= 0.0001) return;
+                model.paths[`p${pathCount++}`] = new maker.paths.Line(
+                    toMakerPoint(start.x, start.y),
+                    toMakerPoint(end.x, end.y)
+                );
+            };
+            const addBezier = (seedPoints) => {
+                if (!Array.isArray(seedPoints) || seedPoints.length < 3) return;
+                model.models[`b${modelCount++}`] = new maker.models.BezierCurve(seedPoints.map(point => toMakerPoint(point.x, point.y)));
+            };
+
+            path.segments.forEach(segment => {
+                if (!segment) return;
+                if (segment.type === 'M') {
+                    currentPoint = { x: segment.x, y: segment.y };
+                    subpathStart = currentPoint ? { ...currentPoint } : null;
+                    return;
+                }
+                if (!currentPoint) return;
+
+                if (segment.type === 'L') {
+                    const nextPoint = { x: segment.x, y: segment.y };
+                    addLine(currentPoint, nextPoint);
+                    currentPoint = nextPoint;
+                    return;
+                }
+
+                if (segment.type === 'Q') {
+                    const nextPoint = { x: segment.x, y: segment.y };
+                    addBezier([
+                        { ...currentPoint },
+                        { x: segment.x1, y: segment.y1 },
+                        { ...nextPoint }
+                    ]);
+                    currentPoint = nextPoint;
+                    return;
+                }
+
+                if (segment.type === 'C') {
+                    const nextPoint = { x: segment.x, y: segment.y };
+                    addBezier([
+                        { ...currentPoint },
+                        { x: segment.x1, y: segment.y1 },
+                        { x: segment.x2, y: segment.y2 },
+                        { ...nextPoint }
+                    ]);
+                    currentPoint = nextPoint;
+                    return;
+                }
+
+                if (segment.type === 'Z') {
+                    if (currentPoint && subpathStart) {
+                        addLine(currentPoint, subpathStart);
+                        currentPoint = { ...subpathStart };
+                    }
+                    return;
+                }
+
+                if (Number.isFinite(segment.x) && Number.isFinite(segment.y)) {
+                    const nextPoint = { x: segment.x, y: segment.y };
+                    addLine(currentPoint, nextPoint);
+                    currentPoint = nextPoint;
+                }
+            });
+
+            if (pathCount || modelCount) return model;
+        }
+
+        const tracePoints = this.getBooleanSourcePoints(path);
+        if (!Array.isArray(tracePoints) || tracePoints.length < 2) return null;
+
+        let points = tracePoints
+            .filter(point => Number.isFinite(point?.x) && Number.isFinite(point?.y))
+            .map(point => [point.x, point.y]);
+        const treatClosed = this.shouldTreatPathAsClosedForOffset(path);
+        if (treatClosed && points.length > 2) {
+            const first = points[0];
+            const last = points[points.length - 1];
+            if (Math.hypot(last[0] - first[0], last[1] - first[1]) <= 0.01) {
+                points = points.slice(0, -1);
+            }
+        }
+        if (points.length < 2) return null;
+
+        const model = { paths: {} };
+        for (let i = 1; i < points.length; i++) {
+            model.paths[`p${i - 1}`] = new maker.paths.Line(points[i - 1], points[i]);
+        }
+        if (treatClosed && points.length > 2) {
+            model.paths[`p${points.length - 1}`] = new maker.paths.Line(points[points.length - 1], points[0]);
+        }
+        return model;
+    }
+
+    sampleMakerPath(pathContext, offset = [0, 0], reversed = false) {
+        const maker = this.getMakerJsScope();
+        if (!maker || !pathContext) return [];
+        const ox = Number.isFinite(offset?.[0]) ? offset[0] : 0;
+        const oy = Number.isFinite(offset?.[1]) ? offset[1] : 0;
+
+        if (pathContext.type === maker.pathType.Line) {
+            const start = {
+                x: (pathContext.origin?.[0] || 0) + ox,
+                y: (pathContext.origin?.[1] || 0) + oy
+            };
+            const end = {
+                x: (pathContext.end?.[0] || 0) + ox,
+                y: (pathContext.end?.[1] || 0) + oy
+            };
+            return reversed ? [end, start] : [start, end];
+        }
+
+        if (pathContext.type === maker.pathType.Circle) {
+            const radius = Math.abs(pathContext.radius || 0);
+            const centerX = (pathContext.origin?.[0] || 0) + ox;
+            const centerY = (pathContext.origin?.[1] || 0) + oy;
+            const steps = Math.max(360, Math.min(4096, Math.ceil((Math.PI * 2 * radius) / 0.1)));
+            const points = [];
+            for (let i = 0; i < steps; i++) {
+                const t = reversed ? (1 - (i / steps)) : (i / steps);
+                const angle = t * Math.PI * 2;
+                points.push({
+                    x: centerX + Math.cos(angle) * radius,
+                    y: centerY + Math.sin(angle) * radius
+                });
+            }
+            return points;
+        }
+
+        if (pathContext.type === maker.pathType.Arc) {
+            const radius = Math.abs(pathContext.radius || 0);
+            const centerX = (pathContext.origin?.[0] || 0) + ox;
+            const centerY = (pathContext.origin?.[1] || 0) + oy;
+            const startAngle = (pathContext.startAngle || 0) * (Math.PI / 180);
+            const endAngle = (pathContext.endAngle || 0) * (Math.PI / 180);
+            let sweep = endAngle - startAngle;
+            while (sweep <= -Math.PI * 2) sweep += Math.PI * 2;
+            while (sweep > Math.PI * 2) sweep -= Math.PI * 2;
+            const steps = Math.max(24, Math.min(2048, Math.ceil((Math.abs(sweep) * radius) / 0.12)));
+            const points = [];
+            for (let i = 0; i <= steps; i++) {
+                const ratio = reversed ? (1 - (i / steps)) : (i / steps);
+                const angle = startAngle + (sweep * ratio);
+                points.push({
+                    x: centerX + Math.cos(angle) * radius,
+                    y: centerY + Math.sin(angle) * radius
+                });
+            }
+            return points;
+        }
+
+        if (pathContext.type === maker.pathType.BezierSeed && maker.models?.BezierCurve) {
+            const length = Math.max(0.1, maker.models.BezierCurve.computeLength(pathContext) || 0);
+            const steps = Math.max(32, Math.min(2048, Math.ceil(length / 0.1)));
+            const points = [];
+            for (let i = 0; i <= steps; i++) {
+                const t = reversed ? (1 - (i / steps)) : (i / steps);
+                const point = maker.models.BezierCurve.computePoint(pathContext, t);
+                if (!Array.isArray(point) || point.length < 2) continue;
+                points.push({
+                    x: point[0] + ox,
+                    y: point[1] + oy
+                });
+            }
+            return points;
+        }
+
+        return [];
+    }
+
+    buildAppPathsFromMakerModel(outlinedModel, pen) {
+        const maker = this.getMakerJsScope();
+        if (!maker || !outlinedModel) return [];
+
+        const chains = maker.model.findChains(outlinedModel, { byLayers: false, pointMatchingDistance: 0.02 }) || [];
+        const chainList = Array.isArray(chains) ? chains : [];
+        const result = [];
+
+        chainList.forEach((chain, chainIndex) => {
+            if (!chain?.links?.length) return;
+            const points = [];
+            chain.links.forEach((link, linkIndex) => {
+                const sampled = this.sampleMakerPath(link.walkedPath?.pathContext, link.walkedPath?.offset, !!link.reversed);
+                if (!sampled.length) return;
+                if (points.length && sampled.length) {
+                    const first = sampled[0];
+                    const prev = points[points.length - 1];
+                    if (Math.hypot(prev.x - first.x, prev.y - first.y) <= 0.01) {
+                        points.push(...sampled.slice(1));
+                        return;
+                    }
+                }
+                points.push(...sampled);
+            });
+
+            if (chain.endless && points.length > 2) {
+                const first = points[0];
+                const last = points[points.length - 1];
+                if (Math.hypot(last.x - first.x, last.y - first.y) > 0.01) {
+                    points.push({ ...first });
+                }
+            }
+
+            if (points.length < 3) return;
+            result.push({
+                type: 'polyline',
+                points,
+                pen,
+                closed: !!chain.endless,
+                groupId: chainList.length > 1 ? `maker_outline_${Date.now()}_${chainIndex}` : undefined,
+                generatedBy: 'boolean-op-maker'
+            });
+        });
+
+        return result;
+    }
+
+    applyMakerOffsetOperation(selectedEntries, offsetAmount, pen) {
+        const maker = this.getMakerJsScope();
+        if (!maker || Math.abs(offsetAmount || 0) < 0.0001) return null;
+        try {
+            const root = { models: {} };
+            let added = 0;
+            selectedEntries.forEach((entry, index) => {
+                const model = this.convertAppPathToMakerModel(entry.path);
+                if (!model) return;
+                root.models[`m${index}`] = model;
+                added++;
+            });
+            if (!added) return null;
+
+            const outlined = maker.model.outline(root, Math.abs(offsetAmount), 0, offsetAmount < 0);
+            if (!outlined) return null;
+            const resultPaths = this.buildAppPathsFromMakerModel(outlined, pen);
+            return resultPaths.length ? resultPaths : null;
+        } catch (error) {
+            console.warn('Maker.js offset operation failed, falling back to Clipper/Paper offset.', error);
+            return null;
+        }
+    }
+
+    convertAppPathToPaperItem(scope, path) {
+        if (!scope || !path) return null;
+        if (path.type === 'rectangle') {
+            const left = Math.min(path.x, path.x + (path.w || 0));
+            const top = Math.min(path.y, path.y + (path.h || 0));
+            const width = Math.abs(path.w || 0);
+            const height = Math.abs(path.h || 0);
+            if (width < 0.0001 || height < 0.0001) return null;
+            return new scope.Path.Rectangle(new scope.Rectangle(left, top, width, height));
+        }
+        if (path.type === 'circle') {
+            const radius = Math.abs(path.r || 0);
+            if (radius < 0.0001) return null;
+            return new scope.Path.Circle(new scope.Point(path.x, path.y), radius);
+        }
+        if (path.type === 'path' && Array.isArray(path.segments) && Math.abs(path.curve || 0) < 0.001) {
+            const paperPath = new scope.Path({ insert: true });
+            let started = false;
+            path.segments.forEach(segment => {
+                if (!segment || typeof segment.type !== 'string') return;
+                if (segment.type === 'M') {
+                    paperPath.moveTo(new scope.Point(segment.x, segment.y));
+                    started = true;
+                } else if (segment.type === 'L' && started) {
+                    paperPath.lineTo(new scope.Point(segment.x, segment.y));
+                } else if (segment.type === 'C' && started) {
+                    paperPath.cubicCurveTo(
+                        new scope.Point(segment.x1, segment.y1),
+                        new scope.Point(segment.x2, segment.y2),
+                        new scope.Point(segment.x, segment.y)
+                    );
+                } else if (segment.type === 'Q' && started) {
+                    paperPath.quadraticCurveTo(
+                        new scope.Point(segment.x1, segment.y1),
+                        new scope.Point(segment.x, segment.y)
+                    );
+                } else if (segment.type === 'A' && started) {
+                    paperPath.lineTo(new scope.Point(segment.x, segment.y));
+                } else if (segment.type === 'Z' && started) {
+                    paperPath.closed = true;
+                }
+            });
+            if (!paperPath.segments.length) {
+                paperPath.remove();
+                return null;
+            }
+            paperPath.closed = this.isPathClosed(path);
+            return paperPath;
+        }
+
+        const points = this.getBooleanSourcePoints(path);
+        if (!Array.isArray(points) || points.length < 2) return null;
+        const normalizedPoints = points
+            .filter(point => Number.isFinite(point?.x) && Number.isFinite(point?.y))
+            .map(point => ({ x: point.x, y: point.y }));
+        if (normalizedPoints.length < 2) return null;
+        const paperPath = new scope.Path({ insert: true });
+        normalizedPoints.forEach((point, index) => {
+            if (index === 0) {
+                paperPath.moveTo(new scope.Point(point.x, point.y));
+            } else {
+                paperPath.lineTo(new scope.Point(point.x, point.y));
+            }
+        });
+        paperPath.closed = this.isPathClosed(path);
+        return paperPath;
+    }
+
+    convertAppPathToOffsetPaperItem(scope, path) {
+        if (!scope || !path) return null;
+        if (path.type === 'rectangle' || path.type === 'circle') {
+            return this.convertAppPathToPaperItem(scope, path);
+        }
+
+        if (path.type === 'path' && Array.isArray(path.segments) && path.segments.length > 0 && Math.abs(path.curve || 0) < 0.001) {
+            const exactPath = this.convertAppPathToPaperItem(scope, path);
+            if (exactPath) {
+                exactPath.closed = this.shouldTreatPathAsClosedForOffset(path);
+                return exactPath;
+            }
+        }
+
+        const sourcePoints = this.getBooleanSourcePoints(path);
+        if (!Array.isArray(sourcePoints) || sourcePoints.length < 2) return null;
+
+        const treatClosed = this.shouldTreatPathAsClosedForOffset(path);
+        let points = sourcePoints
+            .filter(point => Number.isFinite(point?.x) && Number.isFinite(point?.y))
+            .map(point => ({ x: point.x, y: point.y }));
+        if (treatClosed && points.length > 2) {
+            const first = points[0];
+            const last = points[points.length - 1];
+            if (Math.hypot(last.x - first.x, last.y - first.y) <= 0.01) {
+                points = points.slice(0, -1);
+            }
+        }
+        if (points.length < 2) return null;
+
+        const hpgl = this.app?.hpgl;
+        const shouldSmoothSource = treatClosed
+            && points.length >= 8
+            && (this.isImportedVectorPathForOffset(path) || points.length >= 24)
+            && typeof hpgl?._sampleCatmullRom === 'function';
+        if (shouldSmoothSource) {
+            try {
+                const sampled = hpgl._sampleCatmullRom(points.map(point => ({ x: point.x, y: point.y })), true);
+                if (Array.isArray(sampled) && sampled.length >= points.length) {
+                    points = sampled
+                        .filter(point => Number.isFinite(point?.x) && Number.isFinite(point?.y))
+                        .map(point => ({ x: point.x, y: point.y }));
+                    if (points.length > 2) {
+                        const first = points[0];
+                        const last = points[points.length - 1];
+                        if (Math.hypot(last.x - first.x, last.y - first.y) <= 0.01) {
+                            points = points.slice(0, -1);
+                        }
+                    }
+                }
+            } catch (error) {
+                console.warn('Offset source smoothing failed; using raw contour.', error);
+            }
+        }
+
+        const paperPath = new scope.Path({ insert: true });
+        points.forEach((point, index) => {
+            const nextPoint = new scope.Point(point.x, point.y);
+            if (index === 0) paperPath.moveTo(nextPoint);
+            else paperPath.lineTo(nextPoint);
+        });
+        paperPath.closed = treatClosed;
+        return paperPath;
+    }
+
+    buildAppPathFromPaperPath(scope, paperPath, sourceMeta = {}) {
+        const paperSegments = paperPath?.segments ? Array.from(paperPath.segments) : null;
+        if (!scope || !paperPath || !paperSegments || paperSegments.length < 2) return null;
+        const pen = sourceMeta.pen || this.app?.ui?.activeVisualizerPen || 1;
+        const closed = !!paperPath.closed;
+        const points = paperSegments.map(segment => ({
+            x: segment.point.x,
+            y: segment.point.y
+        }));
+        if (closed && points.length > 1) {
+            points.push({ ...points[0] });
+        }
+
+        const hasCurves = paperSegments.some(segment => {
+            const inLen = segment.handleIn ? segment.handleIn.length : 0;
+            const outLen = segment.handleOut ? segment.handleOut.length : 0;
+            return inLen > 0.0001 || outLen > 0.0001;
+        });
+
+        if (!hasCurves) {
+            return {
+                type: 'polyline',
+                points,
+                pen,
+                closed,
+                groupId: sourceMeta.groupId,
+                parentGroupId: sourceMeta.parentGroupId,
+                generatedBy: 'boolean-op-paper'
+            };
+        }
+
+        const appSegments = [];
+        const segmentCount = paperSegments.length;
+        const firstSegment = paperSegments[0];
+        appSegments.push({
+            type: 'M',
+            x: firstSegment.point.x,
+            y: firstSegment.point.y
+        });
+
+        const appendEdge = (fromSegment, toSegment) => {
+            const cp1 = fromSegment.point.add(fromSegment.handleOut || new scope.Point(0, 0));
+            const cp2 = toSegment.point.add(toSegment.handleIn || new scope.Point(0, 0));
+            const isLinear = (fromSegment.handleOut?.length || 0) <= 0.0001
+                && (toSegment.handleIn?.length || 0) <= 0.0001;
+            if (isLinear) {
+                appSegments.push({
+                    type: 'L',
+                    x: toSegment.point.x,
+                    y: toSegment.point.y
+                });
+            } else {
+                appSegments.push({
+                    type: 'C',
+                    x1: cp1.x,
+                    y1: cp1.y,
+                    x2: cp2.x,
+                    y2: cp2.y,
+                    x: toSegment.point.x,
+                    y: toSegment.point.y
+                });
+            }
+        };
+
+        for (let i = 1; i < segmentCount; i++) {
+            appendEdge(paperSegments[i - 1], paperSegments[i]);
+        }
+        if (closed) {
+            appendEdge(paperSegments[segmentCount - 1], paperSegments[0]);
+            appSegments.push({ type: 'Z' });
+        }
+
+        return {
+            type: 'path',
+            points,
+            segments: appSegments,
+            pen,
+            closed,
+            groupId: sourceMeta.groupId,
+            parentGroupId: sourceMeta.parentGroupId,
+            generatedBy: 'boolean-op-paper'
+        };
+    }
+
+    convertPaperItemToAppPaths(scope, item, sourceMeta = {}) {
+        if (!scope || !item) return [];
+        const paths = [];
+        const visit = (current) => {
+            if (!current || current.isEmpty?.()) return;
+            if (current instanceof scope.CompoundPath) {
+                current.children.forEach(child => visit(child));
+                return;
+            }
+            if (!(current instanceof scope.Path)) return;
+            const built = this.buildAppPathFromPaperPath(scope, current, sourceMeta);
+            if (built) paths.push(built);
+        };
+        visit(item);
+        return paths;
+    }
+
+    applyPaperBooleanOperation(operation, selectedEntries, pen) {
+        const scope = this.getPaperBooleanScope();
+        if (!scope) return null;
+        try {
+            this.clearPaperBooleanScope(scope);
+            const paperItems = selectedEntries.map(entry => this.convertAppPathToPaperItem(scope, entry.path));
+            if (paperItems.some(item => !item)) {
+                this.clearPaperBooleanScope(scope);
+                return null;
+            }
+
+            const applyTwo = (left, right, opName) => {
+                if (!left || !right) return null;
+                if (opName === 'union') return left.unite(right);
+                if (opName === 'intersect') return left.intersect(right);
+                if (opName === 'exclude') return left.exclude(right);
+                return left.subtract(right);
+            };
+
+            let result = null;
+            if (operation === 'subtract') {
+                const cutter = paperItems[paperItems.length - 1];
+                let base = paperItems[0];
+                for (let i = 1; i < paperItems.length - 1; i++) {
+                    const nextBase = base.unite(paperItems[i]);
+                    base.remove();
+                    paperItems[i].remove();
+                    base = nextBase;
+                }
+                result = applyTwo(base, cutter, operation);
+                base.remove();
+                cutter.remove();
+            } else {
+                result = paperItems[0];
+                for (let i = 1; i < paperItems.length; i++) {
+                    const nextResult = applyTwo(result, paperItems[i], operation);
+                    result.remove();
+                    paperItems[i].remove();
+                    result = nextResult;
+                }
+            }
+
+            if (!result) {
+                this.clearPaperBooleanScope(scope);
+                return null;
+            }
+
+            const resultPaths = this.convertPaperItemToAppPaths(scope, result, { pen });
+            result.remove();
+            this.clearPaperBooleanScope(scope);
+            return resultPaths.length ? resultPaths : null;
+        } catch (error) {
+            console.warn('Paper boolean operation failed, falling back to sampled boolean.', error);
+            this.clearPaperBooleanScope(scope);
+            return null;
+        }
+    }
+
+    buildPaperOffsetPath(scope, paperPath, offsetAmount) {
+        if (!scope || !paperPath || Math.abs(offsetAmount || 0) < 0.0001) return null;
+        const length = paperPath.length || 0;
+        if (!Number.isFinite(length) || length < 0.0001) return null;
+
+        const sampleStep = Math.max(0.2, Math.min(1.2, Math.max(Math.abs(offsetAmount) * 0.2, length / 260)));
+        const sampleCount = Math.max(24, Math.min(960, Math.ceil(length / sampleStep)));
+        const probeDistance = Math.max(0.04, Math.min(0.4, Math.abs(offsetAmount) * 0.2 + 0.04));
+        const sampledPoints = [];
+
+        for (let i = 0; i < sampleCount; i++) {
+            const offset = (i / sampleCount) * length;
+            const point = paperPath.getPointAt(offset);
+            if (!point) continue;
+
+            let normal = paperPath.getNormalAt(offset);
+            if (!normal || !Number.isFinite(normal.x) || !Number.isFinite(normal.y) || normal.length < 0.0001) {
+                const tangent = paperPath.getTangentAt(offset);
+                if (!tangent || !Number.isFinite(tangent.x) || !Number.isFinite(tangent.y) || tangent.length < 0.0001) {
+                    continue;
+                }
+                normal = new scope.Point(-tangent.y, tangent.x);
+            }
+
+            normal = normal.normalize();
+            const probePoint = point.add(normal.multiply(probeDistance));
+            const outwardNormal = paperPath.contains(probePoint) ? normal.multiply(-1) : normal;
+            const shifted = point.add(outwardNormal.normalize().multiply(offsetAmount));
+            const previous = sampledPoints[sampledPoints.length - 1];
+            if (!previous || previous.getDistance(shifted) > 0.02) {
+                sampledPoints.push(shifted);
+            }
+        }
+
+        if (sampledPoints.length < 3) return null;
+
+        const offsetPath = new scope.Path({ insert: true, closed: true });
+        sampledPoints.forEach(point => offsetPath.add(point));
+        if (offsetPath.segments.length < 3) {
+            offsetPath.remove();
+            return null;
+        }
+
+        try {
+            offsetPath.simplify(Math.max(0.03, Math.min(0.3, Math.abs(offsetAmount) * 0.08)));
+        } catch (_) {}
+        try {
+            offsetPath.smooth({ type: 'continuous' });
+        } catch (_) {}
+
+        if (Math.abs(offsetPath.area || 0) < 0.0001 || offsetPath.segments.length < 3) {
+            offsetPath.remove();
+            return null;
+        }
+        return offsetPath;
+    }
+
+    buildPaperOpenOffsetPath(scope, paperPath, offsetAmount) {
+        if (!scope || !paperPath || Math.abs(offsetAmount || 0) < 0.0001) return null;
+        const halfWidth = Math.abs(offsetAmount);
+        const length = paperPath.length || 0;
+        if (!Number.isFinite(length) || length < 0.0001) return null;
+
+        const sampleStep = Math.max(0.2, Math.min(1.1, Math.max(halfWidth * 0.2, length / 220)));
+        const sampleCount = Math.max(12, Math.min(720, Math.ceil(length / sampleStep) + 1));
+        const leftPoints = [];
+        const rightPoints = [];
+
+        for (let i = 0; i < sampleCount; i++) {
+            const offset = sampleCount === 1 ? 0 : (i / (sampleCount - 1)) * length;
+            const point = paperPath.getPointAt(offset);
+            if (!point) continue;
+
+            let normal = paperPath.getNormalAt(offset);
+            if (!normal || !Number.isFinite(normal.x) || !Number.isFinite(normal.y) || normal.length < 0.0001) {
+                const tangent = paperPath.getTangentAt(offset);
+                if (!tangent || !Number.isFinite(tangent.x) || !Number.isFinite(tangent.y) || tangent.length < 0.0001) {
+                    continue;
+                }
+                normal = new scope.Point(-tangent.y, tangent.x);
+            }
+            normal = normal.normalize().multiply(halfWidth);
+
+            const leftPoint = point.add(normal);
+            const rightPoint = point.subtract(normal);
+            const prevLeft = leftPoints[leftPoints.length - 1];
+            if (!prevLeft || prevLeft.getDistance(leftPoint) > 0.02) {
+                leftPoints.push(leftPoint);
+                rightPoints.push(rightPoint);
+            }
+        }
+
+        if (leftPoints.length < 2 || rightPoints.length < 2) return null;
+
+        const buildCap = (center, fromPoint, toPoint, directionHint) => {
+            const startAngle = Math.atan2(fromPoint.y - center.y, fromPoint.x - center.x);
+            let endAngle = Math.atan2(toPoint.y - center.y, toPoint.x - center.x);
+            let sweep = endAngle - startAngle;
+            while (sweep <= -Math.PI) sweep += Math.PI * 2;
+            while (sweep > Math.PI) sweep -= Math.PI * 2;
+            if (directionHint > 0 && sweep < 0) sweep += Math.PI * 2;
+            if (directionHint < 0 && sweep > 0) sweep -= Math.PI * 2;
+            const steps = Math.max(6, Math.ceil(Math.abs(sweep) / (Math.PI / 10)));
+            const capPoints = [];
+            for (let i = 1; i < steps; i++) {
+                const angle = startAngle + ((sweep * i) / steps);
+                capPoints.push(new scope.Point(
+                    center.x + (Math.cos(angle) * halfWidth),
+                    center.y + (Math.sin(angle) * halfWidth)
+                ));
+            }
+            return capPoints;
+        };
+
+        const startCenter = paperPath.getPointAt(0) || leftPoints[0].add(rightPoints[0]).divide(2);
+        const endCenter = paperPath.getPointAt(length) || leftPoints[leftPoints.length - 1].add(rightPoints[rightPoints.length - 1]).divide(2);
+        const endCap = buildCap(endCenter, leftPoints[leftPoints.length - 1], rightPoints[rightPoints.length - 1], 1);
+        const startCap = buildCap(startCenter, rightPoints[0], leftPoints[0], 1);
+
+        const outlinePoints = [
+            ...leftPoints,
+            ...endCap,
+            ...rightPoints.slice().reverse(),
+            ...startCap
+        ];
+        if (outlinePoints.length < 3) return null;
+
+        const offsetPath = new scope.Path({ insert: true, closed: true });
+        outlinePoints.forEach(point => offsetPath.add(point));
+        if (offsetPath.segments.length < 3) {
+            offsetPath.remove();
+            return null;
+        }
+
+        try {
+            offsetPath.simplify(Math.max(0.03, Math.min(0.25, halfWidth * 0.08)));
+        } catch (_) {}
+        try {
+            offsetPath.smooth({ type: 'continuous' });
+        } catch (_) {}
+
+        if (Math.abs(offsetPath.area || 0) < 0.0001 || offsetPath.segments.length < 3) {
+            offsetPath.remove();
+            return null;
+        }
+        return offsetPath;
+    }
+
+    buildPaperOffsetItem(scope, item, offsetAmount) {
+        if (!scope || !item) return null;
+        if (item instanceof scope.CompoundPath) {
+            const compound = new scope.CompoundPath({ insert: true });
+            item.children.forEach(child => {
+                const offsetChild = this.buildPaperOffsetItem(scope, child, offsetAmount);
+                if (!offsetChild) return;
+                if (offsetChild instanceof scope.CompoundPath) {
+                    const adoptedChildren = Array.from(offsetChild.children);
+                    adoptedChildren.forEach(grandChild => compound.addChild(grandChild));
+                    offsetChild.remove();
+                } else {
+                    compound.addChild(offsetChild);
+                }
+            });
+            if (!compound.children.length) {
+                compound.remove();
+                return null;
+            }
+            return compound;
+        }
+        if (!(item instanceof scope.Path)) return null;
+        if (item.closed) {
+            return this.buildPaperOffsetPath(scope, item, offsetAmount);
+        }
+        return this.buildPaperOpenOffsetPath(scope, item, offsetAmount);
+    }
+
+    applyPaperOffsetOperation(selectedEntries, offsetAmount, pen) {
+        const scope = this.getPaperBooleanScope();
+        if (!scope) return null;
+        try {
+            this.clearPaperBooleanScope(scope);
+            const paperItems = selectedEntries.map(entry => this.convertAppPathToPaperItem(scope, entry.path));
+            if (paperItems.some(item => !item)) {
+                this.clearPaperBooleanScope(scope);
+                return null;
+            }
+
+            let merged = paperItems[0];
+            for (let i = 1; i < paperItems.length; i++) {
+                const nextMerged = merged.unite(paperItems[i]);
+                merged.remove();
+                paperItems[i].remove();
+                merged = nextMerged;
+            }
+
+            const offsetItem = this.buildPaperOffsetItem(scope, merged, offsetAmount);
+            merged.remove();
+            if (!offsetItem) {
+                this.clearPaperBooleanScope(scope);
+                return null;
+            }
+
+            const resultPaths = this.convertPaperItemToAppPaths(scope, offsetItem, { pen });
+            offsetItem.remove();
+            this.clearPaperBooleanScope(scope);
+            return resultPaths.length ? resultPaths : null;
+        } catch (error) {
+            console.warn('Paper offset operation failed, falling back to sampled boolean offset.', error);
+            this.clearPaperBooleanScope(scope);
+            return null;
+        }
+    }
+
+    applyRebuiltOffsetOperation(selectedEntries, offsetAmount, pen) {
+        const scope = this.getPaperBooleanScope();
+        if (!scope || Math.abs(offsetAmount || 0) < 0.0001) return null;
+        try {
+            this.clearPaperBooleanScope(scope);
+            const paperItems = selectedEntries
+                .map(entry => ({
+                    entry,
+                    item: this.convertAppPathToOffsetPaperItem(scope, entry.path)
+                }))
+                .filter(record => record.item);
+            if (!paperItems.length) {
+                this.clearPaperBooleanScope(scope);
+                return null;
+            }
+
+            const closedItems = paperItems.filter(record => record.item.closed);
+            const openItems = paperItems.filter(record => !record.item.closed);
+            const resultPaths = [];
+
+            if (closedItems.length) {
+                let merged = closedItems[0].item;
+                for (let i = 1; i < closedItems.length; i++) {
+                    const nextMerged = merged.unite(closedItems[i].item);
+                    merged.remove();
+                    closedItems[i].item.remove();
+                    merged = nextMerged;
+                }
+                const offsetItem = this.buildPaperOffsetItem(scope, merged, offsetAmount);
+                merged.remove();
+                if (offsetItem) {
+                    resultPaths.push(...this.convertPaperItemToAppPaths(scope, offsetItem, { pen }));
+                    offsetItem.remove();
+                }
+            }
+
+            openItems.forEach(record => {
+                const offsetItem = this.buildPaperOffsetItem(scope, record.item, offsetAmount);
+                record.item.remove();
+                if (!offsetItem) return;
+                resultPaths.push(...this.convertPaperItemToAppPaths(scope, offsetItem, { pen }));
+                offsetItem.remove();
+            });
+
+            this.clearPaperBooleanScope(scope);
+            return resultPaths.length ? resultPaths : null;
+        } catch (error) {
+            console.warn('Rebuilt offset operation failed.', error);
+            this.clearPaperBooleanScope(scope);
+            return null;
+        }
+    }
+
+    applyOffsetOperation(offsetAmount = 2) {
+        void offsetAmount;
+        this.app?.ui?.logToConsole('Offset Tool: Removed for now while the offset engine is rebuilt.', 'warning');
+        return false;
+    }
+
+    applyClipperOffsetOperation(selectedEntries, offsetAmount, pen) {
+        const clipper = this.getClipperScope();
+        if (!clipper || Math.abs(offsetAmount || 0) < 0.0001) return null;
+        try {
+            const scale = 100000;
+            const cleanDistance = Math.max(0.001, Math.min(0.02, Math.abs(offsetAmount) * 0.006)) * scale;
+            const arcTolerance = Math.max(0.001, Math.min(0.015, Math.abs(offsetAmount) * 0.008)) * scale;
+            const closedPaths = [];
+            const openPaths = [];
+
+            selectedEntries.forEach(entry => {
+                const clipperPath = this.convertAppPathToClipperPath(entry.path, scale);
+                if (!clipperPath || clipperPath.length < 2) return;
+                if (this.shouldTreatPathAsClosedForOffset(entry.path)) {
+                    closedPaths.push(clipperPath);
+                } else {
+                    openPaths.push(clipperPath);
+                }
+            });
+
+            if (!closedPaths.length && !openPaths.length) return null;
+
+            const executeOffset = (useSimplifyClosed) => {
+                const co = new clipper.ClipperOffset(2, arcTolerance);
+
+                if (closedPaths.length) {
+                    let preparedClosed = clipper.Clipper.CleanPolygons(closedPaths, cleanDistance);
+                    if (useSimplifyClosed) {
+                        preparedClosed = clipper.Clipper.SimplifyPolygons(preparedClosed, clipper.PolyFillType.pftNonZero);
+                    }
+                    if (preparedClosed.length) {
+                        co.AddPaths(preparedClosed, clipper.JoinType.jtRound, clipper.EndType.etClosedPolygon);
+                    }
+                }
+
+                if (openPaths.length && offsetAmount > 0) {
+                    const preparedOpen = openPaths
+                        .map(path => clipper.Clipper.CleanPolygon(path, cleanDistance))
+                        .filter(path => Array.isArray(path) && path.length >= 2);
+                    if (preparedOpen.length) {
+                        co.AddPaths(preparedOpen, clipper.JoinType.jtRound, clipper.EndType.etOpenRound);
+                    }
+                }
+
+                const solution = new clipper.Paths();
+                co.Execute(solution, offsetAmount * scale);
+                return solution;
+            };
+
+            let solution = executeOffset(false);
+            if (!solution.length && closedPaths.length) {
+                solution = executeOffset(true);
+            }
+            const resultPaths = this.buildAppPathsFromClipperPaths(solution, pen, scale);
+            return resultPaths.length ? resultPaths : null;
+        } catch (error) {
+            console.warn('Clipper offset operation failed, falling back to Paper/mask offset.', error);
+            return null;
+        }
+    }
+
+    getBooleanKernelOffsets(radiusCells) {
+        const offsets = [];
+        const radius = Math.max(0, radiusCells | 0);
+        for (let dy = -radius; dy <= radius; dy++) {
+            for (let dx = -radius; dx <= radius; dx++) {
+                if (Math.hypot(dx, dy) <= radius + 0.001) {
+                    offsets.push([dx, dy]);
+                }
+            }
+        }
+        return offsets.length ? offsets : [[0, 0]];
+    }
+
+    buildBooleanOffsetMask(selectedEntries, offsetAmount) {
+        const boxes = selectedEntries.map(entry => this.getBoundingBox(entry.path)).filter(Boolean);
+        if (!boxes.length) return null;
+
+        const box = boxes.reduce((acc, current) => ({
+            minX: Math.min(acc.minX, current.minX),
+            minY: Math.min(acc.minY, current.minY),
+            maxX: Math.max(acc.maxX, current.maxX),
+            maxY: Math.max(acc.maxY, current.maxY)
+        }));
+        const width = Math.max(1, box.maxX - box.minX);
+        const height = Math.max(1, box.maxY - box.minY);
+        const absOffset = Math.abs(offsetAmount || 0);
+        const cellSize = Math.max(0.05, Math.min(0.25, absOffset > 0.001 ? absOffset / 4 : Math.sqrt((width * height) / 220000)));
+        const padding = Math.max(cellSize * 3, absOffset + (cellSize * 3));
+        const originX = box.minX - padding;
+        const originY = box.minY - padding;
+        const cols = Math.max(1, Math.ceil((width + (padding * 2)) / cellSize));
+        const rows = Math.max(1, Math.ceil((height + (padding * 2)) / cellSize));
+        const cells = new Set();
+
+        for (let cy = 0; cy < rows; cy++) {
+            for (let cx = 0; cx < cols; cx++) {
+                const sampleX = originX + ((cx + 0.5) * cellSize);
+                const sampleY = originY + ((cy + 0.5) * cellSize);
+                const keep = selectedEntries.some(entry => this.isPointInsidePathRegionSet(sampleX, sampleY, entry.path));
+                if (keep) cells.add(`${cx},${cy}`);
+            }
+        }
+
+        if (!cells.size) return null;
+        if (absOffset < 0.001) {
+            return { originX, originY, cellSize, cols, rows, cells };
+        }
+
+        const kernelOffsets = this.getBooleanKernelOffsets(Math.max(1, Math.round(absOffset / cellSize)));
+        let adjustedCells = new Set();
+
+        if (offsetAmount >= 0) {
+            cells.forEach(key => {
+                const [cxRaw, cyRaw] = key.split(',');
+                const cx = parseInt(cxRaw, 10);
+                const cy = parseInt(cyRaw, 10);
+                kernelOffsets.forEach(([dx, dy]) => {
+                    const nx = cx + dx;
+                    const ny = cy + dy;
+                    if (nx < 0 || ny < 0 || nx >= cols || ny >= rows) return;
+                    adjustedCells.add(`${nx},${ny}`);
+                });
+            });
+        } else {
+            cells.forEach(key => {
+                const [cxRaw, cyRaw] = key.split(',');
+                const cx = parseInt(cxRaw, 10);
+                const cy = parseInt(cyRaw, 10);
+                const keep = kernelOffsets.every(([dx, dy]) => {
+                    const nx = cx + dx;
+                    const ny = cy + dy;
+                    return nx >= 0 && ny >= 0 && nx < cols && ny < rows && cells.has(`${nx},${ny}`);
+                });
+                if (keep) adjustedCells.add(key);
+            });
+        }
+
+        if (!adjustedCells.size) return null;
+        return { originX, originY, cellSize, cols, rows, cells: adjustedCells };
+    }
+
+    finalizeBooleanResult(resultPaths, sourceSelection, operation, { keepOriginal = false } = {}) {
+        const selectedSet = new Set(sourceSelection);
+        if (!keepOriginal) {
+            this.paths = this.paths.filter((_, index) => !selectedSet.has(index));
+        }
+        const groupId = resultPaths.length > 1 ? `group_${Date.now()}_${Math.floor(Math.random() * 1000)}` : null;
+        resultPaths.forEach(path => {
+            if (groupId) path.groupId = groupId;
+            this.paths.push(path);
+        });
+        this.invalidateFillRegionCache();
+        this.selectedPaths = resultPaths.map((_, index) => this.paths.length - resultPaths.length + index);
+        this.selectedNodes = [];
+        this.saveUndoState();
+        this.draw();
+
+        const labels = {
+            union: 'Merge',
+            intersect: 'Intersect',
+            subtract: 'Subtract',
+            exclude: 'Exclude',
+            offset: 'Offset'
+        };
+        const verb = keepOriginal ? 'added' : 'created';
+        this.app?.ui?.logToConsole(`System: ${labels[operation] || 'Boolean'} operation ${verb} ${resultPaths.length} result shape${resultPaths.length === 1 ? '' : 's'}.`);
+        return true;
+    }
+
+    applyBooleanOperation(operation, offsetAmount = 2) {
+        const validOps = new Set(['union', 'intersect', 'subtract', 'exclude']);
+        if (!validOps.has(operation)) return false;
+        if (!Array.isArray(this.selectedPaths) || this.selectedPaths.length < 2) {
+            this.app?.ui?.logToConsole(
+                'Boolean Tool: Select at least two closed shapes first.',
+                'error'
+            );
+            return false;
+        }
+
+        const selectedEntries = this.selectedPaths
+            .map(idx => ({ idx, path: this.paths[idx] }))
+            .filter(entry => entry.path);
+        const unsupportedText = selectedEntries.some(entry => entry.path.type === 'text');
+        if (unsupportedText) {
+            this.app?.ui?.logToConsole('Boolean Tool: Text objects need to be converted to outlines first.', 'error');
+            return false;
+        }
+
+        const unsupportedOpen = operation !== 'offset' && selectedEntries.some(entry => !this.isPathClosed(entry.path));
+        if (unsupportedOpen) {
+            this.app?.ui?.logToConsole('Boolean Tool: Only closed shapes can be used for boolean operations.', 'error');
+            return false;
+        }
+
+        const sortedByStack = [...selectedEntries].sort((left, right) => left.idx - right.idx);
+        const topEntry = sortedByStack[sortedByStack.length - 1];
+        const pen = topEntry?.path?.pen || selectedEntries[0]?.path?.pen || this.app?.ui?.activeVisualizerPen || 1;
+        let resultPaths = this.applyPaperBooleanOperation(operation, sortedByStack, pen);
+
+        if (!resultPaths || !resultPaths.length) {
+            const boxes = selectedEntries.map(entry => this.getBoundingBox(entry.path)).filter(Boolean);
+            if (!boxes.length) return false;
+            const box = boxes.reduce((acc, current) => ({
+                minX: Math.min(acc.minX, current.minX),
+                minY: Math.min(acc.minY, current.minY),
+                maxX: Math.max(acc.maxX, current.maxX),
+                maxY: Math.max(acc.maxY, current.maxY)
+            }));
+            const width = Math.max(1, box.maxX - box.minX);
+            const height = Math.max(1, box.maxY - box.minY);
+            const area = Math.max(1, width * height);
+            const targetCells = 240000;
+            const cellSize = Math.max(0.06, Math.min(0.22, Math.sqrt(area / targetCells)));
+            const padding = cellSize * 2;
+            const originX = box.minX - padding;
+            const originY = box.minY - padding;
+            const cols = Math.max(1, Math.ceil((width + (padding * 2)) / cellSize));
+            const rows = Math.max(1, Math.ceil((height + (padding * 2)) / cellSize));
+            const smoothSampleBudget = 180000;
+            const enableSmoothContours = ((cols + 1) * (rows + 1)) <= smoothSampleBudget && selectedEntries.length <= 3;
+            const samples = enableSmoothContours ? new Array((cols + 1) * (rows + 1)).fill(false) : null;
+            const cells = new Set();
+            let hasInside = false;
+            const baseEntries = sortedByStack.slice(0, -1);
+
+            const computeKeep = (sampleX, sampleY) => {
+                const insideMap = selectedEntries.map(entry => this.isPointInsidePathRegionSet(sampleX, sampleY, entry.path));
+                if (operation === 'union') {
+                    return insideMap.some(Boolean);
+                }
+                if (operation === 'intersect') {
+                    return insideMap.every(Boolean);
+                }
+                if (operation === 'subtract') {
+                    const baseInside = baseEntries.some(entry => this.isPointInsidePathRegionSet(sampleX, sampleY, entry.path));
+                    const topInside = topEntry ? this.isPointInsidePathRegionSet(sampleX, sampleY, topEntry.path) : false;
+                    return baseInside && !topInside;
+                }
+                if (operation === 'exclude') {
+                    return insideMap.filter(Boolean).length % 2 === 1;
+                }
+                return false;
+            };
+
+            if (samples) {
+                for (let gy = 0; gy <= rows; gy++) {
+                    for (let gx = 0; gx <= cols; gx++) {
+                        const sampleX = originX + (gx * cellSize);
+                        const sampleY = originY + (gy * cellSize);
+                        const keep = computeKeep(sampleX, sampleY);
+                        samples[(gy * (cols + 1)) + gx] = keep;
+                        if (keep) hasInside = true;
+                    }
+                }
+            }
+
+            for (let cy = 0; cy < rows; cy++) {
+                for (let cx = 0; cx < cols; cx++) {
+                    const sampleX = originX + ((cx + 0.5) * cellSize);
+                    const sampleY = originY + ((cy + 0.5) * cellSize);
+                    if (computeKeep(sampleX, sampleY)) {
+                        cells.add(`${cx},${cy}`);
+                        hasInside = true;
+                    }
+                }
+            }
+
+            if (!hasInside) {
+                this.app?.ui?.logToConsole('Boolean Tool: The operation produced no visible result.', 'error');
+                return false;
+            }
+
+            resultPaths = this.buildBooleanResultPathsFromMask({ originX, originY, cellSize, cols, rows, samples, cells }, pen);
+            if (!resultPaths.length) {
+                this.app?.ui?.logToConsole('Boolean Tool: Unable to trace the resulting shape.', 'error');
+                return false;
+            }
+        }
+        return this.finalizeBooleanResult(resultPaths, this.selectedPaths, operation);
     }
 
     getRegionArea(region) {
@@ -4209,12 +6285,171 @@ class CanvasManager {
         }
 
         this.ctx.restore(); // CRITICAL: Stop transformation accumulation
+        this.drawPatternPreviewOverlay();
+        this.drawSelectionOverlay();
         this.drawLiveTrackerOverlay(mmToPx, horizontalShift, verticalShift);
         this.drawPredictedCrosshair(mmToPx, horizontalShift, verticalShift);
         const isInteracting = this.isDragging || this.isRotating || this.isPanning || this.isMarqueeSelecting || this.isCreatingShape;
         if (!isInteracting && this.app.ui && this.app.ui.updateSelectionSizeControls) {
             this.app.ui.updateSelectionSizeControls();
         }
+    }
+
+    drawPatternPreviewOverlay() {
+        const showMachineOutput = this.app?.ui?.currentVisualizerView === 'machine-output';
+        if (showMachineOutput || !Array.isArray(this.patternPreviewPaths) || this.patternPreviewPaths.length === 0) return;
+
+        const drawPolyline = (points) => {
+            if (!Array.isArray(points) || points.length < 2) return;
+            const start = this.mmToCanvasPx(points[0].x, points[0].y);
+            this.ctx.beginPath();
+            this.ctx.moveTo(start.x, start.y);
+            for (let i = 1; i < points.length; i++) {
+                const screen = this.mmToCanvasPx(points[i].x, points[i].y);
+                this.ctx.lineTo(screen.x, screen.y);
+            }
+            this.ctx.stroke();
+        };
+
+        this.ctx.save();
+        this.ctx.strokeStyle = 'rgba(59, 130, 246, 0.9)';
+        this.ctx.lineWidth = 1.25;
+        this.ctx.setLineDash([5, 5]);
+
+        this.patternPreviewPaths.forEach(path => {
+            if (!path) return;
+            if (path.type === 'circle') {
+                const center = this.mmToCanvasPx(path.x, path.y);
+                const edge = this.mmToCanvasPx(path.x + (path.r || 0), path.y);
+                const radiusPx = Math.abs(edge.x - center.x);
+                this.ctx.beginPath();
+                this.ctx.arc(center.x, center.y, radiusPx, 0, Math.PI * 2);
+                this.ctx.stroke();
+                return;
+            }
+
+            if (path.type === 'rectangle') {
+                const topLeft = this.mmToCanvasPx(path.x, path.y);
+                const bottomRight = this.mmToCanvasPx(path.x + (path.w || 0.1), path.y + (path.h || 0.1));
+                this.ctx.strokeRect(topLeft.x, topLeft.y, bottomRight.x - topLeft.x, bottomRight.y - topLeft.y);
+                return;
+            }
+
+            if (path.type === 'text') {
+                this.ctx.restore();
+                this.ctx.save();
+                this.ctx.translate(this.viewOffsetX + this.viewportHorizontalShift, this.viewOffsetY + this.viewportVerticalShift);
+                this.ctx.scale(this.viewZoom, this.viewZoom);
+                this.ctx.strokeStyle = 'rgba(59, 130, 246, 0.9)';
+                this.ctx.lineWidth = 1.25 / Math.max(0.01, this.viewZoom);
+                this.ctx.setLineDash([5 / Math.max(0.01, this.viewZoom), 5 / Math.max(0.01, this.viewZoom)]);
+                this.normalizeTextPath(path);
+                this.drawVectorText(path, this.scale, false);
+                this.ctx.restore();
+                this.ctx.save();
+                this.ctx.strokeStyle = 'rgba(59, 130, 246, 0.9)';
+                this.ctx.lineWidth = 1.25;
+                this.ctx.setLineDash([5, 5]);
+                return;
+            }
+
+            const tracePoints = this.getPathTracePoints(path);
+            drawPolyline(tracePoints);
+        });
+
+        this.ctx.restore();
+    }
+
+    drawSelectionOverlay() {
+        const showMachineOutput = this.app?.ui?.currentVisualizerView === 'machine-output';
+        if (showMachineOutput) return;
+
+        const selectToolActive = this.app?.ui?.activeTool === 'select' && this.selectedPaths.length >= 1;
+        const warpToolActive = this.app?.ui?.activeTool === 'warp' && this.selectedPaths.length >= 1;
+        if (!selectToolActive && !warpToolActive) return;
+
+        const selectionNodeSizePx = 8;
+        const drawHandle = (point, strokeStyle) => {
+            if (!point) return;
+            const screen = this.mmToCanvasPx(point.x, point.y);
+            this.ctx.strokeStyle = strokeStyle;
+            this.ctx.fillStyle = '#ffffff';
+            this.ctx.strokeRect(
+                screen.x - (selectionNodeSizePx / 2),
+                screen.y - (selectionNodeSizePx / 2),
+                selectionNodeSizePx,
+                selectionNodeSizePx
+            );
+            this.ctx.fillRect(
+                screen.x - (selectionNodeSizePx / 2),
+                screen.y - (selectionNodeSizePx / 2),
+                selectionNodeSizePx,
+                selectionNodeSizePx
+            );
+        };
+
+        this.ctx.save();
+        this.ctx.lineWidth = 1.25;
+        this.ctx.setLineDash([]);
+
+        if (selectToolActive) {
+            const selectionBox = this.getGroupBoundingBox(this.selectedPaths);
+            if (selectionBox) {
+                const topLeft = this.mmToCanvasPx(selectionBox.minX, selectionBox.minY);
+                const bottomRight = this.mmToCanvasPx(selectionBox.maxX, selectionBox.maxY);
+                const widthPx = bottomRight.x - topLeft.x;
+                const heightPx = bottomRight.y - topLeft.y;
+                const selectionCorners = [
+                    { x: selectionBox.minX, y: selectionBox.minY },
+                    { x: selectionBox.minX + ((selectionBox.maxX - selectionBox.minX) / 2), y: selectionBox.minY },
+                    { x: selectionBox.maxX, y: selectionBox.minY },
+                    { x: selectionBox.maxX, y: selectionBox.minY + ((selectionBox.maxY - selectionBox.minY) / 2) },
+                    { x: selectionBox.maxX, y: selectionBox.maxY },
+                    { x: selectionBox.minX + ((selectionBox.maxX - selectionBox.minX) / 2), y: selectionBox.maxY },
+                    { x: selectionBox.minX, y: selectionBox.maxY },
+                    { x: selectionBox.minX, y: selectionBox.minY + ((selectionBox.maxY - selectionBox.minY) / 2) }
+                ];
+
+                this.ctx.strokeStyle = '#3b82f6';
+                this.ctx.shadowColor = 'rgba(59, 130, 246, 0.28)';
+                this.ctx.shadowBlur = 6;
+                this.ctx.strokeRect(topLeft.x, topLeft.y, widthPx, heightPx);
+                this.ctx.shadowBlur = 0;
+                selectionCorners.forEach(point => drawHandle(point, '#3b82f6'));
+
+                const tm = this.mmToCanvasPx(selectionCorners[1].x, selectionCorners[1].y);
+                const stalkLen = 20;
+                this.ctx.beginPath();
+                this.ctx.moveTo(tm.x, tm.y);
+                this.ctx.lineTo(tm.x, tm.y - stalkLen);
+                this.ctx.stroke();
+                this.ctx.beginPath();
+                this.ctx.arc(tm.x, tm.y - stalkLen, selectionNodeSizePx / 2, 0, Math.PI * 2);
+                this.ctx.fillStyle = '#ffffff';
+                this.ctx.fill();
+                this.ctx.stroke();
+            }
+        }
+
+        if (warpToolActive) {
+            const warpSelectionBox = this.warpOriginalBox || this.getGroupBoundingBox(this.selectedPaths);
+            const warpHandles = warpSelectionBox
+                ? (this.warpHandlePositions || this.getEightHandlePositions(warpSelectionBox))
+                : null;
+            if (warpSelectionBox && warpHandles) {
+                const topLeft = this.mmToCanvasPx(warpSelectionBox.minX, warpSelectionBox.minY);
+                const bottomRight = this.mmToCanvasPx(warpSelectionBox.maxX, warpSelectionBox.maxY);
+                this.ctx.strokeStyle = '#22c55e';
+                this.ctx.setLineDash([6, 4]);
+                this.ctx.strokeRect(topLeft.x, topLeft.y, bottomRight.x - topLeft.x, bottomRight.y - topLeft.y);
+                this.ctx.setLineDash([]);
+                warpHandles.forEach((point, handleIndex) => {
+                    drawHandle(point, handleIndex === this.warpActiveHandleIndex ? '#f59e0b' : '#22c55e');
+                });
+            }
+        }
+
+        this.ctx.restore();
     }
 
     drawLiveTrackerOverlay(mmToPx, horizontalShift = 0, verticalShift = 0) {
@@ -4287,6 +6522,65 @@ class CanvasManager {
         this.ctx.restore();
     }
 
+    drawSinglePathSelectionHighlight(path, mmToPx) {
+        if (!path) return;
+        this.ctx.save();
+        this.ctx.strokeStyle = 'rgba(59, 130, 246, 0.95)';
+        this.ctx.lineWidth = 1 / this.viewZoom;
+        this.ctx.shadowColor = 'rgba(59, 130, 246, 0.28)';
+        this.ctx.shadowBlur = 8;
+        this.ctx.lineCap = 'round';
+        this.ctx.lineJoin = 'round';
+
+        if (path.type === 'circle') {
+            this.ctx.beginPath();
+            this.ctx.arc(path.x * mmToPx, path.y * mmToPx, path.r * mmToPx, 0, Math.PI * 2);
+            this.ctx.stroke();
+            this.ctx.restore();
+            return;
+        }
+
+        if (path.type === 'rectangle') {
+            this.ctx.strokeRect(path.x * mmToPx, path.y * mmToPx, (path.w || 0.1) * mmToPx, (path.h || 0.1) * mmToPx);
+            this.ctx.restore();
+            return;
+        }
+
+        if (path.type === 'text') {
+            this.normalizeTextPath(path);
+            this.drawVectorText(path, mmToPx, false);
+            this.ctx.restore();
+            return;
+        }
+
+        if (path.type === 'line' || path.type === 'polyline' || path.type === 'path') {
+            const tracePoints = this.getPathTracePoints(path);
+            if (!tracePoints.length) {
+                this.ctx.restore();
+                return;
+            }
+            this.ctx.beginPath();
+            if (Array.isArray(path.segments) && path.segments.length > 0 && Math.abs(path.curve || 0) < 0.001) {
+                path.segments.forEach(segment => {
+                    if (segment.type === 'M') this.ctx.moveTo(segment.x * mmToPx, segment.y * mmToPx);
+                    else if (segment.type === 'L') this.ctx.lineTo(segment.x * mmToPx, segment.y * mmToPx);
+                    else if (segment.type === 'C') this.ctx.bezierCurveTo(segment.x1 * mmToPx, segment.y1 * mmToPx, segment.x2 * mmToPx, segment.y2 * mmToPx, segment.x * mmToPx, segment.y * mmToPx);
+                    else if (segment.type === 'Q') this.ctx.quadraticCurveTo(segment.x1 * mmToPx, segment.y1 * mmToPx, segment.x * mmToPx, segment.y * mmToPx);
+                    else if (segment.type === 'A') this.ctx.lineTo(segment.x * mmToPx, segment.y * mmToPx);
+                    else if (segment.type === 'Z') this.ctx.closePath();
+                });
+            } else {
+                this.ctx.moveTo(tracePoints[0].x * mmToPx, tracePoints[0].y * mmToPx);
+                for (let i = 1; i < tracePoints.length; i++) {
+                    this.ctx.lineTo(tracePoints[i].x * mmToPx, tracePoints[i].y * mmToPx);
+                }
+            }
+            this.ctx.stroke();
+        }
+
+        this.ctx.restore();
+    }
+
     drawPaths() {
         const showMachineOutput = this.app?.ui?.currentVisualizerView === 'machine-output';
         const mmToPx = this.scale;
@@ -4294,8 +6588,10 @@ class CanvasManager {
         const selectedPathSet = showMachineOutput ? new Set() : new Set(this.selectedPaths);
         const selectedNodeSet = showMachineOutput ? new Set() : new Set(this.selectedNodes.map(node => `${node.pathIdx}:${node.nodeIdx}`));
         const selectToolActive = !showMachineOutput && this.app.ui.activeTool === 'select' && this.selectedPaths.length >= 1;
+        const warpToolActive = !showMachineOutput && this.app.ui.activeTool === 'warp' && this.selectedPaths.length >= 1;
         const nodeToolActive = !showMachineOutput && this.app.ui.activeTool === 'node';
         const selectionBox = selectToolActive ? this.getGroupBoundingBox(this.selectedPaths) : null;
+        const warpSelectionBox = warpToolActive ? (this.warpOriginalBox || this.getGroupBoundingBox(this.selectedPaths)) : null;
         const selectionNodeSize = 8 / (mmToPx * this.viewZoom);
         const selectionCorners = selectionBox ? [
             { x: selectionBox.minX, y: selectionBox.minY },
@@ -4307,6 +6603,9 @@ class CanvasManager {
             { x: selectionBox.minX, y: selectionBox.maxY },
             { x: selectionBox.minX, y: selectionBox.minY + (selectionBox.maxY - selectionBox.minY) / 2 }
         ] : null;
+        const warpHandles = warpSelectionBox
+            ? (this.warpHandlePositions || this.getEightHandlePositions(warpSelectionBox))
+            : null;
         if (showMachineOutput) {
             this.ctx.lineCap = 'butt';
             this.ctx.lineJoin = 'miter';
@@ -4393,6 +6692,37 @@ class CanvasManager {
                     } else if (p.type === 'circle') {
                         drawNode(0, p.x, p.y);
                     }
+                } else if (warpToolActive && warpSelectionBox && warpHandles) {
+                    if (index === this.selectedPaths[0]) {
+                        this.ctx.strokeStyle = '#22c55e';
+                        this.ctx.lineWidth = 1 / this.viewZoom;
+                        this.ctx.setLineDash([6 / this.viewZoom, 4 / this.viewZoom]);
+                        this.ctx.strokeRect(
+                            warpSelectionBox.minX * mmToPx,
+                            warpSelectionBox.minY * mmToPx,
+                            (warpSelectionBox.maxX - warpSelectionBox.minX) * mmToPx,
+                            (warpSelectionBox.maxY - warpSelectionBox.minY) * mmToPx
+                        );
+                        this.ctx.setLineDash([]);
+                        this.ctx.fillStyle = '#ffffff';
+                        warpHandles.forEach((handle, handleIndex) => {
+                            const activeHandle = handleIndex === this.warpActiveHandleIndex;
+                            this.ctx.strokeStyle = activeHandle ? '#f59e0b' : '#22c55e';
+                            this.ctx.lineWidth = 1 / this.viewZoom;
+                            this.ctx.strokeRect(
+                                (handle.x - selectionNodeSize / 2) * mmToPx,
+                                (handle.y - selectionNodeSize / 2) * mmToPx,
+                                selectionNodeSize * mmToPx,
+                                selectionNodeSize * mmToPx
+                            );
+                            this.ctx.fillRect(
+                                (handle.x - selectionNodeSize / 2) * mmToPx,
+                                (handle.y - selectionNodeSize / 2) * mmToPx,
+                                selectionNodeSize * mmToPx,
+                                selectionNodeSize * mmToPx
+                            );
+                        });
+                    }
                 } else if (selectToolActive && selectionBox && selectionCorners) {
                     if (index === this.selectedPaths[0]) {
                         this.ctx.strokeStyle = '#3b82f6';
@@ -4450,11 +6780,13 @@ class CanvasManager {
             } else if (p.type === 'rectangle') {
                 this.ctx.strokeRect(p.x * mmToPx, p.y * mmToPx, (p.w || 0.1) * mmToPx, (p.h || 0.1) * mmToPx);
             } else if (p.type === 'text') {
+                this.normalizeTextPath(p);
                 this.drawVectorText(p, mmToPx, index === this.editingPathIdx);
             } else if (p.type === 'line' || p.type === 'polyline' || p.type === 'path') {
-                if (!p.points || p.points.length === 0) return;
+                const tracePoints = this.getPathTracePoints(p);
+                if (!tracePoints.length) return;
                 this.ctx.beginPath();
-                if (p.segments && p.segments.length > 0) {
+                if (Array.isArray(p.segments) && p.segments.length > 0 && Math.abs(p.curve || 0) < 0.001) {
                     p.segments.forEach(s => {
                         if (s.type === 'M') this.ctx.moveTo(s.x * mmToPx, s.y * mmToPx);
                         else if (s.type === 'L') this.ctx.lineTo(s.x * mmToPx, s.y * mmToPx);
@@ -4464,14 +6796,95 @@ class CanvasManager {
                         else if (s.type === 'Z') this.ctx.closePath();
                     });
                 } else {
-                    this.ctx.moveTo(p.points[0].x * mmToPx, p.points[0].y * mmToPx);
-                    for (let i = 1; i < p.points.length; i++) {
-                        this.ctx.lineTo(p.points[i].x * mmToPx, p.points[i].y * mmToPx);
+                    this.ctx.moveTo(tracePoints[0].x * mmToPx, tracePoints[0].y * mmToPx);
+                    for (let i = 1; i < tracePoints.length; i++) {
+                        this.ctx.lineTo(tracePoints[i].x * mmToPx, tracePoints[i].y * mmToPx);
                     }
                 }
                 this.ctx.stroke();
             }
         });
+
+        if (!showMachineOutput && selectedPathSet.size > 0) {
+            this.selectedPaths.forEach(pathIdx => {
+                const path = this.paths[pathIdx];
+                if (!path) return;
+                this.drawSinglePathSelectionHighlight(path, mmToPx);
+            });
+        }
+
+        if (!showMachineOutput && selectToolActive && selectionBox && selectionCorners) {
+            this.ctx.save();
+            this.ctx.strokeStyle = '#3b82f6';
+            this.ctx.fillStyle = '#ffffff';
+            this.ctx.lineWidth = 1 / this.viewZoom;
+            this.ctx.setLineDash([]);
+            this.ctx.strokeRect(
+                selectionBox.minX * mmToPx,
+                selectionBox.minY * mmToPx,
+                (selectionBox.maxX - selectionBox.minX) * mmToPx,
+                (selectionBox.maxY - selectionBox.minY) * mmToPx
+            );
+            selectionCorners.forEach(c => {
+                this.ctx.strokeRect(
+                    (c.x - selectionNodeSize / 2) * mmToPx,
+                    (c.y - selectionNodeSize / 2) * mmToPx,
+                    selectionNodeSize * mmToPx,
+                    selectionNodeSize * mmToPx
+                );
+                this.ctx.fillRect(
+                    (c.x - selectionNodeSize / 2) * mmToPx,
+                    (c.y - selectionNodeSize / 2) * mmToPx,
+                    selectionNodeSize * mmToPx,
+                    selectionNodeSize * mmToPx
+                );
+            });
+
+            const tm = selectionCorners[1];
+            const stalkLen = 20 / (mmToPx * this.viewZoom);
+            this.ctx.beginPath();
+            this.ctx.moveTo(tm.x * mmToPx, tm.y * mmToPx);
+            this.ctx.lineTo(tm.x * mmToPx, (tm.y - stalkLen) * mmToPx);
+            this.ctx.stroke();
+
+            this.ctx.beginPath();
+            this.ctx.arc(tm.x * mmToPx, (tm.y - stalkLen) * mmToPx, selectionNodeSize / 2 * mmToPx, 0, Math.PI * 2);
+            this.ctx.fill();
+            this.ctx.stroke();
+            this.ctx.restore();
+        }
+
+        if (!showMachineOutput && warpToolActive && warpSelectionBox && warpHandles) {
+            this.ctx.save();
+            this.ctx.strokeStyle = '#22c55e';
+            this.ctx.fillStyle = '#ffffff';
+            this.ctx.lineWidth = 1 / this.viewZoom;
+            this.ctx.setLineDash([6 / this.viewZoom, 4 / this.viewZoom]);
+            this.ctx.strokeRect(
+                warpSelectionBox.minX * mmToPx,
+                warpSelectionBox.minY * mmToPx,
+                (warpSelectionBox.maxX - warpSelectionBox.minX) * mmToPx,
+                (warpSelectionBox.maxY - warpSelectionBox.minY) * mmToPx
+            );
+            this.ctx.setLineDash([]);
+            warpHandles.forEach((handle, handleIndex) => {
+                const activeHandle = handleIndex === this.warpActiveHandleIndex;
+                this.ctx.strokeStyle = activeHandle ? '#f59e0b' : '#22c55e';
+                this.ctx.strokeRect(
+                    (handle.x - selectionNodeSize / 2) * mmToPx,
+                    (handle.y - selectionNodeSize / 2) * mmToPx,
+                    selectionNodeSize * mmToPx,
+                    selectionNodeSize * mmToPx
+                );
+                this.ctx.fillRect(
+                    (handle.x - selectionNodeSize / 2) * mmToPx,
+                    (handle.y - selectionNodeSize / 2) * mmToPx,
+                    selectionNodeSize * mmToPx,
+                    selectionNodeSize * mmToPx
+                );
+            });
+            this.ctx.restore();
+        }
 
         if (!showMachineOutput && this.isCreatingBezier && this.currentBezierPathIdx >= 0) {
             const activePath = this.paths[this.currentBezierPathIdx];
@@ -4503,10 +6916,13 @@ class CanvasManager {
                 } else if (p.type === 'rectangle') {
                     this.ctx.strokeRect(p.x * mmToPx, p.y * mmToPx, (p.w || 0.1) * mmToPx, (p.h || 0.1) * mmToPx);
                 } else if (p.type === 'text') {
+                    this.normalizeTextPath(p);
                     this.drawVectorText(p, mmToPx, false);
-                } else if (p.points) {
+                } else if (p.points || p.type === 'path') {
+                    const tracePoints = this.getPathTracePoints(p);
+                    if (!tracePoints.length) return;
                     this.ctx.beginPath();
-                    if (p.segments && p.segments.length > 0) {
+                    if (Array.isArray(p.segments) && p.segments.length > 0 && Math.abs(p.curve || 0) < 0.001) {
                         p.segments.forEach(s => {
                             if (s.type === 'M') this.ctx.moveTo(s.x * mmToPx, s.y * mmToPx);
                             else if (s.type === 'L') this.ctx.lineTo(s.x * mmToPx, s.y * mmToPx);
@@ -4516,9 +6932,9 @@ class CanvasManager {
                             else if (s.type === 'Z') this.ctx.closePath();
                         });
                     } else {
-                        this.ctx.moveTo(p.points[0].x * mmToPx, p.points[0].y * mmToPx);
-                        for (let i = 1; i < p.points.length; i++) {
-                            this.ctx.lineTo(p.points[i].x * mmToPx, p.points[i].y * mmToPx);
+                        this.ctx.moveTo(tracePoints[0].x * mmToPx, tracePoints[0].y * mmToPx);
+                        for (let i = 1; i < tracePoints.length; i++) {
+                            this.ctx.lineTo(tracePoints[i].x * mmToPx, tracePoints[i].y * mmToPx);
                         }
                     }
                     this.ctx.stroke();
@@ -4614,12 +7030,17 @@ class CanvasManager {
             }
 
             if (path.type === 'text') {
-                this.getVectorTextSegments(path).forEach(segment => {
-                    pushPolyline([
-                        { x: segment.x1, y: segment.y1 },
-                        { x: segment.x2, y: segment.y2 }
-                    ], pen);
-                });
+                this.normalizeTextPath(path);
+                if (this.isCreativeTextPath(path) && typeof CreativeTextEngine !== 'undefined') {
+                    CreativeTextEngine.buildPlotLoops(path).forEach(loop => pushPolyline(loop, pen));
+                } else {
+                    this.getVectorTextSegments(path).forEach(segment => {
+                        pushPolyline([
+                            { x: segment.x1, y: segment.y1 },
+                            { x: segment.x2, y: segment.y2 }
+                        ], pen);
+                    });
+                }
                 return;
             }
 
@@ -4633,7 +7054,7 @@ class CanvasManager {
                 } else if (path.machinePreviewSource?.kind === 'dxfSpline') {
                     tracePoints = hpgl._sampleDXFSplineDefinition(path.machinePreviewSource);
                 } else {
-                    tracePoints = hpgl.getTracePointsForPath(path);
+                    tracePoints = hpgl.getExportTracePointsForPath(path);
                 }
                 if (Array.isArray(tracePoints) && tracePoints.length >= 2) {
                     pushPolyline(tracePoints.map(point => ({ x: point.x, y: point.y })), pen);
@@ -4645,6 +7066,12 @@ class CanvasManager {
     }
 
     drawVectorText(p, mmToPx, isEditing) {
+        this.normalizeTextPath(p);
+        if (this.isCreativeTextPath(p) && typeof CreativeTextEngine !== 'undefined') {
+            CreativeTextEngine.draw(this.ctx, p, mmToPx, this.viewZoom, isEditing, this.cursorBlink);
+            return;
+        }
+
         if (typeof HandwritingLibrary === 'undefined') {
             // Fallback to basic text if library not loaded
             const fontSizePx = Math.max(12, (p.fontSize || 10) * mmToPx);
@@ -4710,7 +7137,12 @@ class CanvasManager {
     }
 
     getVectorTextSegments(p) {
-        if (typeof HandwritingLibrary === 'undefined' || !p || p.type !== 'text') return [];
+        if (!p || p.type !== 'text') return [];
+        this.normalizeTextPath(p);
+        if (this.isCreativeTextPath(p) && typeof CreativeTextEngine !== 'undefined') {
+            return CreativeTextEngine.getSegments(p);
+        }
+        if (typeof HandwritingLibrary === 'undefined') return [];
 
         const style = 'plotter';
         const glyphLibrary = HandwritingLibrary[style];
@@ -4774,6 +7206,45 @@ class CanvasManager {
         return segments;
     }
 
+    explodeSelectedCreativeText() {
+        if (!Array.isArray(this.selectedPaths) || this.selectedPaths.length === 0 || typeof CreativeTextEngine === 'undefined') {
+            return 0;
+        }
+
+        const selectedSet = new Set(this.selectedPaths);
+        const rebuiltPaths = [];
+        const nextSelected = [];
+        let explodedCount = 0;
+
+        this.paths.forEach((path, index) => {
+            if (selectedSet.has(index) && this.isCreativeTextPath(path)) {
+                const explodedPaths = CreativeTextEngine.explodeToPaths(path);
+                if (explodedPaths.length > 0) {
+                    const startIndex = rebuiltPaths.length;
+                    rebuiltPaths.push(...explodedPaths);
+                    explodedPaths.forEach((_, offset) => nextSelected.push(startIndex + offset));
+                    explodedCount += 1;
+                    return;
+                }
+            }
+
+            const nextIndex = rebuiltPaths.length;
+            rebuiltPaths.push(path);
+            if (selectedSet.has(index)) nextSelected.push(nextIndex);
+        });
+
+        if (explodedCount > 0) {
+            this.paths = rebuiltPaths;
+            this.selectedPaths = nextSelected;
+            this.editingPathIdx = -1;
+            this.saveUndoState();
+            this.app?.ui?.logToConsole(`System: Exploded ${explodedCount} creative text object(s) into editable outlines.`);
+            this.draw();
+        }
+
+        return explodedCount;
+    }
+
     addPath(pathData) {
         this.paths.push(pathData);
         this.saveUndoState();
@@ -4794,6 +7265,45 @@ class CanvasManager {
         return `rgba(${r}, ${g}, ${b}, ${opacity})`;
     }
 
+    refreshSimulationButton() {
+        const btn = document.getElementById('btn-simulate');
+        if (!btn) return;
+        if (this.simulationActive) {
+            btn.textContent = 'Stop';
+            btn.title = 'Stop simulation';
+            btn.style.background = 'var(--danger)';
+            btn.style.color = 'white';
+        } else {
+            btn.textContent = 'Simulate';
+            btn.title = 'Simulate Plotter Movement';
+            btn.style.background = 'var(--accent-blue)';
+            btn.style.color = 'white';
+        }
+    }
+
+    stopSimulation(reason = 'stopped') {
+        if (!this.simulationActive && reason !== 'complete') {
+            this.refreshSimulationButton();
+            return false;
+        }
+
+        this.simulationActive = false;
+        this.simulationProgress = 0;
+        this.simulationLastTimestamp = 0;
+        this.refreshSimulationButton();
+        this.draw();
+
+        if (reason === 'stopped') {
+            this.app?.ui?.logToConsole('System: Plot simulation stopped.');
+        } else if (reason === 'escape') {
+            this.app?.ui?.logToConsole('System: Plot simulation stopped with Escape.');
+        } else if (reason === 'complete') {
+            this.app?.ui?.logToConsole('System: Simulation complete.');
+        }
+
+        return true;
+    }
+
     startSimulation() {
         if (this.paths.length === 0) {
             this.app.ui.logToConsole('System: No paths to simulate.');
@@ -4801,9 +7311,7 @@ class CanvasManager {
         }
 
         if (this.simulationActive) {
-            this.simulationActive = false;
-            this.simulationLastTimestamp = 0;
-            this.draw();
+            this.stopSimulation('stopped');
             return;
         }
 
@@ -4819,6 +7327,7 @@ class CanvasManager {
         this.simulationActive = true;
         this.simulationProgress = 0;
         this.simulationLastTimestamp = 0;
+        this.refreshSimulationButton();
         const toSimMachinePoint = (point) => {
             if (!point) return null;
             if (this.app?.hpgl?.transformOutputPoint) {
@@ -4859,11 +7368,7 @@ class CanvasManager {
                     const finalPoint = toSimMachinePoint({ x: finalSegment.x2, y: finalSegment.y2 });
                     if (finalPoint) this.app.serial.setEstimatedPosition(finalPoint.x, finalPoint.y);
                 }
-                this.simulationActive = false;
-                this.simulationProgress = 0;
-                this.simulationLastTimestamp = 0;
-                this.draw();
-                this.app.ui.logToConsole('System: Simulation complete.');
+                this.stopSimulation('complete');
             } else {
                 requestAnimationFrame(tick);
             }

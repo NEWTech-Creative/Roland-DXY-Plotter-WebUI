@@ -10,7 +10,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link
-        href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;700&display=swap"
+        href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;700&family=Anton&family=Archivo+Black&family=Baloo+2:wght@400;600;700&family=Bebas+Neue&family=Bungee&family=Comfortaa:wght@400;700&family=Fredoka:wght@400;500;600;700&family=Lilita+One&family=Luckiest+Guy&family=Pacifico&display=swap"
         rel="stylesheet">
 
     <!-- GridStack CSS -->
@@ -112,7 +112,6 @@
                                 <option value="hpgl">Export HPGL</option>
                                 <option value="gcode">Export GCODE</option>
                                 <option value="svg">Export SVG</option>
-                                <option value="fill-debug-svg">Export Fill Debug SVG</option>
                             </select>
                         </div>
                     </div>
@@ -332,22 +331,22 @@
                     <div class="panel-body canvas-wrapper">
                         <div class="vis-palette" id="vis-palette">
                             <div class="vis-tool-stack" id="vis-tool-stack">
-                                <button class="tool-btn active" title="Select (Escape)" data-tool="select"><svg width="16"
+                                <button class="tool-btn active" title="Select (ESC)" data-tool="select"><svg width="16"
                                         height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                         <path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z" />
                                     </svg></button>
-                                <button class="tool-btn" title="Add Text" data-tool="text"><svg width="16" height="16"
+                                <button class="tool-btn" title="Add Text" data-tool="text" id="btn-add-text"><svg width="16" height="16"
                                         viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                         <polyline points="4 7 4 4 20 4 20 7" />
                                         <line x1="9" y1="20" x2="15" y2="20" />
                                         <line x1="12" y1="4" x2="12" y2="20" />
                                     </svg></button>
-                                <button class="tool-btn" title="Shapes (Hold to change)" data-tool="shape"
+                                <button class="tool-btn" title="Shapes" data-tool="shape"
                                     id="btn-draw-shape"><svg width="16" height="16" viewBox="0 0 24 24" fill="none"
                                         stroke="currentColor" stroke-width="2">
                                         <circle cx="12" cy="12" r="10" />
                                     </svg></button>
-                                <button class="tool-btn" title="Bezier Tool" data-tool="bezier"><svg width="16"
+                                <button class="tool-btn" title="Bezier Tool" data-tool="bezier" id="btn-tool-bezier"><svg width="16"
                                         height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                                         stroke-linecap="round" stroke-linejoin="round">
                                         <path d="M5 18c4-8 10-8 14-2" />
@@ -366,6 +365,20 @@
                                         <line x1="9" y1="17" x2="15" y2="17" />
                                         <line x1="7" y1="9" x2="7" y2="15" />
                                         <line x1="17" y1="9" x2="17" y2="15" />
+                                    </svg></button>
+                                <button class="tool-btn" title="Warp Tool" data-tool="warp" id="btn-tool-warp"><svg width="16"
+                                        height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                                        stroke-linecap="round" stroke-linejoin="round">
+                                        <path d="M4 6c2 1 4 1 6 0s4-1 6 0 4 1 4 0" />
+                                        <path d="M4 18c2-1 4-1 6 0s4 1 6 0 4-1 4 0" />
+                                        <path d="M6 4c1 2 1 4 0 6s-1 4 0 6 1 4 0 4" />
+                                        <path d="M18 4c-1 2-1 4 0 6s1 4 0 6-1 4 0 4" />
+                                    </svg></button>
+                                <button class="tool-btn" title="Boolean Operations" data-tool="boolean" id="btn-tool-boolean"><svg width="16"
+                                        height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                                        stroke-linecap="round" stroke-linejoin="round">
+                                        <path d="M8 7a4 4 0 1 0 0 8h5" />
+                                        <path d="M16 7a4 4 0 1 1 0 8H11" />
                                     </svg></button>
                             </div>
                             <button class="tool-btn vis-bucket-btn" id="btn-fill-bucket" data-tool="bucket" title="Pattern Fill Bucket">
@@ -643,11 +656,17 @@
                                 <div class="form-group" style="margin-bottom: 0; flex: 1; min-width: 150px;">
                                     <label>Method</label>
                                     <select id="sel-iv-method" style="width: 100%;">
+                                        <option value="trace">Trace / Clean Vector</option>
                                         <option value="contour">Contour / Edge Tracing</option>
                                         <option value="hatch">Cross-Hatching Shading</option>
-                                        <option value="spiral">Spiral Brightness</option>
+                                        <option value="spiral">Spiral Halftone</option>
+                                        <option value="squiggle">Squiggle</option>
                                         <option value="wave">Wave Distortion</option>
-                                        <option value="stipple">Dot Mapping</option>
+                                        <option value="longwave">Long Wave</option>
+                                        <option value="stipple">Stipples</option>
+                                        <option value="dots">Dots</option>
+                                        <option value="mosaic">Mosaic</option>
+                                        <option value="woven">Woven</option>
                                         <option value="flow">Flow Field Lines</option>
                                         <option value="shape">Shape Replacement</option>
                                         <option value="topo">Topographic Contours</option>
@@ -1026,6 +1045,18 @@
                 </div>
             </div>
 
+            <div class="grid-stack-item" gs-w="8" gs-h="15" gs-x="2" gs-y="8" id="panel-creative-tabs">
+                <div class="grid-stack-item-content panel-glass">
+                    <div class="panel-header">
+                        <h2>Creative Tools</h2>
+                    </div>
+                    <div class="panel-body flex-col compact-tool-panel creative-tabs-panel-body">
+                        <div id="creative-tab-bar" class="creative-tab-bar" role="tablist" aria-label="Creative tools"></div>
+                        <div id="creative-tab-content" class="creative-tab-content"></div>
+                    </div>
+                </div>
+            </div>
+
         </div>
     </main>
 
@@ -1131,6 +1162,11 @@
                         </div>
                         <div class="form-group">
                             <label>Visible Panels</label>
+                            <label class="panel-toggle-item settings-inline-toggle">
+                                <input type="checkbox" id="input-creative-tabs-mode">
+                                <span>Combine creative tools into one tabbed panel</span>
+                            </label>
+                            <small class="settings-help">Groups 3D Vector, Pattern Generator, Live Finger Tracker, Image to Vector, and Handwriting Generator into one panel with tabs across the top.</small>
                             <div class="panel-toggle-list settings-panel-toggle-list">
                                 <label class="panel-toggle-item">
                                     <input type="checkbox" data-panel-toggle="panel-connection" checked disabled>
@@ -1334,6 +1370,64 @@
         </div>
     </div>
 
+    <div id="text-tool-menu" class="context-menu hidden text-tool-menu">
+        <div class="menu-header">
+            <span>Text Tool</span>
+            <button id="btn-close-text-tool-menu" class="btn btn-icon btn-sm">&times;</button>
+        </div>
+        <div class="menu-body">
+            <div class="form-group-inline">
+                <label>Mode</label>
+                <select id="sel-text-mode">
+                    <option value="roland">Roland DXY</option>
+                    <option value="creative">Creative Outline</option>
+                </select>
+            </div>
+            <div class="form-group-inline text-tool-creative-row">
+                <label>Font</label>
+                <select id="sel-text-creative-font"></select>
+            </div>
+            <div class="text-tool-actions text-tool-creative-row">
+                <button id="btn-text-upload-font" class="btn btn-secondary btn-sm" type="button">Upload Font</button>
+                <button id="btn-text-explode-selected" class="btn btn-secondary btn-sm" type="button">Explode Selected</button>
+            </div>
+            <div class="form-group-inline text-tool-creative-row">
+                <label>Spacing</label>
+                <input type="range" id="input-text-letter-spacing" min="-8" max="20" step="0.2" value="0">
+                <input type="number" id="field-text-letter-spacing" class="text-tool-value-input" min="-8" max="20" step="0.2" value="0">
+            </div>
+            <div class="form-group-inline text-tool-creative-row">
+                <label>Arch</label>
+                <input type="range" id="input-text-curve" min="-30" max="30" step="0.5" value="0">
+                <input type="number" id="field-text-curve" class="text-tool-value-input" min="-30" max="30" step="0.5" value="0">
+            </div>
+            <div class="form-group-inline">
+                <label>Size</label>
+                <input type="range" id="input-text-font-size" min="2" max="60" step="0.5" value="10">
+                <input type="number" id="field-text-font-size" class="text-tool-value-input" min="2" max="60" step="0.5" value="10">
+            </div>
+            <div class="form-group-inline">
+                <label>Rotate</label>
+                <select id="sel-text-rotation">
+                    <option value="0">0°</option>
+                    <option value="90">90°</option>
+                    <option value="180">180°</option>
+                    <option value="270">270°</option>
+                </select>
+            </div>
+            <div class="text-tool-actions">
+                <button id="btn-text-reset-values" class="btn btn-secondary btn-sm" type="button">Reset Values</button>
+            </div>
+            <div class="fill-bucket-help">
+                Click to place text. Double-click non-exploded text to edit it again. Creative text is converted to outline loops for machine preview, RUN, and explode.
+            </div>
+            <div class="fill-bucket-help text-tool-creative-row">
+                Uploaded fonts are cached in this browser and restored after refresh or restart.
+            </div>
+        </div>
+    </div>
+    <input type="file" id="input-text-font-upload" accept=".ttf,.otf,.woff,.woff2" hidden>
+
     <!-- Shape Type Menu -->
     <div id="shape-type-menu" class="context-menu hidden" style="width: 150px;">
         <div class="menu-header">
@@ -1357,6 +1451,18 @@
                     <line x1="3" y1="21" x2="21" y2="3" />
                 </svg>
             </button>
+        </div>
+    </div>
+
+    <div id="bezier-tool-menu" class="context-menu hidden bezier-tool-menu">
+        <div class="menu-header">
+            <span>Bezier Tool</span>
+            <button id="btn-close-bezier-tool-menu" class="btn btn-icon btn-sm">&times;</button>
+        </div>
+        <div class="menu-body bezier-tool-menu-body">
+            <button class="btn btn-secondary bezier-mode-btn" data-bezier-mode="curves" type="button">Bezier Curves</button>
+            <button class="btn btn-secondary bezier-mode-btn" data-bezier-mode="free-draw" type="button">Free Draw</button>
+            <div class="fill-bucket-help">Bezier Curves keeps the current click-and-drag path editor. Free Draw sketches by hand, then simplifies the stroke into a cleaner vector path.</div>
         </div>
     </div>
 
@@ -1410,6 +1516,20 @@
         </div>
     </div>
 
+    <div id="boolean-tool-menu" class="context-menu hidden boolean-tool-menu">
+        <div class="menu-header">
+            <span>Boolean Operations</span>
+            <button id="btn-close-boolean-tool-menu" class="btn btn-icon btn-sm">&times;</button>
+        </div>
+        <div class="menu-body boolean-tool-menu-body">
+            <button class="btn btn-secondary boolean-op-btn" data-boolean-op="union" type="button">Merge (Union)</button>
+            <button class="btn btn-secondary boolean-op-btn" data-boolean-op="intersect" type="button">Intersect</button>
+            <button class="btn btn-secondary boolean-op-btn" data-boolean-op="subtract" type="button">Subtract</button>
+            <button class="btn btn-secondary boolean-op-btn" data-boolean-op="exclude" type="button">Exclude (XOR)</button>
+            <div class="fill-bucket-help">Use Merge, Intersect, Subtract, or Exclude on two or more closed shapes.</div>
+        </div>
+    </div>
+
     <!-- ERROR CATCHER OVERLAY -->
     <div id="error-overlay"
         style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; z-index:9999; background:rgba(0,0,0,0.8); color:#ff6b6b; padding:40px; font-family:monospace; font-size:18px; overflow:auto;">
@@ -1441,25 +1561,102 @@
 
     <!-- Scripts -->
     <script>
-        window.onerror = function (msg, url, lineNo, columnNo, error) {
-            const errDiv = document.getElementById('error-overlay');
-            const errText = document.getElementById('error-overlay-text');
-            errDiv.style.display = 'block';
-            errText.innerText += "Message: " + msg + "\nURL: " + url + "\nLine: " + lineNo + ":" + columnNo + "\n\nStack Trace:\n" + (error && error.stack ? error.stack : "N/A") + "\n\n-----------------\n";
-            return false;
-        };
-        window.addEventListener('unhandledrejection', function (event) {
-            const errDiv = document.getElementById('error-overlay');
-            const errText = document.getElementById('error-overlay-text');
-            errDiv.style.display = 'block';
-            errText.innerText += "Unhandled Promise Rejection: " + event.reason + "\n\n-----------------\n";
-        });
+        (function () {
+            function stringifyReason(reason) {
+                if (reason && typeof reason === 'object') {
+                    if (reason.stack) return String(reason.stack);
+                    if (reason.message) return String(reason.message);
+                    try {
+                        return JSON.stringify(reason, null, 2);
+                    } catch (jsonError) {
+                        return String(reason);
+                    }
+                }
+                return String(reason ?? 'Unknown error');
+            }
+
+            function showErrorOverlay(details) {
+                const errDiv = document.getElementById('error-overlay');
+                const errText = document.getElementById('error-overlay-text');
+                if (!errDiv || !errText) {
+                    console.error('Error overlay unavailable:', details);
+                    return;
+                }
+
+                const isOpaqueScriptError =
+                    details.message === 'Script error.'
+                    && !details.url
+                    && (!details.line || Number(details.line) === 0)
+                    && (!details.column || Number(details.column) === 0)
+                    && (!details.stack || details.stack === 'N/A');
+
+                const lines = [];
+                lines.push(`Message: ${details.message || 'Unknown error'}`);
+                lines.push(`URL: ${details.url || 'Unavailable'}`);
+                lines.push(`Line: ${Number(details.line) || 0}:${Number(details.column) || 0}`);
+                lines.push('');
+                lines.push('Stack Trace:');
+                lines.push(details.stack || 'N/A');
+
+                if (isOpaqueScriptError) {
+                    lines.push('');
+                    lines.push('Browser blocked the real script details for this error.');
+                    lines.push('See console for errors and send the first red error line plus the file name to the AI.');
+                }
+
+                lines.push('');
+                lines.push('-----------------');
+
+                errDiv.style.display = 'block';
+                errText.innerText += lines.join('\n') + '\n';
+                console.error('Captured global error:', details);
+            }
+
+            window.onerror = function (msg, url, lineNo, columnNo, error) {
+                showErrorOverlay({
+                    message: String(msg || 'Unknown error'),
+                    url: url || '',
+                    line: lineNo || 0,
+                    column: columnNo || 0,
+                    stack: error && error.stack ? String(error.stack) : 'N/A'
+                });
+                return false;
+            };
+
+            window.addEventListener('error', function (event) {
+                if (!event) return;
+                const filename = event.filename || event.target?.src || event.target?.href || '';
+                const message = event.message || event.error?.message || 'Script load/runtime error';
+                const stack = event.error?.stack ? String(event.error.stack) : 'N/A';
+                showErrorOverlay({
+                    message,
+                    url: filename,
+                    line: event.lineno || 0,
+                    column: event.colno || 0,
+                    stack
+                });
+            }, true);
+
+            window.addEventListener('unhandledrejection', function (event) {
+                showErrorOverlay({
+                    message: 'Unhandled Promise Rejection',
+                    url: '',
+                    line: 0,
+                    column: 0,
+                    stack: stringifyReason(event.reason)
+                });
+            });
+        })();
 
 
     </script>
     <script src="vendor/gridstack-all.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/paper@0.12.18/dist/paper-full.min.js"></script>
+    <script src="references/clipper-lib-master/clipper.js"></script>
+    <script src="references/maker.js-master/docs/target/js/browser.maker.js"></script>
     <script src="js/ui.js"></script>
     <script src="js/serial.js"></script>
+    <script src="js/creative-text.js"></script>
     <script src="js/canvas.js"></script>
     <script src="js/patterns.js"></script>
     <script src="js/hpgl.js"></script>
@@ -1473,6 +1670,7 @@
     <script src="js/handwriting/handwriting-panel.js"></script>
 
     <!-- Image to Vector Scripts -->
+    <script src="js/image-vector/trace-worker-source.js"></script>
     <script src="js/image-vector/image-vector-engine.js"></script>
     <script src="js/image-vector/image-vector-panel.js"></script>
     <script src="js/3d-vector/3d-vector-engine.js"></script>

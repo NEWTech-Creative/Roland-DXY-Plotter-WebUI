@@ -2,6 +2,7 @@ class Vector3DPanel {
     constructor(app) {
         this.app = app;
         this.engine = new Vector3DWrapEngine(app);
+        this.maxUploadBytes = 5 * 1024 * 1024;
         this.THREE = null;
         this.OrbitControls = null;
         this.OBJLoader = null;
@@ -62,6 +63,8 @@ class Vector3DPanel {
         this.selectedSurfaceLabel = 'Wrapped surface';
         this.availableSurfaceTargets = [{ value: 'wrap', label: 'Wrapped surface' }];
         this.selectedImportedFaces = [];
+        this.selectedCubeFaces = [];
+        this.activeSurfaceTargetOverride = null;
 
         const ids = [
             'sel-v3d-primitive',
@@ -126,6 +129,10 @@ class Vector3DPanel {
         this.fileSvgInput?.addEventListener('change', async (event) => {
             const file = event.target.files?.[0];
             if (!file) return;
+            if (!this._validateUploadSize(file, 'vector')) {
+                event.target.value = '';
+                return;
+            }
             await this.importSvgFile(file);
             event.target.value = '';
         });
@@ -133,11 +140,29 @@ class Vector3DPanel {
         this.file3dInput?.addEventListener('change', async (event) => {
             const file = event.target.files?.[0];
             if (!file) return;
+            if (!this._validateUploadSize(file, '3D model')) {
+                event.target.value = '';
+                return;
+            }
             await this.importModelFile(file);
             event.target.value = '';
         });
 
         this._updateFaceTargetOptions();
+    }
+
+    _formatUploadSize(bytes) {
+        if (!Number.isFinite(bytes) || bytes <= 0) return '0 MB';
+        return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+    }
+
+    _validateUploadSize(file, kindLabel = 'file') {
+        const maxBytes = this.maxUploadBytes || (5 * 1024 * 1024);
+        if (!file || !Number.isFinite(file.size) || file.size <= maxBytes) return true;
+        const message = `${kindLabel} upload is limited to 5 MB for processing. "${file.name}" is ${this._formatUploadSize(file.size)}.`;
+        this._setStatus(message);
+        this.app.ui?.logToConsole?.(`3D Vector: ${message}`, 'error');
+        return false;
     }
 
     async importSvgFile(file) {
@@ -185,6 +210,24 @@ class Vector3DPanel {
             this.normalizedArtwork = [];
             this._setVectorName(`${label} assigned`, polylines.length);
             this._setStatus(`Assigned ${polylines.length} path${polylines.length === 1 ? '' : 's'} to ${faceCount} face${faceCount === 1 ? '' : 's'}.`);
+            this.refreshPreview(true);
+            return;
+        }
+
+        if (this._shouldAssignArtworkToCubeFaces()) {
+            this._replaceAssignmentsForCubeFaces(this.selectedCubeFaces);
+            this.surfaceAssignments.push({
+                id: `v3d_assign_${Date.now()}_${this.surfaceAssignments.length}`,
+                label,
+                pathCount: polylines.length,
+                normalizedArtwork: normalized,
+                surfaceTargets: this.selectedCubeFaces.slice()
+            });
+            const faceCount = this.selectedCubeFaces.length;
+            this.artworkPolylines = [];
+            this.normalizedArtwork = [];
+            this._setVectorName(`${label} assigned`, polylines.length);
+            this._setStatus(`Assigned ${polylines.length} path${polylines.length === 1 ? '' : 's'} to ${faceCount} cube face${faceCount === 1 ? '' : 's'}.`);
             this.refreshPreview(true);
             return;
         }
@@ -246,7 +289,7 @@ class Vector3DPanel {
         this.flattenedPaths = [];
         let totalSourcePaths = 0;
         artworkJobs.forEach((job) => {
-            const result = this._runWithImportedFaceSelection(job.importedFaces, () => this.engine.buildWrappedResult({
+            const result = this._runWithSurfaceTarget(job.surfaceTarget, () => this._runWithImportedFaceSelection(job.importedFaces, () => this.engine.buildWrappedResult({
                 THREE: this.THREE,
                 camera: this.camera,
                 surfaceMesh: this.surfaceMesh,
@@ -264,7 +307,7 @@ class Vector3DPanel {
                 splitOnFaceChange: isCubeWrap,
                 useViewportFrame: true,
                 viewportAspect: this.camera?.aspect || 1
-            }));
+            })));
             totalSourcePaths += job.normalizedArtwork.length;
             this.flattenedPaths.push(...result.projectedPaths);
         });
@@ -286,10 +329,12 @@ class Vector3DPanel {
         }
 
         const groupId = `v3d_${Date.now()}`;
+        const curveAmount = this.app?.ui?.textToolSettings?.curve || 0;
         const created = this.flattenedPaths.map((path) => ({
             type: 'polyline',
             pen: path.pen || (this.app.ui?.activeVisualizerPen || 1),
             groupId,
+            curve: curveAmount,
             points: (path.points || []).map(point => ({ x: point.x, y: point.y }))
         }));
 
@@ -534,10 +579,32 @@ class Vector3DPanel {
 
         const hits = raycaster.intersectObject(this.surfaceMesh, true);
         const firstSurfaceHit = hits.find((hit) => hit?.object?.isMesh);
-        if (!firstSurfaceHit) return;
+        if (!firstSurfaceHit) {
+            if (surfaceType === 'imported' && this.selectedImportedFaces.length) {
+                this.selectedImportedFaces = [];
+                this._updateSelectedSurfaceReadout();
+                this._updateSurfaceHighlight();
+                this._setStatus('Cleared face selection. Using the whole wrapped object.');
+                this.refreshPreview();
+            } else if (surfaceType === 'cube' && this.selectedCubeFaces.length) {
+                this.selectedCubeFaces = [];
+                this.selectedSurfaceTarget = 'wrap';
+                this.selectedSurfaceLabel = (this.availableSurfaceTargets.find(option => option.value === 'wrap') || { label: 'Wrapped surface' }).label;
+                this._updateSelectedSurfaceReadout();
+                this._updateSurfaceHighlight();
+                this._setStatus('Cleared face selection. Using the whole wrapped object.');
+                this.refreshPreview();
+            }
+            return;
+        }
 
         if (surfaceType === 'imported') {
             this._toggleImportedFaceSelection(firstSurfaceHit, additiveSelection);
+            return;
+        }
+
+        if (surfaceType === 'cube') {
+            this._toggleCubeFaceSelection(firstSurfaceHit, additiveSelection);
             return;
         }
 
@@ -564,6 +631,40 @@ class Vector3DPanel {
         this._updateSelectedSurfaceReadout();
         this._updateSurfaceHighlight();
         this._setStatus(`Selected surface: ${target.label}`);
+        this.refreshPreview();
+    }
+
+    _toggleCubeFaceSelection(hit, additiveSelection = false) {
+        const target = this._deriveSurfaceTargetFromHit(hit);
+        if (!target || target.value === 'wrap') return;
+
+        const existingIndex = this.selectedCubeFaces.indexOf(target.value);
+        if (!additiveSelection) {
+            this.selectedCubeFaces = existingIndex >= 0 && this.selectedCubeFaces.length === 1
+                ? []
+                : [target.value];
+        } else if (existingIndex >= 0) {
+            this.selectedCubeFaces.splice(existingIndex, 1);
+        } else {
+            this.selectedCubeFaces.push(target.value);
+        }
+
+        if (this.selectedCubeFaces.length === 1) {
+            this.selectedSurfaceTarget = this.selectedCubeFaces[0];
+            this.selectedSurfaceLabel = target.label;
+        } else if (!this.selectedCubeFaces.length) {
+            this.selectedSurfaceTarget = 'wrap';
+            this.selectedSurfaceLabel = (this.availableSurfaceTargets.find(option => option.value === 'wrap') || { label: 'Wrapped surface' }).label;
+        }
+
+        this._updateSelectedSurfaceReadout();
+        this._updateSurfaceHighlight();
+        const count = this.selectedCubeFaces.length;
+        this._setStatus(
+            count
+                ? `Selected ${count} cube face${count === 1 ? '' : 's'} for vector placement.`
+                : 'Selected surface: Wrapped surface'
+        );
         this.refreshPreview();
     }
 
@@ -598,6 +699,15 @@ class Vector3DPanel {
         const geometry = object?.geometry;
         const faceIndex = Number.isInteger(hit?.faceIndex) ? hit.faceIndex : null;
         if (!object?.isMesh || !geometry || faceIndex == null) return null;
+        const faceGroup = this._getImportedFaceGroup(object, faceIndex);
+        if (faceGroup) {
+            return {
+                key: `${object.uuid}:${faceGroup.id}`,
+                objectUuid: object.uuid,
+                groupId: faceGroup.id,
+                faceIndices: faceGroup.faceIndices.slice()
+            };
+        }
         return {
             key: `${object.uuid}:${faceIndex}`,
             objectUuid: object.uuid,
@@ -714,6 +824,7 @@ class Vector3DPanel {
     _applySurfaceObject(object3d) {
         if (!this.surfaceRoot) return;
         this.selectedImportedFaces = [];
+        this.selectedCubeFaces = [];
         this.surfaceAssignments = [];
         if (this.surfaceMesh) {
             this.surfaceRoot.remove(this.surfaceMesh);
@@ -751,6 +862,7 @@ class Vector3DPanel {
         const edgeMaterial = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.6 });
         object3d.traverse((child) => {
             if (child.isMesh) {
+                this._buildImportedFaceGroups(child);
                 child.material = new THREE.MeshStandardMaterial({
                     color: 0xcbd5e1,
                     transparent: true,
@@ -768,6 +880,119 @@ class Vector3DPanel {
         wrapper.add(object3d);
         wrapper.userData.surfaceType = object3d.userData?.surfaceType || 'imported';
         return wrapper;
+    }
+
+    _buildImportedFaceGroups(mesh) {
+        const geometry = mesh?.geometry;
+        const positions = geometry?.attributes?.position;
+        if (!mesh?.isMesh || !positions) return;
+
+        const faceCount = geometry.index ? Math.floor(geometry.index.count / 3) : Math.floor(positions.count / 3);
+        if (!faceCount) {
+            mesh.userData.importedFaceGroups = null;
+            mesh.userData.importedFaceGroupLookup = null;
+            return;
+        }
+
+        const THREE = this.THREE;
+        const index = geometry.index;
+        const faces = new Array(faceCount);
+        const edgeMap = new Map();
+        const normalTolerance = 0.9995;
+        const planeTolerance = 0.0008;
+
+        const getVertexIndex = (faceIndex, corner) => (index
+            ? index.getX((faceIndex * 3) + corner)
+            : (faceIndex * 3) + corner);
+
+        const getVertexPoint = (vertexIndex) => new THREE.Vector3().fromBufferAttribute(positions, vertexIndex);
+        const keyForVertex = (point) => `${point.x.toFixed(5)},${point.y.toFixed(5)},${point.z.toFixed(5)}`;
+
+        for (let faceIndex = 0; faceIndex < faceCount; faceIndex++) {
+            const vertexIndices = [
+                getVertexIndex(faceIndex, 0),
+                getVertexIndex(faceIndex, 1),
+                getVertexIndex(faceIndex, 2)
+            ];
+            if (vertexIndices.some((value) => value == null || value >= positions.count)) continue;
+            const vertices = vertexIndices.map(getVertexPoint);
+            const edgeA = vertices[1].clone().sub(vertices[0]);
+            const edgeB = vertices[2].clone().sub(vertices[0]);
+            const normal = edgeA.cross(edgeB).normalize();
+            const planeConstant = normal.dot(vertices[0]);
+            faces[faceIndex] = {
+                faceIndex,
+                vertexIndices,
+                vertices,
+                normal,
+                planeConstant,
+                neighbors: new Set()
+            };
+
+            for (let i = 0; i < 3; i++) {
+                const start = vertices[i];
+                const end = vertices[(i + 1) % 3];
+                const edgeKey = [keyForVertex(start), keyForVertex(end)].sort().join('|');
+                if (!edgeMap.has(edgeKey)) edgeMap.set(edgeKey, []);
+                edgeMap.get(edgeKey).push(faceIndex);
+            }
+        }
+
+        edgeMap.forEach((faceIndices) => {
+            if (!Array.isArray(faceIndices) || faceIndices.length < 2) return;
+            for (let i = 0; i < faceIndices.length; i++) {
+                const faceA = faces[faceIndices[i]];
+                if (!faceA) continue;
+                for (let j = i + 1; j < faceIndices.length; j++) {
+                    const faceB = faces[faceIndices[j]];
+                    if (!faceB) continue;
+                    faceA.neighbors.add(faceB.faceIndex);
+                    faceB.neighbors.add(faceA.faceIndex);
+                }
+            }
+        });
+
+        const groups = [];
+        const lookup = new Map();
+        const visited = new Set();
+
+        for (let faceIndex = 0; faceIndex < faceCount; faceIndex++) {
+            const seed = faces[faceIndex];
+            if (!seed || visited.has(faceIndex)) continue;
+            const stack = [seed.faceIndex];
+            const groupFaceIndices = [];
+            while (stack.length) {
+                const currentIndex = stack.pop();
+                if (visited.has(currentIndex)) continue;
+                const current = faces[currentIndex];
+                if (!current) continue;
+                visited.add(currentIndex);
+                groupFaceIndices.push(currentIndex);
+                current.neighbors.forEach((neighborIndex) => {
+                    if (visited.has(neighborIndex)) return;
+                    const neighbor = faces[neighborIndex];
+                    if (!neighbor) return;
+                    if (Math.abs(current.normal.dot(neighbor.normal)) < normalTolerance) return;
+                    if (Math.abs(current.planeConstant - neighbor.planeConstant) > planeTolerance) return;
+                    stack.push(neighborIndex);
+                });
+            }
+
+            const group = {
+                id: `facegroup_${groups.length}`,
+                faceIndices: groupFaceIndices.sort((a, b) => a - b)
+            };
+            groups.push(group);
+            group.faceIndices.forEach((idx) => lookup.set(idx, group));
+        }
+
+        mesh.userData.importedFaceGroups = groups;
+        mesh.userData.importedFaceGroupLookup = lookup;
+    }
+
+    _getImportedFaceGroup(mesh, faceIndex) {
+        if (!mesh?.userData?.importedFaceGroupLookup || !Number.isInteger(faceIndex)) return null;
+        return mesh.userData.importedFaceGroupLookup.get(faceIndex) || null;
     }
 
     _applyNumericTransforms() {
@@ -848,21 +1073,58 @@ class Vector3DPanel {
     }
 
     _getArtworkJobs() {
-        const jobs = (this.surfaceAssignments || []).map((assignment) => ({
-            normalizedArtwork: assignment.normalizedArtwork || [],
-            importedFaces: assignment.importedFaces || null
-        }));
+        const jobs = [];
+        (this.surfaceAssignments || []).forEach((assignment) => {
+            const normalizedArtwork = assignment.normalizedArtwork || [];
+            if (!Array.isArray(normalizedArtwork) || !normalizedArtwork.length) return;
+            if (Array.isArray(assignment.surfaceTargets) && assignment.surfaceTargets.length) {
+                assignment.surfaceTargets.forEach((surfaceTarget) => {
+                    jobs.push({
+                        normalizedArtwork,
+                        importedFaces: null,
+                        surfaceTarget
+                    });
+                });
+                return;
+            }
+            jobs.push({
+                normalizedArtwork,
+                importedFaces: assignment.importedFaces || null,
+                surfaceTarget: assignment.surfaceTarget || null
+            });
+        });
 
         if (this.normalizedArtwork.length) {
-            jobs.push({
-                normalizedArtwork: this.normalizedArtwork,
-                importedFaces: this._shouldAssignArtworkToImportedFaces()
-                    ? this.selectedImportedFaces.map((entry) => ({ ...entry }))
-                    : null
-            });
+            if (this._shouldAssignArtworkToCubeFaces()) {
+                this.selectedCubeFaces.forEach((surfaceTarget) => {
+                    jobs.push({
+                        normalizedArtwork: this.normalizedArtwork,
+                        importedFaces: null,
+                        surfaceTarget
+                    });
+                });
+            } else {
+                jobs.push({
+                    normalizedArtwork: this.normalizedArtwork,
+                    importedFaces: this._shouldAssignArtworkToImportedFaces()
+                        ? this.selectedImportedFaces.map((entry) => ({ ...entry }))
+                        : null,
+                    surfaceTarget: null
+                });
+            }
         }
 
         return jobs.filter((job) => Array.isArray(job.normalizedArtwork) && job.normalizedArtwork.length);
+    }
+
+    _runWithSurfaceTarget(surfaceTarget, work) {
+        const previous = this.activeSurfaceTargetOverride;
+        this.activeSurfaceTargetOverride = surfaceTarget || null;
+        try {
+            return work();
+        } finally {
+            this.activeSurfaceTargetOverride = previous;
+        }
     }
 
     _runWithImportedFaceSelection(importedFaces, work) {
@@ -893,12 +1155,27 @@ class Vector3DPanel {
             && this.selectedImportedFaces.length > 0;
     }
 
+    _shouldAssignArtworkToCubeFaces() {
+        return (this.surfaceMesh?.userData?.surfaceType || this.activePrimitive || 'sphere') === 'cube'
+            && Array.isArray(this.selectedCubeFaces)
+            && this.selectedCubeFaces.length > 0;
+    }
+
     _replaceAssignmentsForImportedFaces(faces) {
         const keys = new Set((faces || []).map((entry) => entry.key));
         if (!keys.size) return;
         this.surfaceAssignments = (this.surfaceAssignments || []).filter((assignment) => {
             const assignmentKeys = (assignment.importedFaces || []).map((entry) => entry.key);
             return !assignmentKeys.some((key) => keys.has(key));
+        });
+    }
+
+    _replaceAssignmentsForCubeFaces(surfaceTargets) {
+        const targetSet = new Set(surfaceTargets || []);
+        if (!targetSet.size) return;
+        this.surfaceAssignments = (this.surfaceAssignments || []).filter((assignment) => {
+            const assignmentTargets = assignment.surfaceTargets || (assignment.surfaceTarget ? [assignment.surfaceTarget] : []);
+            return !assignmentTargets.some((target) => targetSet.has(target));
         });
     }
 
@@ -945,7 +1222,7 @@ class Vector3DPanel {
 
     _mapArtworkPolyline(polyline) {
         const surfaceType = this.surfaceMesh?.userData?.surfaceType || 'imported';
-        const faceTarget = this.selectedSurfaceTarget || 'wrap';
+        const faceTarget = this.activeSurfaceTargetOverride || this.selectedSurfaceTarget || 'wrap';
         const planeEnabled = !!this.helperPlaneMesh?.visible;
         if (surfaceType === 'cube' && faceTarget === 'wrap' && !planeEnabled) {
             const transformed = (polyline || []).map(point => this._applyArtworkTransform(point));
@@ -1022,7 +1299,7 @@ class Vector3DPanel {
         const THREE = this.THREE;
         if (!THREE || !this.surfaceRoot) return null;
 
-        const faceTarget = this.selectedSurfaceTarget || 'wrap';
+        const faceTarget = this.activeSurfaceTargetOverride || this.selectedSurfaceTarget || 'wrap';
         if (faceTarget !== 'wrap') {
             const flatPoint = this._mapFlatFacePoint(surfaceType, faceTarget, point, THREE);
             if (flatPoint) return flatPoint;
@@ -1259,7 +1536,13 @@ class Vector3DPanel {
         const faceIndex = Number.isInteger(hit?.faceIndex) ? hit.faceIndex : null;
         const objectUuid = hit?.object?.uuid;
         if (faceIndex == null || !objectUuid) return false;
-        return activeSelection.some((entry) => entry.objectUuid === objectUuid && entry.faceIndex === faceIndex);
+        return activeSelection.some((entry) => {
+            if (entry.objectUuid !== objectUuid) return false;
+            if (Array.isArray(entry.faceIndices) && entry.faceIndices.length) {
+                return entry.faceIndices.includes(faceIndex);
+            }
+            return entry.faceIndex === faceIndex;
+        });
     }
 
     _projectToPlaneCandidate(point) {
@@ -1462,7 +1745,8 @@ class Vector3DPanel {
         this.wrappedLineGroup = new this.THREE.Group();
         this.surfaceRoot.add(this.wrappedLineGroup);
 
-        if (!this.normalizedArtwork.length) return;
+        const artworkJobs = this._getArtworkJobs();
+        if (!artworkJobs.length) return;
 
         const mode = document.getElementById('sel-v3d-mode')?.value || 'visible';
         const previewTargets = [this.surfaceMesh];
@@ -1470,8 +1754,8 @@ class Vector3DPanel {
         const isCubeWrap = (this.surfaceMesh?.userData?.surfaceType === 'cube')
             && ((this.selectedSurfaceTarget || 'wrap') === 'wrap');
 
-        this._getArtworkJobs().forEach((job) => {
-            this._runWithImportedFaceSelection(job.importedFaces, () => {
+        artworkJobs.forEach((job) => {
+            this._runWithSurfaceTarget(job.surfaceTarget, () => this._runWithImportedFaceSelection(job.importedFaces, () => {
                 const forcePreviewVisible = Array.isArray(job.importedFaces) && job.importedFaces.length > 0;
                 this._getPreviewArtworkPolylines(job.normalizedArtwork, job.importedFaces).forEach(polyline => {
                     const mappedPoints = this._mapArtworkPolyline(polyline);
@@ -1495,7 +1779,7 @@ class Vector3DPanel {
 
                     this._commitWrappedPreviewSegments(segmentPoints, mode);
                 });
-            });
+            }));
         });
     }
 
@@ -1755,6 +2039,7 @@ class Vector3DPanel {
         this.selectedSurfaceTarget = hasCurrent ? current : options[0].value;
         this.selectedSurfaceLabel = (options.find(option => option.value === this.selectedSurfaceTarget) || options[0]).label;
         if (surfaceType !== 'imported') this.selectedImportedFaces = [];
+        if (surfaceType !== 'cube') this.selectedCubeFaces = [];
         this._updateSelectedSurfaceReadout();
         this._updateSurfaceHighlight();
     }
@@ -1811,6 +2096,11 @@ class Vector3DPanel {
             this.selectedSurfaceEl.textContent = `${count} face${count === 1 ? '' : 's'} selected`;
             return;
         }
+        if (this._shouldAssignArtworkToCubeFaces()) {
+            const count = this.selectedCubeFaces.length;
+            this.selectedSurfaceEl.textContent = `${count} cube face${count === 1 ? '' : 's'} selected`;
+            return;
+        }
         this.selectedSurfaceEl.textContent = this.selectedSurfaceLabel || 'Wrapped surface';
     }
 
@@ -1829,6 +2119,13 @@ class Vector3DPanel {
         if (surfaceType === 'imported') {
             const highlight = this._buildImportedFaceHighlight();
             if (highlight) this.surfaceHighlightGroup.add(highlight);
+            return;
+        }
+        if (surfaceType === 'cube' && this.selectedCubeFaces.length) {
+            this.selectedCubeFaces.forEach((cubeTarget) => {
+                const highlight = this._buildSurfaceHighlight(surfaceType, cubeTarget);
+                if (highlight) this.surfaceHighlightGroup.add(highlight);
+            });
             return;
         }
         if (target === 'wrap') return;
@@ -1862,27 +2159,34 @@ class Vector3DPanel {
 
             const positions = geometry.attributes.position;
             const index = geometry.index;
-            const vertexIndices = index
-                ? [index.getX(entry.faceIndex * 3), index.getX(entry.faceIndex * 3 + 1), index.getX(entry.faceIndex * 3 + 2)]
-                : [entry.faceIndex * 3, entry.faceIndex * 3 + 1, entry.faceIndex * 3 + 2];
-            if (vertexIndices.some((value) => value == null || value >= positions.count)) return;
+            const faceIndices = Array.isArray(entry.faceIndices) && entry.faceIndices.length
+                ? entry.faceIndices
+                : [entry.faceIndex];
 
-            const vertices = vertexIndices.map((vertexIndex) => {
-                const point = new THREE.Vector3().fromBufferAttribute(positions, vertexIndex);
-                return mesh.localToWorld(point);
+            faceIndices.forEach((faceIndex) => {
+                if (!Number.isInteger(faceIndex)) return;
+                const vertexIndices = index
+                    ? [index.getX(faceIndex * 3), index.getX(faceIndex * 3 + 1), index.getX(faceIndex * 3 + 2)]
+                    : [faceIndex * 3, faceIndex * 3 + 1, faceIndex * 3 + 2];
+                if (vertexIndices.some((value) => value == null || value >= positions.count)) return;
+
+                const vertices = vertexIndices.map((vertexIndex) => {
+                    const point = new THREE.Vector3().fromBufferAttribute(positions, vertexIndex);
+                    return mesh.localToWorld(point);
+                });
+
+                const triangleGeometry = new THREE.BufferGeometry().setFromPoints(vertices);
+                triangleGeometry.setIndex([0, 1, 2]);
+                const triangleMesh = new THREE.Mesh(triangleGeometry, fillMaterial.clone());
+                group.add(triangleMesh);
+
+                const lineGeometry = new THREE.BufferGeometry().setFromPoints([
+                    vertices[0], vertices[1],
+                    vertices[1], vertices[2],
+                    vertices[2], vertices[0]
+                ]);
+                group.add(new THREE.LineSegments(lineGeometry, lineMaterial.clone()));
             });
-
-            const triangleGeometry = new THREE.BufferGeometry().setFromPoints(vertices);
-            triangleGeometry.setIndex([0, 1, 2]);
-            const triangleMesh = new THREE.Mesh(triangleGeometry, fillMaterial.clone());
-            group.add(triangleMesh);
-
-            const lineGeometry = new THREE.BufferGeometry().setFromPoints([
-                vertices[0], vertices[1],
-                vertices[1], vertices[2],
-                vertices[2], vertices[0]
-            ]);
-            group.add(new THREE.LineSegments(lineGeometry, lineMaterial.clone()));
         });
 
         return group.children.length ? group : null;

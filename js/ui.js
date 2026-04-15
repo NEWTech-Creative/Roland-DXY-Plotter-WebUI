@@ -3,7 +3,8 @@ class UIController {
         this.app = app;
         this.penColors = ['#1e1e1e', '#e11d48', '#2563eb', '#16a34a', '#eab308', '#9333ea', '#ea580c', '#0ea5e9']; // Default 8 pens
         this.visPenConfig = this.penColors.map(c => ({ color: c, thickness: 0.3 })); // Context configs
-        this.activeTool = 'select'; // select, text, shape, bezier, node, bucket
+        this.activeTool = 'select'; // select, text, shape, bezier, node, bucket, warp, boolean
+        this.bezierToolMode = 'curves';
         this.activeVisualizerPen = 1;
         this.fillBucketSettings = {
             pattern: 'lines',
@@ -12,6 +13,15 @@ class UIController {
             pen: 1,
             groupPatterns: true
         };
+        this.textToolSettings = {
+            mode: 'roland',
+            creativeFontId: 'bungee',
+            fontSize: 10,
+            rotation: 0,
+            letterSpacing: 0,
+            curve: 0
+        };
+        this.textToolPersistTimer = null;
         this.jogStepSize = 1; // Default Small (1mm)
         this.layoutVersion = 2;
         this.gridBaseColumns = 12;
@@ -50,6 +60,11 @@ class UIController {
             { id: 'panel-image-vector', label: 'Image to Vector' },
             { id: 'panel-3d-vector', label: '3D Vector' }
         ];
+        this.creativeTabHostId = 'panel-creative-tabs';
+        this.creativeTabHostLayout = { id: this.creativeTabHostId, x: 2, y: 8, w: 8, h: 15 };
+        this.creativePanelDefinitions = this._getDefaultCreativePanelDefinitions();
+        this.activeCreativeTabId = this.creativePanelDefinitions[0].id;
+        this.draggingCreativeTabId = null;
         this.gridResizeTimer = null;
         this.gridAutoSaveTimer = null;
         this.isApplyingResponsiveLayout = false;
@@ -71,17 +86,24 @@ class UIController {
         this._bindJog();
         this._bindPatterns();
         this._bindFillBucketMenu();
+        this._bindBooleanMenu();
+        this._bindBezierToolMenu();
+        this._bindTextToolMenu();
         this._bindSelectionSizeControls();
         this._bindVisualizerToolbarOverflow();
         this._bindPredictedCrosshairToggle();
         this._bindVisualizerViewToggle();
+        this._bindToolHoverLabels();
         // HandwritingPanel is initialized by its own window.load listener in handwriting-panel.js
 
-        // Global click listener to close context menus
-        window.addEventListener('click', (e) => {
+        // Close visualizer pop-out menus as soon as the user clicks elsewhere.
+        window.addEventListener('pointerdown', (e) => {
             const penMenu = document.getElementById('vis-pen-menu');
+            const textMenu = document.getElementById('text-tool-menu');
+            const bezierMenu = document.getElementById('bezier-tool-menu');
             const shapeMenu = document.getElementById('shape-type-menu');
             const fillBucketMenu = document.getElementById('fill-bucket-menu');
+            const booleanToolMenu = document.getElementById('boolean-tool-menu');
             const importResolutionMenu = document.getElementById('import-resolution-menu');
             const overflowMenu = document.getElementById('vis-toolbar-overflow-menu');
             const overflowBtn = document.getElementById('btn-vis-toolbar-more');
@@ -91,14 +113,33 @@ class UIController {
                     penMenu.classList.add('hidden');
                 }
             }
+            if (textMenu && !textMenu.classList.contains('hidden')) {
+                if (!textMenu.contains(e.target) && !e.target.closest('[data-tool="text"]')) {
+                    textMenu.classList.add('hidden');
+                    this.syncSpecialToolHighlights();
+                }
+            }
+            if (bezierMenu && !bezierMenu.classList.contains('hidden')) {
+                if (!bezierMenu.contains(e.target) && !e.target.closest('[data-tool="bezier"]')) {
+                    bezierMenu.classList.add('hidden');
+                    this.syncSpecialToolHighlights();
+                }
+            }
             if (shapeMenu && !shapeMenu.classList.contains('hidden')) {
                 if (!shapeMenu.contains(e.target) && !e.target.closest('[data-tool="shape"]')) {
                     shapeMenu.classList.add('hidden');
+                    this.syncSpecialToolHighlights();
                 }
             }
             if (fillBucketMenu && !fillBucketMenu.classList.contains('hidden')) {
                 if (!fillBucketMenu.contains(e.target) && !e.target.closest('[data-tool="bucket"]')) {
                     fillBucketMenu.classList.add('hidden');
+                }
+            }
+            if (booleanToolMenu && !booleanToolMenu.classList.contains('hidden')) {
+                if (!booleanToolMenu.contains(e.target) && !e.target.closest('[data-tool="boolean"]')) {
+                    booleanToolMenu.classList.add('hidden');
+                    this.syncSpecialToolHighlights();
                 }
             }
             if (importResolutionMenu && !importResolutionMenu.classList.contains('hidden')) {
@@ -114,6 +155,19 @@ class UIController {
         });
     }
 
+    setToolMenuHighlight(toolName, isOpen) {
+        const button = document.querySelector(`.tool-btn[data-tool="${toolName}"]`);
+        if (!button) return;
+        button.classList.toggle('menu-open', !!isOpen);
+    }
+
+    syncSpecialToolHighlights() {
+        this.setToolMenuHighlight('text', !document.getElementById('text-tool-menu')?.classList.contains('hidden'));
+        this.setToolMenuHighlight('bezier', !document.getElementById('bezier-tool-menu')?.classList.contains('hidden'));
+        this.setToolMenuHighlight('shape', !document.getElementById('shape-type-menu')?.classList.contains('hidden'));
+        this.setToolMenuHighlight('boolean', !document.getElementById('boolean-tool-menu')?.classList.contains('hidden'));
+    }
+
     loadWorkspaceState() {
         try {
             const savedPens = localStorage.getItem('visPenConfig');
@@ -127,6 +181,21 @@ class UIController {
             const savedVisualizerView = localStorage.getItem('visualizerViewMode');
             if (savedVisualizerView === 'machine-output' || savedVisualizerView === 'workspace') {
                 this.currentVisualizerView = savedVisualizerView;
+            }
+            const savedTextSettings = localStorage.getItem('textToolSettings');
+            if (savedTextSettings) {
+                this.textToolSettings = {
+                    ...this.textToolSettings,
+                    ...JSON.parse(savedTextSettings)
+                };
+            }
+            if (!this.textToolSettings.mode) this.textToolSettings.mode = 'roland';
+            if (!this.textToolSettings.creativeFontId) this.textToolSettings.creativeFontId = 'bungee';
+            if (!Number.isFinite(this.textToolSettings.letterSpacing)) this.textToolSettings.letterSpacing = 0;
+            if (!Number.isFinite(this.textToolSettings.curve)) this.textToolSettings.curve = 0;
+            const savedCreativePanelOrder = localStorage.getItem('creativePanelOrder');
+            if (savedCreativePanelOrder) {
+                this._applySavedCreativePanelOrder(JSON.parse(savedCreativePanelOrder));
             }
 
 
@@ -152,6 +221,8 @@ class UIController {
             localStorage.setItem('penColors', JSON.stringify(this.penColors));
             localStorage.setItem('activeVisualizerPen', this.activeVisualizerPen.toString());
             localStorage.setItem('visualizerViewMode', this.currentVisualizerView);
+            localStorage.setItem('textToolSettings', JSON.stringify(this.textToolSettings));
+            localStorage.setItem('creativePanelOrder', JSON.stringify(this._getCreativePanelOrder()));
         } catch (e) { console.error('Workspace save fail:', e); }
     }
 
@@ -161,6 +232,7 @@ class UIController {
             penColors: this.penColors,
             activeVisualizerPen: this.activeVisualizerPen,
             visualizerViewMode: this.currentVisualizerView,
+            creativePanelOrder: this._getCreativePanelOrder(),
             plotterLayout: localStorage.getItem('plotterLayout'),
             plotterLayoutVersion: localStorage.getItem('plotterLayoutVersion')
         };
@@ -183,6 +255,10 @@ class UIController {
             if (workspaceState.visualizerViewMode === 'machine-output' || workspaceState.visualizerViewMode === 'workspace') {
                 this.currentVisualizerView = workspaceState.visualizerViewMode;
                 localStorage.setItem('visualizerViewMode', this.currentVisualizerView);
+            }
+            if (Array.isArray(workspaceState.creativePanelOrder) && workspaceState.creativePanelOrder.length) {
+                this._applySavedCreativePanelOrder(workspaceState.creativePanelOrder);
+                localStorage.setItem('creativePanelOrder', JSON.stringify(this._getCreativePanelOrder()));
             }
             if (typeof workspaceState.plotterLayout === 'string' && workspaceState.plotterLayout.trim()) {
                 localStorage.setItem('plotterLayout', workspaceState.plotterLayout);
@@ -211,10 +287,15 @@ class UIController {
     refreshVisualizerViewToggleButton() {
         const toggleBtn = document.getElementById('btn-toggle-visualizer-view');
         const labelEl = document.getElementById('visualizer-view-label');
+        const canvasContainer = document.querySelector('#panel-visualiser .canvas-container');
+        const visualiserPanel = document.querySelector('#panel-visualiser .grid-stack-item-content');
         if (!toggleBtn || !labelEl) return;
         const isMachineOutput = this.currentVisualizerView === 'machine-output';
         labelEl.textContent = isMachineOutput ? 'Machine' : 'Workspace';
         toggleBtn.classList.toggle('active', isMachineOutput);
+        toggleBtn.classList.toggle('machine-view-active', isMachineOutput);
+        canvasContainer?.classList.toggle('machine-view-active', isMachineOutput);
+        visualiserPanel?.classList.toggle('machine-view-active', isMachineOutput);
         toggleBtn.title = isMachineOutput
             ? 'Show editable workspace view'
             : 'Show machine output view';
@@ -689,7 +770,70 @@ class UIController {
         };
     }
 
+    _isCreativeTabModeEnabled() {
+        return this.app?.settings?.creativePanelsTabbed === true;
+    }
+
+    _getDefaultCreativePanelDefinitions() {
+        return [
+            { id: 'panel-image-vector', label: 'Image to Vector' },
+            { id: 'panel-patterns', label: 'Pattern Generator' },
+            { id: 'panel-handwriting', label: 'Handwriting Generator' },
+            { id: 'panel-3d-vector', label: '3D Vector' },
+            { id: 'panel-live-tracker', label: 'Live Finger Tracker' }
+        ];
+    }
+
+    _getCreativePanelOrder() {
+        return this.creativePanelDefinitions.map(panel => panel.id);
+    }
+
+    _applySavedCreativePanelOrder(savedOrder) {
+        if (!Array.isArray(savedOrder) || !savedOrder.length) return;
+        const knownPanels = new Map(this._getDefaultCreativePanelDefinitions().map(panel => [panel.id, { ...panel }]));
+        const orderedPanels = [];
+        savedOrder.forEach(panelId => {
+            if (!knownPanels.has(panelId)) return;
+            orderedPanels.push(knownPanels.get(panelId));
+            knownPanels.delete(panelId);
+        });
+        this.creativePanelDefinitions = [...orderedPanels, ...knownPanels.values()];
+        if (!this.creativePanelDefinitions.some(panel => panel.id === this.activeCreativeTabId)) {
+            this.activeCreativeTabId = this.creativePanelDefinitions[0]?.id || null;
+        }
+    }
+
+    _moveCreativePanelBefore(movedPanelId, targetPanelId) {
+        if (!movedPanelId || !targetPanelId || movedPanelId === targetPanelId) return false;
+        const movedIndex = this.creativePanelDefinitions.findIndex(panel => panel.id === movedPanelId);
+        const targetIndex = this.creativePanelDefinitions.findIndex(panel => panel.id === targetPanelId);
+        if (movedIndex < 0 || targetIndex < 0) return false;
+
+        const [movedPanel] = this.creativePanelDefinitions.splice(movedIndex, 1);
+        const nextTargetIndex = this.creativePanelDefinitions.findIndex(panel => panel.id === targetPanelId);
+        this.creativePanelDefinitions.splice(nextTargetIndex, 0, movedPanel);
+        return true;
+    }
+
+    _isCreativeToolPanel(panelId) {
+        return this.creativePanelDefinitions.some(panel => panel.id === panelId);
+    }
+
+    _getCreativePanelBaseVisibility(panelId) {
+        return this._getPanelVisibilitySettings()[panelId] !== false;
+    }
+
+    _getVisibleCreativePanels() {
+        return this.creativePanelDefinitions.filter(panel => this._getCreativePanelBaseVisibility(panel.id));
+    }
+
     _isPanelVisible(panelId) {
+        if (panelId === this.creativeTabHostId) {
+            return this._isCreativeTabModeEnabled() && this._getVisibleCreativePanels().length > 0;
+        }
+        if (this._isCreativeToolPanel(panelId) && this._isCreativeTabModeEnabled()) {
+            return false;
+        }
         return !!this._getPanelVisibilitySettings()[panelId];
     }
 
@@ -701,18 +845,191 @@ class UIController {
         return !!(this.grid && this.grid.engine && this.grid.engine.nodes || []).find(node => node.el === el);
     }
 
+    _getManagedPanels() {
+        return [
+            ...this.panelDefinitions,
+            { id: this.creativeTabHostId, label: 'Creative Tools' }
+        ];
+    }
+
+    _findLayoutEntry(panelId) {
+        return this.baseGridLayout.find(item => item.id === panelId)
+            || this.defaultGridLayout.find(item => item.id === panelId)
+            || (panelId === this.creativeTabHostId ? this.creativeTabHostLayout : null);
+    }
+
+    _getCreativeTabPaneId(panelId) {
+        return `creative-tab-pane-${panelId}`;
+    }
+
+    _getPanelBodyNode(panelId) {
+        const pane = document.getElementById(this._getCreativeTabPaneId(panelId));
+        const paneBody = pane ? Array.from(pane.children).find(child => child.classList?.contains('panel-body')) : null;
+        if (paneBody) return paneBody;
+
+        const panel = document.getElementById(panelId);
+        const panelContent = panel?.querySelector('.grid-stack-item-content');
+        return panelContent
+            ? Array.from(panelContent.children).find(child => child.classList?.contains('panel-body'))
+            : null;
+    }
+
+    _syncCreativeTabsDom() {
+        const host = document.getElementById(this.creativeTabHostId);
+        const tabBar = document.getElementById('creative-tab-bar');
+        const tabContent = document.getElementById('creative-tab-content');
+        if (!host || !tabBar || !tabContent) return;
+
+        if (!this._isCreativeTabModeEnabled()) {
+            this.creativePanelDefinitions.forEach(panel => {
+                const body = this._getPanelBodyNode(panel.id);
+                const panelContent = document.getElementById(panel.id)?.querySelector('.grid-stack-item-content');
+                if (body && panelContent && body.parentElement !== panelContent) {
+                    panelContent.appendChild(body);
+                }
+            });
+            tabBar.innerHTML = '';
+            tabContent.innerHTML = '';
+            return;
+        }
+
+        this.creativePanelDefinitions.forEach(panel => {
+            const body = this._getPanelBodyNode(panel.id);
+            if (!body) return;
+
+            let pane = document.getElementById(this._getCreativeTabPaneId(panel.id));
+            if (!pane) {
+                pane = document.createElement('section');
+                pane.id = this._getCreativeTabPaneId(panel.id);
+                pane.className = 'creative-tab-pane hidden';
+                pane.dataset.panelId = panel.id;
+                tabContent.appendChild(pane);
+            }
+
+            if (body.parentElement !== pane) {
+                pane.appendChild(body);
+            }
+        });
+
+        this._renderCreativeTabs();
+    }
+
+    _renderCreativeTabs() {
+        const tabBar = document.getElementById('creative-tab-bar');
+        const tabContent = document.getElementById('creative-tab-content');
+        if (!tabBar || !tabContent) return;
+
+        const visiblePanels = this._getVisibleCreativePanels();
+        if (!visiblePanels.length) {
+            this.activeCreativeTabId = null;
+            tabBar.innerHTML = '';
+            Array.from(tabContent.children).forEach(pane => pane.classList.add('hidden'));
+            return;
+        }
+
+        if (!visiblePanels.some(panel => panel.id === this.activeCreativeTabId)) {
+            this.activeCreativeTabId = visiblePanels[0].id;
+        }
+
+        tabBar.innerHTML = '';
+        visiblePanels.forEach(panel => {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = `creative-tab-btn${panel.id === this.activeCreativeTabId ? ' active' : ''}`;
+            button.textContent = panel.label;
+            button.setAttribute('role', 'tab');
+            button.setAttribute('aria-selected', panel.id === this.activeCreativeTabId ? 'true' : 'false');
+            button.dataset.panelId = panel.id;
+            button.draggable = true;
+            button.addEventListener('click', () => this._setActiveCreativeTab(panel.id));
+            button.addEventListener('dragstart', (event) => {
+                this.draggingCreativeTabId = panel.id;
+                button.classList.add('dragging');
+                if (event.dataTransfer) {
+                    event.dataTransfer.effectAllowed = 'move';
+                    event.dataTransfer.setData('text/plain', panel.id);
+                }
+            });
+            button.addEventListener('dragover', (event) => {
+                if (!this.draggingCreativeTabId || this.draggingCreativeTabId === panel.id) return;
+                event.preventDefault();
+                if (event.dataTransfer) {
+                    event.dataTransfer.dropEffect = 'move';
+                }
+                button.classList.add('drag-target');
+            });
+            button.addEventListener('dragleave', () => {
+                button.classList.remove('drag-target');
+            });
+            button.addEventListener('drop', (event) => {
+                if (!this.draggingCreativeTabId || this.draggingCreativeTabId === panel.id) return;
+                event.preventDefault();
+                button.classList.remove('drag-target');
+                if (this._moveCreativePanelBefore(this.draggingCreativeTabId, panel.id)) {
+                    this.saveWorkspaceState();
+                    this._renderCreativeTabs();
+                }
+            });
+            button.addEventListener('dragend', () => {
+                this.draggingCreativeTabId = null;
+                tabBar.querySelectorAll('.creative-tab-btn').forEach(tab => {
+                    tab.classList.remove('dragging', 'drag-target');
+                });
+            });
+            tabBar.appendChild(button);
+        });
+
+        Array.from(tabContent.children).forEach(pane => {
+            const isActive = pane.dataset.panelId === this.activeCreativeTabId;
+            pane.classList.toggle('hidden', !isActive);
+            pane.classList.toggle('active', isActive);
+        });
+
+        if (this.activeCreativeTabId) {
+            this._refreshCreativeTabPanel(this.activeCreativeTabId);
+        }
+    }
+
+    _setActiveCreativeTab(panelId) {
+        if (!panelId || panelId === this.activeCreativeTabId) return;
+        this.activeCreativeTabId = panelId;
+        this._renderCreativeTabs();
+    }
+
+    _refreshCreativeTabPanel(panelId) {
+        window.requestAnimationFrame(() => {
+            window.dispatchEvent(new Event('resize'));
+            this.app.canvas?.handleResize?.();
+
+            if (panelId === 'panel-3d-vector') {
+                this.app.vector3DPanel?._resizeRenderer?.();
+                this.app.vector3DPanel?.refreshPreview?.();
+            }
+            if (panelId === 'panel-image-vector') {
+                this.app.imageVectorPanel?.drawPreview?.();
+            }
+            if (panelId === 'panel-handwriting') {
+                this.app.handwritingPanel?.renderPreview?.();
+            }
+            if (panelId === 'panel-live-tracker') {
+                this.app.liveTracker?.ui?.applyOverlayLayout?.();
+                this.app.liveTracker?.ui?.applyVideoPresentation?.();
+            }
+        });
+    }
+
     applyPanelVisibilitySettings() {
         if (!this.grid) return;
 
-        const visibility = this._getPanelVisibilitySettings();
+        this._syncCreativeTabsDom();
         this.isApplyingPanelVisibility = true;
         if (typeof this.grid.batchUpdate === 'function') this.grid.batchUpdate(true);
         try {
-            this.panelDefinitions.forEach(panel => {
+            this._getManagedPanels().forEach(panel => {
                 const el = document.getElementById(panel.id);
                 if (!el) return;
 
-                const shouldShow = panel.alwaysVisible ? true : visibility[panel.id] !== false;
+                const shouldShow = panel.alwaysVisible ? true : this._isPanelVisible(panel.id);
                 const isActive = this._isGridWidgetActive(el);
 
                 if (!shouldShow && isActive) {
@@ -723,7 +1040,7 @@ class UIController {
                 }
 
                 if (shouldShow && !isActive) {
-                    const savedLayout = this.baseGridLayout.find(item => item.id === panel.id);
+                    const savedLayout = this._findLayoutEntry(panel.id);
                     if (savedLayout) {
                         el.setAttribute('gs-x', savedLayout.x);
                         el.setAttribute('gs-y', savedLayout.y);
@@ -747,6 +1064,10 @@ class UIController {
         } finally {
             if (typeof this.grid.batchUpdate === 'function') this.grid.batchUpdate(false);
             this.isApplyingPanelVisibility = false;
+        }
+
+        if (this._isCreativeTabModeEnabled()) {
+            this._renderCreativeTabs();
         }
     }
 
@@ -944,6 +1265,7 @@ class UIController {
         const inputSimOpacity = document.getElementById('input-sim-opacity');
         const valSimOpacity = document.getElementById('val-sim-opacity');
         const inputUseInternalCurveEngine = document.getElementById('input-use-internal-curve-engine');
+        const inputCreativeTabsMode = document.getElementById('input-creative-tabs-mode');
         const inputMarginX = document.getElementById('input-margin-x');
         const inputMarginY = document.getElementById('input-margin-y');
         const inputOutputFlipX = document.getElementById('input-output-flip-x');
@@ -964,6 +1286,9 @@ class UIController {
             }
             if (inputUseInternalCurveEngine) {
                 inputUseInternalCurveEngine.checked = this.app.settings.useInternalCurveEngine !== false;
+            }
+            if (inputCreativeTabsMode) {
+                inputCreativeTabsMode.checked = this._isCreativeTabModeEnabled();
             }
             if (inputMarginX) inputMarginX.value = this.app.settings.marginX || 15;
             if (inputMarginY) inputMarginY.value = this.app.settings.marginY || 10;
@@ -1028,6 +1353,9 @@ class UIController {
             }
             if (inputUseInternalCurveEngine) {
                 this.app.settings.useInternalCurveEngine = inputUseInternalCurveEngine.checked;
+            }
+            if (inputCreativeTabsMode) {
+                this.app.settings.creativePanelsTabbed = inputCreativeTabsMode.checked;
             }
             if (inputMarginX) this.app.settings.marginX = parseFloat(inputMarginX.value);
             if (inputMarginY) this.app.settings.marginY = parseFloat(inputMarginY.value);
@@ -1119,28 +1447,31 @@ class UIController {
             btn.onclick = (e) => {
                 if (!tool) return;
                 this.setTool(tool);
+                if (tool === 'text') {
+                    this.toggleTextToolMenu(btn);
+                    e.stopPropagation();
+                    return;
+                }
+                if (tool === 'bezier') {
+                    this.toggleBezierToolMenu(btn);
+                    e.stopPropagation();
+                    return;
+                }
+                if (tool === 'shape') {
+                    this.toggleShapeMenu(btn);
+                    e.stopPropagation();
+                    return;
+                }
                 if (tool === 'bucket') {
-                    const rect = btn.getBoundingClientRect();
-                    this.showFillBucketMenu(rect.right + 8, rect.top);
+                    this.showFillBucketMenu(btn);
+                    e.stopPropagation();
+                    return;
+                }
+                if (tool === 'boolean') {
+                    this.toggleBooleanToolMenu(btn);
                     e.stopPropagation();
                 }
             };
-
-            if (tool === 'shape') {
-                let shapeTimer;
-                btn.addEventListener('mousedown', (e) => {
-                    shapeTimer = setTimeout(() => {
-                        this.showShapeMenu(e.clientX, e.clientY);
-                        shapeTimer = null;
-                    }, 300); // Reduced delay to 300ms for better responsiveness
-                });
-                btn.addEventListener('mouseup', () => {
-                    if (shapeTimer) clearTimeout(shapeTimer);
-                });
-                btn.addEventListener('mouseleave', () => {
-                    if (shapeTimer) clearTimeout(shapeTimer);
-                });
-            }
         });
 
         // Bind Undo/Redo Buttons
@@ -1174,6 +1505,7 @@ class UIController {
                     if (mainBtn) mainBtn.innerHTML = btn.innerHTML;
                 }
                 document.getElementById('shape-type-menu').classList.add('hidden');
+                this.syncSpecialToolHighlights();
             };
         });
 
@@ -1183,12 +1515,124 @@ class UIController {
         }
     }
 
-    showShapeMenu(x, y) {
-        const menu = document.getElementById('shape-type-menu');
-        if (!menu) return;
-        menu.style.left = `${x}px`;
-        menu.style.top = `${y}px`;
+    getVisualizerMenuHost(triggerButton) {
+        const wrapper = triggerButton?.closest('.canvas-wrapper');
+        const canvasHost = wrapper?.querySelector('.canvas-container');
+        return canvasHost
+            || triggerButton?.closest('.grid-stack-item-content')
+            || triggerButton?.closest('.grid-stack-item')
+            || document.body;
+    }
+
+    positionMenuWithinHost(triggerButton, menu, options = {}) {
+        if (!triggerButton || !menu) return false;
+
+        const host = this.getVisualizerMenuHost(triggerButton);
+        const hostRect = host.getBoundingClientRect();
+        const btnRect = triggerButton.getBoundingClientRect();
+        const gap = options.gap ?? 10;
+        const preferredSide = options.preferredSide || 'right';
+
+        if (menu.parentElement !== host) host.appendChild(menu);
         menu.classList.remove('hidden');
+        menu.style.visibility = 'hidden';
+        menu.style.position = 'absolute';
+
+        const menuWidth = menu.offsetWidth;
+        const menuHeight = menu.offsetHeight;
+        const hostWidth = hostRect.width;
+        const hostHeight = hostRect.height;
+
+        let left = preferredSide === 'left'
+            ? (btnRect.left - hostRect.left) - menuWidth - gap
+            : (btnRect.right - hostRect.left) + gap;
+        let top = btnRect.top - hostRect.top;
+
+        // Palette buttons live outside the canvas host, so start menus inside the canvas area.
+        if (left < gap) {
+            left = gap;
+        }
+        if (left + menuWidth > hostWidth - gap) {
+            left = (btnRect.left - hostRect.left) - menuWidth - gap;
+        }
+        left = Math.max(gap, Math.min(left, hostWidth - menuWidth - gap));
+
+        if (top + menuHeight > hostHeight - gap) {
+            top = hostHeight - menuHeight - gap;
+        }
+        top = Math.max(gap, top);
+
+        menu.style.left = `${left}px`;
+        menu.style.top = `${top}px`;
+        menu.style.right = 'auto';
+        menu.style.bottom = 'auto';
+        menu.style.visibility = '';
+        return true;
+    }
+
+    toggleShapeMenu(triggerButton) {
+        const menu = document.getElementById('shape-type-menu');
+        if (!menu || !triggerButton) return;
+        if (!menu.classList.contains('hidden')) {
+            menu.classList.add('hidden');
+            this.syncSpecialToolHighlights();
+            return;
+        }
+        this.positionMenuWithinHost(triggerButton, menu, { preferredSide: 'right' });
+        this.syncSpecialToolHighlights();
+    }
+
+    _bindBezierToolMenu() {
+        const menu = document.getElementById('bezier-tool-menu');
+        const closeButton = document.getElementById('btn-close-bezier-tool-menu');
+        if (!menu) return;
+
+        const syncButtons = () => {
+            menu.querySelectorAll('.bezier-mode-btn').forEach(button => {
+                button.classList.toggle('is-selected', button.dataset.bezierMode === this.bezierToolMode);
+            });
+        };
+
+        if (closeButton) {
+            closeButton.onclick = () => {
+                menu.classList.add('hidden');
+                this.syncSpecialToolHighlights();
+            };
+        }
+
+        menu.querySelectorAll('.bezier-mode-btn').forEach(button => {
+            button.onclick = () => {
+                const mode = button.dataset.bezierMode;
+                if (!mode) return;
+                this.bezierToolMode = mode;
+                syncButtons();
+                this.setTool('bezier');
+                menu.classList.add('hidden');
+                this.syncSpecialToolHighlights();
+                this.logToConsole(
+                    mode === 'free-draw'
+                        ? 'System: Bezier tool set to Free Draw mode.'
+                        : 'System: Bezier tool set to Bezier Curves mode.'
+                );
+            };
+        });
+
+        syncButtons();
+    }
+
+    toggleBezierToolMenu(triggerButton) {
+        const menu = document.getElementById('bezier-tool-menu');
+        if (!menu || !triggerButton) return;
+        if (!menu.classList.contains('hidden')) {
+            menu.classList.add('hidden');
+            this.syncSpecialToolHighlights();
+            return;
+        }
+        menu.querySelectorAll('.bezier-mode-btn').forEach(button => {
+            button.classList.toggle('is-selected', button.dataset.bezierMode === this.bezierToolMode);
+        });
+        this.positionMenuWithinHost(triggerButton, menu, { preferredSide: 'right' });
+        this.syncSpecialToolHighlights();
     }
 
     _bindFillBucketMenu() {
@@ -1259,9 +1703,495 @@ class UIController {
     showFillBucketMenu(x, y) {
         const menu = document.getElementById('fill-bucket-menu');
         if (!menu) return;
+        if (x instanceof HTMLElement) {
+            this.positionMenuWithinHost(x, menu, { preferredSide: 'right' });
+            return;
+        }
         menu.style.left = `${x}px`;
         menu.style.top = `${y}px`;
         menu.classList.remove('hidden');
+    }
+
+    _bindBooleanMenu() {
+        const menu = document.getElementById('boolean-tool-menu');
+        const closeButton = document.getElementById('btn-close-boolean-tool-menu');
+        if (!menu) return;
+
+        if (closeButton) {
+            closeButton.onclick = () => {
+                menu.classList.add('hidden');
+                this.syncSpecialToolHighlights();
+            };
+        }
+
+        document.querySelectorAll('.boolean-op-btn').forEach(button => {
+            button.onclick = () => {
+                const op = button.dataset.booleanOp;
+                if (!op) return;
+                const applied = this.app.canvas?.applyBooleanOperation?.(op);
+                if (applied) {
+                    menu.classList.add('hidden');
+                    this.syncSpecialToolHighlights();
+                    this.setTool('select');
+                }
+            };
+        });
+    }
+
+    toggleBooleanToolMenu(triggerButton) {
+        const menu = document.getElementById('boolean-tool-menu');
+        if (!menu || !triggerButton) return;
+        if (!menu.classList.contains('hidden')) {
+            menu.classList.add('hidden');
+            this.syncSpecialToolHighlights();
+            return;
+        }
+        this.positionMenuWithinHost(triggerButton, menu, { preferredSide: 'right' });
+        this.syncSpecialToolHighlights();
+    }
+
+    _bindTextToolMenu() {
+        const menu = document.getElementById('text-tool-menu');
+        const selectMode = document.getElementById('sel-text-mode');
+        const selectFont = document.getElementById('sel-text-creative-font');
+        const inputSize = document.getElementById('input-text-font-size');
+        const fieldSize = document.getElementById('field-text-font-size');
+        const rotationControls = this.ensureTextRotationControls();
+        const inputRotation = rotationControls?.input || null;
+        const fieldRotation = rotationControls?.valueField || null;
+        const inputLetterSpacing = document.getElementById('input-text-letter-spacing');
+        const fieldLetterSpacing = document.getElementById('field-text-letter-spacing');
+        const inputCurve = document.getElementById('input-text-curve');
+        const fieldCurve = document.getElementById('field-text-curve');
+        const btnUploadFont = document.getElementById('btn-text-upload-font');
+        const btnExplodeSelected = document.getElementById('btn-text-explode-selected');
+        const btnResetValues = document.getElementById('btn-text-reset-values');
+        const inputUpload = document.getElementById('input-text-font-upload');
+        const btnClose = document.getElementById('btn-close-text-tool-menu');
+        if (!menu) return;
+
+        const getSelectedEditableText = () => {
+            if (!this.app?.canvas || this.app.canvas.selectedPaths.length !== 1) return null;
+            const path = this.app.canvas.paths[this.app.canvas.selectedPaths[0]];
+            if (!path || path.type !== 'text' || path.exploded === true) return null;
+            return path;
+        };
+
+        const getSelectedCurvePaths = () => {
+            if (!this.app?.canvas || !Array.isArray(this.app.canvas.selectedPaths)) return [];
+            return this.app.canvas.selectedPaths
+                .map(idx => this.app.canvas.paths[idx])
+                .filter(path => path && (path.type === 'text' || ['line', 'polyline', 'path'].includes(path.type)));
+        };
+
+        const applySettingsToSelectedText = (persist = false) => {
+            const selectedText = getSelectedEditableText();
+            if (!selectedText) return;
+            selectedText.textMode = this.textToolSettings.mode || 'roland';
+            selectedText.fontSize = this.textToolSettings.fontSize || 10;
+            selectedText.rotation = this.getTextRotationForMode(
+                selectedText.textMode,
+                this.textToolSettings.rotation || 0
+            );
+            selectedText.creativeFontId = this.textToolSettings.creativeFontId || 'bungee';
+            selectedText.letterSpacing = this.textToolSettings.letterSpacing || 0;
+            selectedText.curve = this.textToolSettings.curve || 0;
+            delete selectedText._vectorTextCache;
+            delete selectedText._creativeOutlineCache;
+            if (persist) this.app.canvas.saveCurrentState?.();
+            this.app.canvas.draw?.();
+        };
+
+        const applyCurveToSelectedPaths = (persist = false) => {
+            const selectedPaths = getSelectedCurvePaths();
+            if (!selectedPaths.length) return;
+            selectedPaths.forEach(path => {
+                path.curve = this.textToolSettings.curve || 0;
+                if (path.type === 'text') {
+                    delete path._vectorTextCache;
+                    delete path._creativeOutlineCache;
+                }
+            });
+            this.app.canvas.invalidateFillRegionCache?.();
+            if (persist) this.app.canvas.saveCurrentState?.();
+            this.app.canvas.draw?.();
+        };
+
+        const persistTextToolState = () => {
+            if (this.textToolPersistTimer) {
+                clearTimeout(this.textToolPersistTimer);
+                this.textToolPersistTimer = null;
+            }
+            this.saveWorkspaceState();
+            this.app.canvas?.saveCurrentState?.();
+        };
+
+        const clampControlValue = (value, input, fallback = 0) => {
+            const min = Number.isFinite(parseFloat(input?.min)) ? parseFloat(input.min) : Number.NEGATIVE_INFINITY;
+            const max = Number.isFinite(parseFloat(input?.max)) ? parseFloat(input.max) : Number.POSITIVE_INFINITY;
+            const next = Number.isFinite(value) ? value : fallback;
+            return Math.min(max, Math.max(min, next));
+        };
+
+        const bindLiveControl = (input, field, onLiveChange, fallback = 0) => {
+            if (!input || !field || typeof onLiveChange !== 'function') return;
+
+            const applyRawValue = (rawValue, persist) => {
+                const parsedValue = parseFloat(rawValue);
+                const nextValue = clampControlValue(parsedValue, input, fallback);
+                input.value = String(nextValue);
+                field.value = this.formatTextToolValue(nextValue);
+                onLiveChange(nextValue, persist);
+            };
+
+            input.oninput = () => applyRawValue(input.value, false);
+            input.onchange = () => {
+                applyRawValue(input.value, true);
+                persistTextToolState();
+            };
+            input.addEventListener('pointerup', persistTextToolState);
+
+            field.addEventListener('input', () => {
+                const rawValue = field.value.trim();
+                if (rawValue === '' || rawValue === '-' || rawValue === '.' || rawValue === '-.') return;
+                applyRawValue(rawValue, false);
+            });
+            field.addEventListener('change', () => {
+                applyRawValue(field.value, true);
+                persistTextToolState();
+            });
+            field.addEventListener('blur', () => {
+                applyRawValue(field.value, true);
+                persistTextToolState();
+            });
+        };
+
+        this.refreshCreativeFontOptions();
+
+        if (selectMode) {
+            selectMode.value = this.textToolSettings.mode || 'roland';
+            selectMode.onchange = () => {
+                this.textToolSettings.mode = selectMode.value || 'roland';
+                this.textToolSettings.rotation = this.getTextRotationForMode(
+                    this.textToolSettings.mode,
+                    this.textToolSettings.rotation || 0
+                );
+                menu.dataset.mode = this.textToolSettings.mode;
+                persistTextToolState();
+                applySettingsToSelectedText(true);
+                this.refreshTextToolMenuState();
+            };
+        }
+
+        if (selectFont) {
+            selectFont.value = this.textToolSettings.creativeFontId || 'bungee';
+            selectFont.onchange = () => {
+                this.textToolSettings.creativeFontId = selectFont.value || 'bungee';
+                persistTextToolState();
+                applySettingsToSelectedText(true);
+            };
+        }
+
+        if (inputSize && fieldSize) {
+            inputSize.value = String(this.textToolSettings.fontSize || 10);
+            fieldSize.value = this.formatTextToolValue(this.textToolSettings.fontSize || 10);
+            bindLiveControl(inputSize, fieldSize, (fontSize, persist) => {
+                this.textToolSettings.fontSize = fontSize;
+                applySettingsToSelectedText(persist);
+            }, 10);
+        }
+
+        if (inputRotation && fieldRotation) {
+            inputRotation.value = String(this.textToolSettings.rotation || 0);
+            fieldRotation.value = this.formatTextToolValue(this.textToolSettings.rotation || 0);
+            bindLiveControl(inputRotation, fieldRotation, (nextRotation, persist) => {
+                this.textToolSettings.rotation = this.getTextRotationForMode(
+                    this.textToolSettings.mode || 'roland',
+                    nextRotation
+                );
+                inputRotation.value = String(this.textToolSettings.rotation);
+                fieldRotation.value = this.formatTextToolValue(this.textToolSettings.rotation);
+                applySettingsToSelectedText(persist);
+            }, 0);
+        }
+
+        if (inputLetterSpacing && fieldLetterSpacing) {
+            inputLetterSpacing.value = String(this.textToolSettings.letterSpacing || 0);
+            fieldLetterSpacing.value = this.formatTextToolValue(this.textToolSettings.letterSpacing || 0);
+            bindLiveControl(inputLetterSpacing, fieldLetterSpacing, (letterSpacing, persist) => {
+                this.textToolSettings.letterSpacing = letterSpacing;
+                applySettingsToSelectedText(persist);
+            }, 0);
+        }
+
+        if (inputCurve && fieldCurve) {
+            inputCurve.value = String(this.textToolSettings.curve || 0);
+            fieldCurve.value = this.formatTextToolValue(this.textToolSettings.curve || 0);
+            bindLiveControl(inputCurve, fieldCurve, (curve, persist) => {
+                this.textToolSettings.curve = curve;
+                applyCurveToSelectedPaths(persist);
+            }, 0);
+        }
+
+        if (btnUploadFont && inputUpload) {
+            btnUploadFont.onclick = () => inputUpload.click();
+            inputUpload.onchange = async () => {
+                const file = inputUpload.files?.[0];
+                if (!file || typeof CreativeTextEngine === 'undefined') return;
+                try {
+                    const fontEntry = await CreativeTextEngine.loadUploadedFont(file);
+                    this.textToolSettings.mode = 'creative';
+                    this.textToolSettings.creativeFontId = fontEntry.id;
+                    this.refreshCreativeFontOptions();
+                    this.refreshTextToolMenuState();
+                    this.saveWorkspaceState();
+                    applySettingsToSelectedText();
+                    this.logToConsole(`System: Loaded creative font "${fontEntry.label}" and cached it for future launches.`);
+                } catch (error) {
+                    this.logToConsole(`Error: ${error.message}`, 'error');
+                } finally {
+                    inputUpload.value = '';
+                }
+            };
+        }
+
+        if (btnExplodeSelected) {
+            btnExplodeSelected.onclick = () => {
+                const explodedCount = this.app?.canvas?.explodeSelectedCreativeText?.() || 0;
+                if (!explodedCount) {
+                    this.logToConsole('System: Select at least one creative text object to explode.');
+                }
+                this.refreshTextToolMenuState();
+            };
+        }
+
+        if (btnResetValues) {
+            btnResetValues.onclick = () => {
+                this.resetTextToolTransientSettings({ persist: true, applyToSelection: true });
+            };
+        }
+
+        if (btnClose) btnClose.onclick = () => {
+            menu.classList.add('hidden');
+            this.syncSpecialToolHighlights();
+        };
+        this.refreshTextToolMenuState();
+    }
+
+    toggleTextToolMenu(triggerButton) {
+        const menu = document.getElementById('text-tool-menu');
+        if (!menu || !triggerButton) return;
+        if (!menu.classList.contains('hidden')) {
+            menu.classList.add('hidden');
+            this.syncSpecialToolHighlights();
+            return;
+        }
+        this.refreshTextToolMenuState();
+        this.positionMenuWithinHost(triggerButton, menu, { preferredSide: 'right' });
+        this.syncSpecialToolHighlights();
+    }
+
+    refreshCreativeFontOptions() {
+        const selectFont = document.getElementById('sel-text-creative-font');
+        if (!selectFont || typeof CreativeTextEngine === 'undefined') return;
+
+        const currentValue = this.textToolSettings.creativeFontId || 'bungee';
+        const fonts = CreativeTextEngine.getAllFonts();
+        selectFont.innerHTML = '';
+        fonts.forEach(font => {
+            const option = document.createElement('option');
+            option.value = font.id;
+            option.textContent = `${font.label}${font.source === 'upload' ? ' (Uploaded)' : ''}`;
+            selectFont.appendChild(option);
+        });
+        selectFont.value = fonts.some(font => font.id === currentValue) ? currentValue : (fonts[0]?.id || 'bungee');
+        this.textToolSettings.creativeFontId = selectFont.value;
+    }
+
+    refreshTextToolMenuState() {
+        const menu = document.getElementById('text-tool-menu');
+        const selectMode = document.getElementById('sel-text-mode');
+        const selectFont = document.getElementById('sel-text-creative-font');
+        const inputSize = document.getElementById('input-text-font-size');
+        const fieldSize = document.getElementById('field-text-font-size');
+        const inputRotation = document.getElementById('input-text-rotation');
+        const fieldRotation = document.getElementById('field-text-rotation');
+        const inputLetterSpacing = document.getElementById('input-text-letter-spacing');
+        const fieldLetterSpacing = document.getElementById('field-text-letter-spacing');
+        const inputCurve = document.getElementById('input-text-curve');
+        const fieldCurve = document.getElementById('field-text-curve');
+        const btnExplodeSelected = document.getElementById('btn-text-explode-selected');
+        if (!menu) return;
+
+        const selectedText = this.app?.canvas?.selectedPaths?.length === 1
+            ? this.app.canvas.paths[this.app.canvas.selectedPaths[0]]
+            : null;
+        const editableText = selectedText && selectedText.type === 'text' && selectedText.exploded !== true
+            ? selectedText
+            : null;
+        const curveEditablePath = selectedText && (selectedText.type === 'text' || ['line', 'polyline', 'path'].includes(selectedText.type))
+            ? selectedText
+            : null;
+
+        const state = editableText
+            ? {
+                mode: editableText.textMode || 'roland',
+                creativeFontId: editableText.creativeFontId || this.textToolSettings.creativeFontId || 'bungee',
+                fontSize: editableText.fontSize || this.textToolSettings.fontSize || 10,
+                rotation: editableText.rotation || 0,
+                letterSpacing: editableText.letterSpacing || 0,
+                curve: editableText.curve || 0
+            }
+            : {
+                ...this.textToolSettings,
+                curve: curveEditablePath?.curve || this.textToolSettings.curve || 0
+            };
+
+        menu.dataset.mode = state.mode || 'roland';
+        if (selectMode) selectMode.value = state.mode || 'roland';
+        this.refreshCreativeFontOptions();
+        if (selectFont) selectFont.value = state.creativeFontId || this.textToolSettings.creativeFontId || 'bungee';
+        if (inputSize) inputSize.value = String(state.fontSize || 10);
+        if (fieldSize) fieldSize.value = this.formatTextToolValue(state.fontSize || 10);
+        if (inputRotation) inputRotation.value = String(state.rotation || 0);
+        if (fieldRotation) fieldRotation.value = this.formatTextToolValue(state.rotation || 0);
+        if (inputLetterSpacing) inputLetterSpacing.value = String(state.letterSpacing || 0);
+        if (fieldLetterSpacing) fieldLetterSpacing.value = this.formatTextToolValue(state.letterSpacing || 0);
+        if (inputCurve) inputCurve.value = String(state.curve || 0);
+        if (fieldCurve) fieldCurve.value = this.formatTextToolValue(state.curve || 0);
+
+        if (btnExplodeSelected) {
+            const hasCreativeSelection = !!(this.app?.canvas?.selectedPaths || []).find(idx => {
+                const path = this.app.canvas.paths[idx];
+                return path?.type === 'text' && path.textMode === 'creative' && path.exploded !== true;
+            });
+            btnExplodeSelected.disabled = !hasCreativeSelection;
+        }
+    }
+
+    _bindToolHoverLabels() {
+        const toolButtons = document.querySelectorAll('.vis-palette .tool-btn[title]');
+        if (!toolButtons.length) return;
+
+        let label = document.getElementById('tool-hover-label');
+        if (!label) {
+            label = document.createElement('div');
+            label.id = 'tool-hover-label';
+            label.className = 'tool-hover-label';
+            document.body.appendChild(label);
+        }
+
+        const showLabel = (button) => {
+            const text = button?.getAttribute('title');
+            if (!text) return;
+            label.textContent = text;
+            label.classList.add('visible');
+            const rect = button.getBoundingClientRect();
+            const labelWidth = label.offsetWidth || 0;
+            const labelHeight = label.offsetHeight || 0;
+            const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+            const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+            const gap = 12;
+            let left = rect.right + gap;
+            let top = rect.top + ((rect.height - labelHeight) / 2);
+
+            if (left + labelWidth > viewportWidth - 8) {
+                left = Math.max(8, rect.left - labelWidth - gap);
+            }
+            top = Math.max(8, Math.min(top, viewportHeight - labelHeight - 8));
+            label.style.left = `${Math.round(left)}px`;
+            label.style.top = `${Math.round(top)}px`;
+        };
+
+        const hideLabel = () => {
+            label.classList.remove('visible');
+        };
+
+        toolButtons.forEach(button => {
+            button.addEventListener('mouseenter', () => showLabel(button));
+            button.addEventListener('focus', () => showLabel(button));
+            button.addEventListener('mouseleave', hideLabel);
+            button.addEventListener('blur', hideLabel);
+        });
+
+        window.addEventListener('scroll', hideLabel, true);
+        window.addEventListener('resize', hideLabel);
+    }
+
+    getTextRotationForMode(mode, rotation) {
+        const safeRotation = Number.isFinite(rotation) ? rotation : 0;
+        if (mode === 'creative') return safeRotation;
+        return this.app?.canvas?.normalizeTextRotation?.(safeRotation) ?? safeRotation;
+    }
+
+    formatTextToolValue(value) {
+        const safeValue = Number.isFinite(value) ? value : 0;
+        return safeValue.toFixed(2);
+    }
+
+    ensureTextRotationControls() {
+        const existingInput = document.getElementById('input-text-rotation');
+        const existingField = document.getElementById('field-text-rotation');
+        if (existingInput && existingField) {
+            return { input: existingInput, valueField: existingField };
+        }
+
+        const legacySelect = document.getElementById('sel-text-rotation');
+        if (!legacySelect) return null;
+
+        const wrapper = legacySelect.parentElement;
+        if (!wrapper) return null;
+
+        const input = document.createElement('input');
+        input.type = 'range';
+        input.id = 'input-text-rotation';
+        input.min = '-180';
+        input.max = '180';
+        input.step = '1';
+        input.value = '0';
+
+        const valueField = document.createElement('input');
+        valueField.type = 'number';
+        valueField.id = 'field-text-rotation';
+        valueField.className = 'text-tool-value-input';
+        valueField.min = '-180';
+        valueField.max = '180';
+        valueField.step = '1';
+        valueField.value = '0.00';
+
+        legacySelect.replaceWith(input);
+        wrapper.appendChild(valueField);
+        return { input, valueField };
+    }
+
+    resetTextToolTransientSettings({ persist = false, applyToSelection = false } = {}) {
+        this.textToolSettings.rotation = this.getTextRotationForMode(this.textToolSettings.mode || 'roland', 0);
+        this.textToolSettings.letterSpacing = 0;
+        this.textToolSettings.curve = 0;
+
+        if (persist) {
+            this.saveWorkspaceState();
+        }
+
+        if (applyToSelection && this.app?.canvas?.selectedPaths?.length === 1) {
+            const path = this.app.canvas.paths[this.app.canvas.selectedPaths[0]];
+            if (path?.type === 'text' && path.exploded !== true) {
+                path.rotation = this.getTextRotationForMode(path.textMode || this.textToolSettings.mode || 'roland', 0);
+                path.letterSpacing = 0;
+                path.curve = 0;
+                delete path._vectorTextCache;
+                delete path._creativeOutlineCache;
+                this.app.canvas.saveCurrentState?.();
+                this.app.canvas.draw?.();
+            } else if (path && ['line', 'polyline', 'path'].includes(path.type)) {
+                path.curve = 0;
+                this.app.canvas.invalidateFillRegionCache?.();
+                this.app.canvas.saveCurrentState?.();
+                this.app.canvas.draw?.();
+            }
+        }
+
+        this.refreshTextToolMenuState();
     }
 
     _bindInput() {
@@ -1286,9 +2216,17 @@ class UIController {
             if (b.dataset.tool === toolName) b.classList.add('active');
             else b.classList.remove('active');
         });
+        const requiresEditableWorkspace = ['select', 'node', 'warp', 'boolean', 'bucket', 'shape', 'text', 'bezier'].includes(toolName);
+        if (requiresEditableWorkspace && this.currentVisualizerView === 'machine-output') {
+            this.currentVisualizerView = 'workspace';
+            this.refreshVisualizerViewToggleButton();
+            this.saveWorkspaceState();
+        }
         if (this.app.canvas) {
+            this.app.canvas.finishTextEditing?.({ removeIfEmpty: true, save: true });
             if (previousTool === 'bezier' && toolName !== 'bezier' && this.app.canvas.isCreatingBezier) {
-                this.app.canvas.finalizeBezierPath(true);
+                if (this.app.canvas.isFreeDrawBezier) this.app.canvas.finalizeFreeDrawBezierPath(true);
+                else this.app.canvas.finalizeBezierPath(true);
             } else {
                 this.app.canvas.cancelCurrentOperation();
             }
@@ -1569,6 +2507,12 @@ class UIController {
             this.app.canvas.patternPreviewPaths = [];
             this.app.canvas.draw();
             return;
+        }
+
+        if (this.currentVisualizerView === 'machine-output') {
+            this.currentVisualizerView = 'workspace';
+            this.refreshVisualizerViewToggleButton();
+            this.saveWorkspaceState();
         }
 
         const contourSource = document.getElementById('sel-pattern-contour-source')?.value || 'preset';

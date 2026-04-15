@@ -161,10 +161,12 @@ class HandwritingPanel {
 
             const penIdx = this.app.ui.activeVisualizerPen || 1;
             const groupId = 'hw_' + Date.now() + '_' + Math.floor(Math.random() * 1000);
+            const curveAmount = this.app?.ui?.textToolSettings?.curve || 0;
 
             vectorObj.children.forEach(child => {
                 child.pen = penIdx;
                 child.groupId = groupId; // Auto-group the strokes
+                child.curve = curveAmount;
                 if (child.points) {
                     child.points.forEach(p => {
                         p.x += shiftX;

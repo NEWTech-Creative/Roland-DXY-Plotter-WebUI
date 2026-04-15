@@ -246,6 +246,14 @@ class HpglParser {
         return [`Y${m},${coords};`];
     }
 
+    isRolandTextPath(path) {
+        return !!(path && path.type === 'text' && (path.textMode || 'roland') !== 'creative');
+    }
+
+    isCreativeTextPath(path) {
+        return !!(path && path.type === 'text' && path.textMode === 'creative' && path.exploded !== true);
+    }
+
     pathShouldUseCurve(path) {
         if (!path || path.type !== 'path' || !Array.isArray(path.segments) || !Array.isArray(path.points)) return false;
         if (this.app?.settings?.useInternalCurveEngine === false) return false;
@@ -519,7 +527,7 @@ class HpglParser {
     pathContainsText(paths = []) {
         return paths.some(entry => {
             const path = entry?.path || entry;
-            return path && path.type === 'text';
+            return this.isRolandTextPath(path);
         });
     }
 
@@ -601,6 +609,8 @@ class HpglParser {
                 x: params.x,
                 y: params.y,
                 pen: visPen,
+                textMode: params.textMode || 'roland',
+                creativeFontId: params.creativeFontId || 'bungee',
                 fontSize: params.fontSize || 10,
                 rotation: this.getRolandTextRotationIndex(params.rotation || 0) * 90
             });
@@ -639,7 +649,13 @@ class HpglParser {
             if (p.type === 'circle') {
                 hpglCommands = hpglCommands.concat(this.generateCircle(p.x, p.y, p.r));
             } else if (p.type === 'text') {
-                hpglCommands = hpglCommands.concat(this.generateText(p.text, p.x, p.y, p.fontSize || 10, p.rotation || 0));
+                if (this.isCreativeTextPath(p) && typeof CreativeTextEngine !== 'undefined') {
+                    CreativeTextEngine.buildPlotLoops(p).forEach(loop => {
+                        hpglCommands = hpglCommands.concat(this.generatePolylineCommands(loop));
+                    });
+                } else {
+                    hpglCommands = hpglCommands.concat(this.generateText(p.text, p.x, p.y, p.fontSize || 10, p.rotation || 0));
+                }
             } else if (p.type === 'rectangle') {
                 hpglCommands = hpglCommands.concat(
                     this.generateRectangle(p.x, p.y, p.x + (p.w || 0), p.y + (p.h || 0))
@@ -831,7 +847,11 @@ class HpglParser {
         if (path.type === 'text') {
             return [];
         }
-        return this.getTracePointsForPath(path);
+        const basePoints = this.getTracePointsForPath(path);
+        if (this.app?.canvas?.pathSupportsCurve?.(path)) {
+            return this.app.canvas.applyCurveToPoints(basePoints, path.curve);
+        }
+        return basePoints;
     }
 
     exportGCode(paths) {
@@ -909,14 +929,21 @@ class HpglParser {
             }
 
             if (path.type === 'text') {
-                const point = this.transformSvgExportPoint(path.x, path.y);
-                const safeText = String(path.text || '')
-                    .replace(/&/g, '&amp;')
-                    .replace(/</g, '&lt;')
-                    .replace(/>/g, '&gt;')
-                    .replace(/"/g, '&quot;');
-                const rotation = path.rotation || 0;
-                elements.push(`<text x="${point.x.toFixed(3)}" y="${point.y.toFixed(3)}" font-size="${(path.fontSize || 10).toFixed(3)}" fill="none" stroke="${stroke}" stroke-width="${Math.max(0.1, strokeWidth * 0.35).toFixed(3)}" transform="rotate(${rotation} ${point.x.toFixed(3)} ${point.y.toFixed(3)})">${safeText}</text>`);
+                if (this.isCreativeTextPath(path) && typeof CreativeTextEngine !== 'undefined') {
+                    CreativeTextEngine.buildPlotLoops(path).forEach(loop => {
+                        const transformedPoints = this.transformSvgExportPoints(loop);
+                        elements.push(`<polyline points="${transformedPoints.map(point => `${point.x.toFixed(3)},${point.y.toFixed(3)}`).join(' ')}" fill="none" stroke="${stroke}" stroke-width="${strokeWidth.toFixed(3)}" />`);
+                    });
+                } else {
+                    const point = this.transformSvgExportPoint(path.x, path.y);
+                    const safeText = String(path.text || '')
+                        .replace(/&/g, '&amp;')
+                        .replace(/</g, '&lt;')
+                        .replace(/>/g, '&gt;')
+                        .replace(/"/g, '&quot;');
+                    const rotation = path.rotation || 0;
+                    elements.push(`<text x="${point.x.toFixed(3)}" y="${point.y.toFixed(3)}" font-size="${(path.fontSize || 10).toFixed(3)}" fill="none" stroke="${stroke}" stroke-width="${Math.max(0.1, strokeWidth * 0.35).toFixed(3)}" transform="rotate(${rotation} ${point.x.toFixed(3)} ${point.y.toFixed(3)})">${safeText}</text>`);
+                }
                 return;
             }
 
@@ -971,8 +998,15 @@ class HpglParser {
                 hpglQueue = hpglQueue.concat(this.generateCircle(p.x, p.y, p.r));
                 commandsFound++;
             } else if (p.type === 'text') {
-                hpglQueue = hpglQueue.concat(this.generateText(p.text, p.x, p.y, p.fontSize || 10, p.rotation || 0));
-                commandsFound++;
+                if (this.isCreativeTextPath(p) && typeof CreativeTextEngine !== 'undefined') {
+                    CreativeTextEngine.buildPlotLoops(p).forEach(loop => {
+                        hpglQueue = hpglQueue.concat(this.generatePolylineStreamCommands(loop));
+                        commandsFound++;
+                    });
+                } else {
+                    hpglQueue = hpglQueue.concat(this.generateText(p.text, p.x, p.y, p.fontSize || 10, p.rotation || 0));
+                    commandsFound++;
+                }
             } else if (p.type === 'rectangle') {
                 hpglQueue = hpglQueue.concat(
                     this.generatePolylineStreamCommands(

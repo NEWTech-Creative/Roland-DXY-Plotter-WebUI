@@ -1,7 +1,7 @@
 class ImageVectorPanel {
     constructor(app) {
         this.app = app;
-        this.engine = new ImageVectorEngine();
+        this.engine = new ImageVectorEngine(app);
         this.layerColors = ['#ff0000', '#00ff00', '#0000ff'];
         this.currentImage = null;
         this.vectorPaths = [];
@@ -231,7 +231,7 @@ class ImageVectorPanel {
         }
 
         if (this.vectorPaths.length > 0) {
-            const method = document.getElementById('sel-iv-method') ? document.getElementById('sel-iv-method').value : 'contour';
+            const method = document.getElementById('sel-iv-method') ? document.getElementById('sel-iv-method').value : 'trace';
             let strokeOpacity = 1;
             if (method === 'string') {
                 const lineCountEl = document.getElementById('input-iv-lines');
@@ -241,6 +241,10 @@ class ImageVectorPanel {
                 strokeOpacity = Math.max(0.005, (lineWeight / 100) * (150 / totalLines));
                 ctx.strokeStyle = `rgba(59, 130, 246, ${strokeOpacity.toFixed(3)})`;
                 ctx.lineWidth = 0.5 / this.scale;
+            } else if (method === 'spiral') {
+                const previewStrokeWidth = (this.lastParams && this.lastParams.previewStrokeWidth) || 1.2;
+                ctx.strokeStyle = '#2563eb';
+                ctx.lineWidth = Math.max(0.25, previewStrokeWidth) / this.scale;
             } else {
                 ctx.strokeStyle = '#3b82f6';
                 ctx.lineWidth = 1 / this.scale;
@@ -249,7 +253,8 @@ class ImageVectorPanel {
             ctx.lineJoin = 'round';
             ctx.lineCap = 'round';
             this.vectorPaths.forEach(path => {
-                if (!path || (path.length < 2 && !path.segments)) return;
+                const points = Array.isArray(path) ? path : path?.points;
+                if (!path || ((!points || points.length < 2) && !path.segments)) return;
 
                 // Set color based on path.layer or method
                 if (path.layer !== undefined && document.getElementById('sel-iv-color-mode').value === 'color') {
@@ -275,11 +280,12 @@ class ImageVectorPanel {
                         if (seg.type === 'L') ctx.lineTo(seg.x, seg.y);
                         else if (seg.type === 'C') ctx.bezierCurveTo(seg.x1, seg.y1, seg.x2, seg.y2, seg.x, seg.y);
                         else if (seg.type === 'Q') ctx.quadraticCurveTo(seg.x1, seg.y1, seg.x, seg.y);
+                        else if (seg.type === 'Z') ctx.closePath();
                     }
                 } else {
-                    ctx.moveTo(path[0].x, path[0].y);
-                    for (let i = 1; i < path.length; i++) {
-                        ctx.lineTo(path[i].x, path[i].y);
+                    ctx.moveTo(points[0].x, points[0].y);
+                    for (let i = 1; i < points.length; i++) {
+                        ctx.lineTo(points[i].x, points[i].y);
                     }
                 }
                 ctx.stroke();
@@ -326,16 +332,33 @@ class ImageVectorPanel {
             }
         };
 
-        // Hide global sliders for String Art to prevent clutter (since it uses its own specialized ones)
-        const globalIds = ['threshold', 'contrast', 'simplify'];
-        globalIds.forEach(id => {
+        const addSelect = (id, label, options, value) => {
+            html += `<div class="form-group iv-compact-group iv-dynamic-group" id="group-iv-${id}">
+                <label>${label}</label>
+                <select id="input-iv-${id}" style="width: 100%;">${options.map(opt =>
+                    `<option value="${opt.value}"${opt.value === value ? ' selected' : ''}>${opt.label}</option>`
+                ).join('')}</select>
+            </div>`;
+        };
+
+        // Hide global sliders when a mode has its own dedicated tone controls.
+        const globalVisibility = {
+            threshold: !['string', 'spiral'].includes(method),
+            contrast: method !== 'string',
+            simplify: method !== 'string'
+        };
+        ['threshold', 'contrast', 'simplify'].forEach(id => {
             const el = document.getElementById('input-iv-' + id);
             if (el && el.parentElement) {
-                el.parentElement.style.display = (method === 'string') ? 'none' : 'block';
+                el.parentElement.style.display = globalVisibility[id] ? 'block' : 'none';
             }
         });
 
         switch (method) {
+            case 'trace':
+                addS('traceSpeckle', 'Speckle Filter', 0, 25, 4);
+                addS('traceCornerSmooth', 'Corner Smooth', 0, 133, 100, 1);
+                break;
             case 'contour':
                 addS('spacing', 'Path Detail', 1, 10, 2, 0.5);
                 addS('fillSpacing', 'Fill Gap', 2, 25, 8);
@@ -364,7 +387,52 @@ class ImageVectorPanel {
                 break;
             case 'topo': addS('spacing', 'Path Detail', 1, 10, 2, 0.5); break;
             case 'hatch': addS('spacing', 'Line Spacing', 2, 25, 5); addS('layers', 'Layers', 1, 4, 2); break;
-            case 'spiral': addS('spacing', 'Spiral Spacing', 2, 20, 5); break;
+            case 'spiral':
+                addSelect('spiralPreset', 'Preset', [
+                    { value: 'portraitClean', label: 'Portrait Clean' },
+                    { value: 'highDetail', label: 'High Detail' },
+                    { value: 'plotterSafe', label: 'Plotter Safe' },
+                    { value: 'boldContrast', label: 'Bold Contrast' },
+                    { value: 'softEngraving', label: 'Soft Engraving' }
+                ], 'portraitClean');
+                addS('spacing', 'Spiral Spacing', 1, 20, 4, 0.1);
+                addS('turns', 'Number of Turns', 20, 320, 120, 1);
+                addS('centerOffsetX', 'Centre Offset X', -100, 100, 0, 1);
+                addS('centerOffsetY', 'Centre Offset Y', -100, 100, 0, 1);
+                addSelect('direction', 'Direction', [
+                    { value: 'cw', label: 'Clockwise' },
+                    { value: 'ccw', label: 'Anticlockwise' }
+                ], 'cw');
+                addS('influence', 'Brightness Influence', 0, 100, 75, 1);
+                addS('gamma', 'Gamma', 25, 250, 100, 1);
+                addS('minMod', 'Minimum Modulation', 0, 8, 0.3, 0.1);
+                addS('maxMod', 'Maximum Modulation', 0, 18, 4.5, 0.1);
+                addS('oscAmplitude', 'Oscillation Amplitude', 0, 12, 1.6, 0.1);
+                addS('oscFrequency', 'Oscillation Frequency', 0, 20, 7, 0.1);
+                addS('previewStrokeWidth', 'Stroke Preview', 0.1, 6, 1.2, 0.1);
+                addS('smoothing', 'Smoothing Amount', 0, 100, 58, 1);
+                addS('detail', 'Detail Amount', 1, 100, 62, 1);
+                addS('margin', 'Edge Margin', 0, 80, 10, 1);
+                addSelect('invert', 'Invert Image', [
+                    { value: 'false', label: 'Off' },
+                    { value: 'true', label: 'On' }
+                ], 'false');
+                addSelect('cropMode', 'Image Fit', [
+                    { value: 'fit', label: 'Fit To Canvas' },
+                    { value: 'square', label: 'Crop To Square' }
+                ], 'fit');
+                break;
+            case 'squiggle':
+                addS('squiggleLineCount', 'Line Count', 10, 200, 50, 1);
+                addS('squiggleFrequency', 'Frequency', 5, 256, 150, 1);
+                addS('squiggleAmplitude', 'Amplitude', 0.1, 5, 1, 0.1);
+                addS('squiggleSampling', 'Sampling', 0.5, 3, 1, 0.1);
+                addSelect('squiggleModulation', 'Modulation', [
+                    { value: 'both', label: 'AM + FM' },
+                    { value: 'am', label: 'Amplitude Only' },
+                    { value: 'fm', label: 'Frequency Only' }
+                ], 'both');
+                break;
             case 'wave':
                 addS('spacing', 'Wave Spacing', 2, 30, 8);
                 addS('amplitude', 'Amplitude', 2, 40, 15);
@@ -377,7 +445,67 @@ class ImageVectorPanel {
                     </select>
                 </div>`;
                 break;
-            case 'stipple': addS('spacing', 'Dot Spacing', 5, 40, 12); break;
+            case 'longwave':
+                addS('longWaveSpeed', 'Wave Speed', 1, 100, 20, 1);
+                addS('longWaveAmplitude', 'Wave Amplitude', 0, 50, 10, 0.1);
+                addS('longWaveStep', 'Step Size', 1, 20, 5, 0.1);
+                addS('longWaveSimplify', 'Hysteresis', 1, 50, 10, 0.1);
+                addS('longWaveDepth', 'Depth', 1, 8, 3, 1);
+                addSelect('longWaveDirection', 'Direction', [
+                    { value: 'vertical', label: 'Vertical' },
+                    { value: 'horizontal', label: 'Horizontal' },
+                    { value: 'both', label: 'Both' }
+                ], 'vertical');
+                break;
+            case 'stipple':
+                addS('maxStipples', 'Max Stipples', 100, 10000, 1800, 100);
+                addS('minDotSize', 'Min Dot Size', 0.2, 8, 1.5, 0.1);
+                addS('dotSizeRange', 'Dot Size Range', 0, 20, 4, 0.1);
+                addS('stippleSeed', 'Seed', 0, 999, 1, 1);
+                addSelect('stippleType', 'Stipple Type', [
+                    { value: 'circles', label: 'Circles' },
+                    { value: 'spirals', label: 'Spirals' },
+                    { value: 'hexagons', label: 'Hexagons' },
+                    { value: 'pentagrams', label: 'Pentagrams' },
+                    { value: 'snowflakes', label: 'Snowflakes' }
+                ], 'circles');
+                break;
+            case 'dots':
+                addS('dotsResolution', 'Resolution', 1, 20, 2, 1);
+                addS('dotsDirection', 'Line Direction', 0, 180, 0, 1);
+                addS('dotsSeed', 'Seed', 0, 999, 50, 1);
+                addSelect('dotsRandomDirection', 'Random Direction', [
+                    { value: 'false', label: 'Off' },
+                    { value: 'true', label: 'On' }
+                ], 'false');
+                break;
+            case 'mosaic':
+                addS('mosaicScale', 'Scale', 2, 100, 10, 1);
+                addS('mosaicHatches', 'Hatches', 2, 10, 6, 1);
+                addSelect('mosaicOutlines', 'Outlines', [
+                    { value: 'false', label: 'Off' },
+                    { value: 'true', label: 'On' }
+                ], 'false');
+                break;
+            case 'woven':
+                addS('wovenFrequency', 'Frequency', 5, 256, 24, 1);
+                addS('wovenLineCount', 'Line Count', 5, 200, 8, 1);
+                addS('wovenSeed', 'Seed', 0, 999, 1, 1);
+                addSelect('wovenCosine', 'Cosine Join', [
+                    { value: 'false', label: 'Off' },
+                    { value: 'true', label: 'On' }
+                ], 'false');
+                addSelect('wovenRandom', 'Random Swap', [
+                    { value: 'false', label: 'Off' },
+                    { value: 'true', label: 'On' }
+                ], 'false');
+                addSelect('wovenPower', 'Power', [
+                    { value: '0.5', label: '0.5' },
+                    { value: '1', label: '1' },
+                    { value: '2', label: '2' },
+                    { value: '3', label: '3' }
+                ], '2');
+                break;
             case 'shape':
                 addS('spacing', 'Shape Spacing', 8, 40, 20);
                 html += `<div class="form-group iv-compact-group iv-dynamic-group">
@@ -412,18 +540,150 @@ class ImageVectorPanel {
                 if (e.target.id.startsWith('input-iv-')) {
                     const valEl = document.getElementById(e.target.id.replace('input', 'val'));
                     if (valEl) valEl.textContent = e.target.value;
+                    if (method === 'spiral' && e.target.id === 'input-iv-spiralPreset') {
+                        this.applySpiralPreset(e.target.value);
+                        return;
+                    }
                     if (method === 'contour' && e.target.id === 'input-iv-fill') updateContourFillLabels();
                     this.autoGenerate();
                 }
             };
             if (i.tagName === 'SELECT') {
                 i.onchange = () => {
+                    if (method === 'spiral' && i.id === 'input-iv-spiralPreset') {
+                        this.applySpiralPreset(i.value);
+                        return;
+                    }
                     if (method === 'contour' && i.id === 'input-iv-fill') updateContourFillLabels();
                     this.autoGenerate();
                 };
             }
         });
         if (method === 'contour') updateContourFillLabels();
+        if (method === 'spiral') this.applySpiralPreset('portraitClean', true);
+    }
+
+    getSpiralPresetMap() {
+        return {
+            portraitClean: {
+                contrast: 58,
+                spacing: 4.0,
+                turns: 120,
+                influence: 78,
+                gamma: 92,
+                minMod: 0.3,
+                maxMod: 4.2,
+                oscAmplitude: 1.5,
+                oscFrequency: 7,
+                previewStrokeWidth: 1.1,
+                smoothing: 64,
+                detail: 62,
+                margin: 10,
+                direction: 'cw',
+                invert: 'false',
+                cropMode: 'fit',
+                centerOffsetX: 0,
+                centerOffsetY: 0
+            },
+            highDetail: {
+                contrast: 66,
+                spacing: 2.8,
+                turns: 170,
+                influence: 88,
+                gamma: 86,
+                minMod: 0.2,
+                maxMod: 3.3,
+                oscAmplitude: 1.2,
+                oscFrequency: 9.5,
+                previewStrokeWidth: 0.9,
+                smoothing: 48,
+                detail: 90,
+                margin: 8,
+                direction: 'cw',
+                invert: 'false',
+                cropMode: 'fit',
+                centerOffsetX: 0,
+                centerOffsetY: 0
+            },
+            plotterSafe: {
+                contrast: 52,
+                spacing: 5.3,
+                turns: 92,
+                influence: 62,
+                gamma: 100,
+                minMod: 0.2,
+                maxMod: 2.3,
+                oscAmplitude: 0.8,
+                oscFrequency: 5,
+                previewStrokeWidth: 1.4,
+                smoothing: 78,
+                detail: 48,
+                margin: 14,
+                direction: 'cw',
+                invert: 'false',
+                cropMode: 'fit',
+                centerOffsetX: 0,
+                centerOffsetY: 0
+            },
+            boldContrast: {
+                contrast: 78,
+                spacing: 3.5,
+                turns: 132,
+                influence: 95,
+                gamma: 72,
+                minMod: 0.5,
+                maxMod: 5.4,
+                oscAmplitude: 2.1,
+                oscFrequency: 8.5,
+                previewStrokeWidth: 1.3,
+                smoothing: 52,
+                detail: 74,
+                margin: 9,
+                direction: 'cw',
+                invert: 'false',
+                cropMode: 'square',
+                centerOffsetX: 0,
+                centerOffsetY: 0
+            },
+            softEngraving: {
+                contrast: 44,
+                spacing: 4.8,
+                turns: 108,
+                influence: 56,
+                gamma: 118,
+                minMod: 0.15,
+                maxMod: 2.7,
+                oscAmplitude: 0.9,
+                oscFrequency: 4.5,
+                previewStrokeWidth: 1.0,
+                smoothing: 82,
+                detail: 44,
+                margin: 12,
+                direction: 'cw',
+                invert: 'false',
+                cropMode: 'fit',
+                centerOffsetX: 0,
+                centerOffsetY: 0
+            }
+        };
+    }
+
+    applySpiralPreset(presetName, suppressGenerate = false) {
+        const preset = this.getSpiralPresetMap()[presetName];
+        if (!preset) return;
+
+        Object.entries(preset).forEach(([key, value]) => {
+            const input = document.getElementById('input-iv-' + key);
+            if (!input) return;
+            input.value = value;
+            const valueLabel = document.getElementById('val-iv-' + key);
+            if (valueLabel) valueLabel.textContent = value;
+        });
+
+        const presetSelect = document.getElementById('input-iv-spiralPreset');
+        if (presetSelect && presetSelect.value !== presetName) presetSelect.value = presetName;
+
+        if (!suppressGenerate) this.autoGenerate();
     }
 
     async generateVector() {
@@ -447,7 +707,43 @@ class ImageVectorPanel {
             threshold: gV('threshold', 128),
             contrast: gV('contrast', 50),
             simplify: gV('simplify', 10),
+            traceSpeckle: gV('traceSpeckle', 4),
+            traceCornerSmooth: gV('traceCornerSmooth', 100),
             spacing: gV('spacing', 5),
+            turns: gV('turns', 120),
+            squiggleLineCount: gV('squiggleLineCount', 50),
+            squiggleFrequency: gV('squiggleFrequency', 150),
+            squiggleAmplitude: gV('squiggleAmplitude', 1),
+            squiggleSampling: gV('squiggleSampling', 1),
+            centerOffsetX: gV('centerOffsetX', 0),
+            centerOffsetY: gV('centerOffsetY', 0),
+            influence: gV('influence', 75),
+            gamma: gV('gamma', 100),
+            minMod: gV('minMod', 0.3),
+            maxMod: gV('maxMod', 4.5),
+            oscAmplitude: gV('oscAmplitude', 1.6),
+            oscFrequency: gV('oscFrequency', 7),
+            previewStrokeWidth: gV('previewStrokeWidth', 1.2),
+            smoothing: gV('smoothing', 58),
+            detail: gV('detail', 62),
+            margin: gV('margin', 10),
+            longWaveSpeed: gV('longWaveSpeed', 20),
+            longWaveAmplitude: gV('longWaveAmplitude', 10),
+            longWaveStep: gV('longWaveStep', 5),
+            longWaveSimplify: gV('longWaveSimplify', 10),
+            longWaveDepth: gV('longWaveDepth', 3),
+            maxStipples: gV('maxStipples', 1800),
+            minDotSize: gV('minDotSize', 1.5),
+            dotSizeRange: gV('dotSizeRange', 4),
+            stippleSeed: gV('stippleSeed', 1),
+            dotsResolution: gV('dotsResolution', 2),
+            dotsDirection: gV('dotsDirection', 0),
+            dotsSeed: gV('dotsSeed', 50),
+            mosaicScale: gV('mosaicScale', 10),
+            mosaicHatches: gV('mosaicHatches', 6),
+            wovenFrequency: gV('wovenFrequency', 24),
+            wovenLineCount: gV('wovenLineCount', 8),
+            wovenSeed: gV('wovenSeed', 1),
             amplitude: gV('amplitude', 15),
             layers: gV('layers', 2),
             count: gV('count', 800),
@@ -462,7 +758,19 @@ class ImageVectorPanel {
             fillAngle: gV('fillAngle', 45),
             zigzagSize: gV('zigzagSize', 5),
             lineWeight: gV('lineWeight', 30),
-            edgeBoost: gV('saSharp', 50)
+            edgeBoost: gV('saSharp', 50),
+            direction: (document.getElementById('input-iv-direction') || {}).value || 'cw',
+            invert: ((document.getElementById('input-iv-invert') || {}).value || 'false') === 'true',
+            cropMode: (document.getElementById('input-iv-cropMode') || {}).value || 'fit',
+            spiralPreset: (document.getElementById('input-iv-spiralPreset') || {}).value || 'portraitClean',
+            squiggleModulation: (document.getElementById('input-iv-squiggleModulation') || {}).value || 'both',
+            longWaveDirection: (document.getElementById('input-iv-longWaveDirection') || {}).value || 'vertical',
+            stippleType: (document.getElementById('input-iv-stippleType') || {}).value || 'circles',
+            dotsRandomDirection: ((document.getElementById('input-iv-dotsRandomDirection') || {}).value || 'false') === 'true',
+            mosaicOutlines: ((document.getElementById('input-iv-mosaicOutlines') || {}).value || 'false') === 'true',
+            wovenCosine: ((document.getElementById('input-iv-wovenCosine') || {}).value || 'false') === 'true',
+            wovenRandom: ((document.getElementById('input-iv-wovenRandom') || {}).value || 'false') === 'true',
+            wovenPower: parseFloat((document.getElementById('input-iv-wovenPower') || {}).value || '2')
         };
 
         this.lastParams = params;
@@ -509,11 +817,14 @@ class ImageVectorPanel {
         if (!this.vectorPaths.length) return;
         let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
         this.vectorPaths.forEach(path => {
-            path.forEach(p => {
+            const points = Array.isArray(path) ? path : path?.points;
+            if (!Array.isArray(points)) return;
+            points.forEach(p => {
                 if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
                 if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
             });
         });
+        if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) return;
         const w = maxX - minX, h = maxY - minY;
         const bedW = this.app.canvas.bedWidth, bedH = this.app.canvas.bedHeight;
         let scale = 1.0;
@@ -528,7 +839,10 @@ class ImageVectorPanel {
         const ty = centerY - (minY + h / 2) * scale;
 
         const shifted = this.vectorPaths.map(path => {
-            const scaledPoints = path.map(p => ({
+            const points = Array.isArray(path) ? path : path?.points;
+            if (!Array.isArray(points) || points.length < 2) return null;
+
+            const scaledPoints = points.map(p => ({
                 x: p.x * scale + tx,
                 y: p.y * scale + ty
             }));
@@ -563,7 +877,7 @@ class ImageVectorPanel {
             }
 
             const pathObj = {
-                type: 'polyline',
+                type: scaledSegments ? 'path' : 'polyline',
                 groupId: subGroupId,
                 parentGroupId: colorMode === 'color' ? importGroupId : undefined,
                 points: scaledPoints,
@@ -571,8 +885,9 @@ class ImageVectorPanel {
             };
 
             if (scaledSegments) pathObj.segments = scaledSegments;
+            if (path?.closed === true) pathObj.closed = true;
             return pathObj;
-        });
+        }).filter(Boolean);
         
         // Refresh the visible pen palette after remapping RGB layers to visualizer pens.
         if (this.app.ui && this.app.ui.updateVisualizerPalette) this.app.ui.updateVisualizerPalette();
