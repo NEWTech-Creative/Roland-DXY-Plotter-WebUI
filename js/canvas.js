@@ -1961,6 +1961,68 @@ class CanvasManager {
         });
     }
 
+    sampleSvgArcPoints(start, segment) {
+        if (!start || !segment || !Number.isFinite(segment.x) || !Number.isFinite(segment.y)) return [];
+        if (!Number.isFinite(segment.rx) || !Number.isFinite(segment.ry)) {
+            return [{ x: segment.x, y: segment.y }];
+        }
+
+        let rx = Math.abs(segment.rx);
+        let ry = Math.abs(segment.ry);
+        const phi = Number.isFinite(segment.rot) ? segment.rot : 0;
+        const end = { x: segment.x, y: segment.y };
+        if (rx < 1e-6 || ry < 1e-6) return [end];
+
+        const cosPhi = Math.cos(phi);
+        const sinPhi = Math.sin(phi);
+        const x1p = cosPhi * (start.x - end.x) / 2 + sinPhi * (start.y - end.y) / 2;
+        const y1p = -sinPhi * (start.x - end.x) / 2 + cosPhi * (start.y - end.y) / 2;
+        let lambda = (x1p * x1p) / (rx * rx) + (y1p * y1p) / (ry * ry);
+        if (lambda > 1) {
+            const scale = Math.sqrt(lambda);
+            rx *= scale;
+            ry *= scale;
+        }
+
+        const denominator = (rx * rx * y1p * y1p) + (ry * ry * x1p * x1p);
+        if (denominator <= 1e-9) return [end];
+
+        let factor = ((rx * ry) * (rx * ry) - (rx * rx * y1p * y1p) - (ry * ry * x1p * x1p)) / denominator;
+        factor = Math.sqrt(Math.max(0, factor));
+        if ((segment.large ? 1 : 0) === (segment.sweep ? 1 : 0)) factor = -factor;
+
+        const cxp = factor * ((rx * y1p) / ry);
+        const cyp = factor * (-(ry * x1p) / rx);
+        const cx = cosPhi * cxp - sinPhi * cyp + ((start.x + end.x) / 2);
+        const cy = sinPhi * cxp + cosPhi * cyp + ((start.y + end.y) / 2);
+        const theta1 = Math.atan2((y1p - cyp) / ry, (x1p - cxp) / rx);
+        let dTheta = Math.atan2((-y1p - cyp) / ry, (-x1p - cxp) / rx) - theta1;
+        if ((segment.sweep ? 1 : 0) === 0 && dTheta > 0) dTheta -= Math.PI * 2;
+        else if ((segment.sweep ? 1 : 0) === 1 && dTheta < 0) dTheta += Math.PI * 2;
+
+        const avgRadius = Math.max(0.1, (rx + ry) * 0.5);
+        const arcLength = Math.abs(dTheta) * avgRadius;
+        const steps = Math.max(
+            6,
+            Math.min(240, Math.ceil(arcLength / 1.2) + Math.ceil(Math.abs(dTheta) / (Math.PI / 3)))
+        );
+
+        const points = [];
+        for (let step = 1; step <= steps; step++) {
+            const t = step / steps;
+            const angle = theta1 + (dTheta * t);
+            points.push({
+                x: cosPhi * rx * Math.cos(angle) - sinPhi * ry * Math.sin(angle) + cx,
+                y: sinPhi * rx * Math.cos(angle) + cosPhi * ry * Math.sin(angle) + cy
+            });
+        }
+        return points;
+    }
+
+    pathHasArcSegments(path) {
+        return !!(Array.isArray(path?.segments) && path.segments.some(segment => segment?.type === 'A'));
+    }
+
     getPathTracePoints(path, { applyCurve = true } = {}) {
         if (!path) return [];
         let points = [];
@@ -2032,8 +2094,9 @@ class CanvasManager {
                     }
                     currentPoint = { x: segment.x, y: segment.y };
                 } else if (segment.type === 'A') {
+                    const start = currentPoint ? { ...currentPoint } : null;
+                    this.sampleSvgArcPoints(start, segment).forEach(addPoint);
                     currentPoint = { x: segment.x, y: segment.y };
-                    addPoint(currentPoint);
                 } else if (segment.type === 'Z' && subpathStart) {
                     addPoint({ ...subpathStart });
                     currentPoint = { ...subpathStart };
@@ -2602,8 +2665,9 @@ class CanvasManager {
                 }
                 currentPoint = { x: segment.x, y: segment.y };
             } else if (segment.type === 'A') {
+                const start = currentPoint ? { ...currentPoint } : null;
+                this.sampleSvgArcPoints(start, segment).forEach(addPoint);
                 currentPoint = { x: segment.x, y: segment.y };
-                addPoint(currentPoint);
             } else if (segment.type === 'Z' && subpathStart) {
                 addPoint({ ...subpathStart });
                 currentPoint = { ...subpathStart };
@@ -6560,13 +6624,12 @@ class CanvasManager {
                 return;
             }
             this.ctx.beginPath();
-            if (Array.isArray(path.segments) && path.segments.length > 0 && Math.abs(path.curve || 0) < 0.001) {
+            if (Array.isArray(path.segments) && path.segments.length > 0 && Math.abs(path.curve || 0) < 0.001 && !this.pathHasArcSegments(path)) {
                 path.segments.forEach(segment => {
                     if (segment.type === 'M') this.ctx.moveTo(segment.x * mmToPx, segment.y * mmToPx);
                     else if (segment.type === 'L') this.ctx.lineTo(segment.x * mmToPx, segment.y * mmToPx);
                     else if (segment.type === 'C') this.ctx.bezierCurveTo(segment.x1 * mmToPx, segment.y1 * mmToPx, segment.x2 * mmToPx, segment.y2 * mmToPx, segment.x * mmToPx, segment.y * mmToPx);
                     else if (segment.type === 'Q') this.ctx.quadraticCurveTo(segment.x1 * mmToPx, segment.y1 * mmToPx, segment.x * mmToPx, segment.y * mmToPx);
-                    else if (segment.type === 'A') this.ctx.lineTo(segment.x * mmToPx, segment.y * mmToPx);
                     else if (segment.type === 'Z') this.ctx.closePath();
                 });
             } else {
@@ -6786,13 +6849,12 @@ class CanvasManager {
                 const tracePoints = this.getPathTracePoints(p);
                 if (!tracePoints.length) return;
                 this.ctx.beginPath();
-                if (Array.isArray(p.segments) && p.segments.length > 0 && Math.abs(p.curve || 0) < 0.001) {
+                if (Array.isArray(p.segments) && p.segments.length > 0 && Math.abs(p.curve || 0) < 0.001 && !this.pathHasArcSegments(p)) {
                     p.segments.forEach(s => {
                         if (s.type === 'M') this.ctx.moveTo(s.x * mmToPx, s.y * mmToPx);
                         else if (s.type === 'L') this.ctx.lineTo(s.x * mmToPx, s.y * mmToPx);
                         else if (s.type === 'C') this.ctx.bezierCurveTo(s.x1 * mmToPx, s.y1 * mmToPx, s.x2 * mmToPx, s.y2 * mmToPx, s.x * mmToPx, s.y * mmToPx);
                         else if (s.type === 'Q') this.ctx.quadraticCurveTo(s.x1 * mmToPx, s.y1 * mmToPx, s.x * mmToPx, s.y * mmToPx);
-                        else if (s.type === 'A') this.ctx.lineTo(s.x * mmToPx, s.y * mmToPx); // Simplified arc rendering
                         else if (s.type === 'Z') this.ctx.closePath();
                     });
                 } else {
@@ -6922,13 +6984,12 @@ class CanvasManager {
                     const tracePoints = this.getPathTracePoints(p);
                     if (!tracePoints.length) return;
                     this.ctx.beginPath();
-                    if (Array.isArray(p.segments) && p.segments.length > 0 && Math.abs(p.curve || 0) < 0.001) {
+                    if (Array.isArray(p.segments) && p.segments.length > 0 && Math.abs(p.curve || 0) < 0.001 && !this.pathHasArcSegments(p)) {
                         p.segments.forEach(s => {
                             if (s.type === 'M') this.ctx.moveTo(s.x * mmToPx, s.y * mmToPx);
                             else if (s.type === 'L') this.ctx.lineTo(s.x * mmToPx, s.y * mmToPx);
                             else if (s.type === 'C') this.ctx.bezierCurveTo(s.x1 * mmToPx, s.y1 * mmToPx, s.x2 * mmToPx, s.y2 * mmToPx, s.x * mmToPx, s.y * mmToPx);
                             else if (s.type === 'Q') this.ctx.quadraticCurveTo(s.x1 * mmToPx, s.y1 * mmToPx, s.x * mmToPx, s.y * mmToPx);
-                            else if (s.type === 'A') this.ctx.lineTo(s.x * mmToPx, s.y * mmToPx);
                             else if (s.type === 'Z') this.ctx.closePath();
                         });
                     } else {

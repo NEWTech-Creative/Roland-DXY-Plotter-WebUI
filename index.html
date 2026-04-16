@@ -1396,7 +1396,7 @@
                 <input type="range" id="input-text-letter-spacing" min="-8" max="20" step="0.2" value="0">
                 <input type="number" id="field-text-letter-spacing" class="text-tool-value-input" min="-8" max="20" step="0.2" value="0">
             </div>
-            <div class="form-group-inline text-tool-creative-row">
+            <div class="form-group-inline">
                 <label>Arch</label>
                 <input type="range" id="input-text-curve" min="-30" max="30" step="0.5" value="0">
                 <input type="number" id="field-text-curve" class="text-tool-value-input" min="-30" max="30" step="0.5" value="0">
@@ -1651,7 +1651,23 @@
 
     </script>
     <script src="vendor/gridstack-all.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/paper@0.12.18/dist/paper-full.min.js"></script>
+    <script>
+        (function loadLocalPaperJs() {
+            // Intentionally avoid CDN access (e.g. tracking prevention on hosted pages).
+            // If a local copy exists at ./vendor/paper-full.min.js it will be loaded.
+            fetch('./vendor/paper-full.min.js', { method: 'GET', cache: 'no-store' })
+                .then((response) => {
+                    if (!response.ok) return;
+                    const script = document.createElement('script');
+                    script.src = './vendor/paper-full.min.js';
+                    script.async = false;
+                    document.head.appendChild(script);
+                })
+                .catch(() => {
+                    // Optional dependency; continue without it.
+                });
+        })();
+    </script>
     <script src="./js/clip.js"></script>
     <script src="./js/make.js"></script>
     <script src="js/ui.js"></script>
