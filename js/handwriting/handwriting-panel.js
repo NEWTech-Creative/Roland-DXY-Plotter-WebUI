@@ -163,10 +163,14 @@ class HandwritingPanel {
             const groupId = 'hw_' + Date.now() + '_' + Math.floor(Math.random() * 1000);
             const curveAmount = this.app?.ui?.textToolSettings?.curve || 0;
 
-            vectorObj.children.forEach(child => {
+            vectorObj.children.forEach((child, strokeIdx) => {
                 child.pen = penIdx;
                 child.groupId = groupId; // Auto-group the strokes
                 child.curve = curveAmount;
+                // Preserve deterministic plot order for handwriting export.
+                child.source = 'handwriting';
+                child.plotOrder = strokeIdx;
+                child.plotOrdering = 'handwriting-sequential';
                 if (child.points) {
                     child.points.forEach(p => {
                         p.x += shiftX;

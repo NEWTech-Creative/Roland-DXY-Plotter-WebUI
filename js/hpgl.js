@@ -700,8 +700,16 @@ class HpglParser {
 
     isPathReversibleForPlot(path, tracePoints = null) {
         if (!path || !['line', 'polyline', 'path'].includes(path.type)) return false;
+        if (this.isHandwritingPlotPath(path)) return false;
         if (this.isClosedPath(path)) return false;
         return Array.isArray(tracePoints) && tracePoints.length >= 2;
+    }
+
+    isHandwritingPlotPath(path) {
+        if (!path) return false;
+        if (path.source === 'handwriting') return true;
+        if (path.plotOrdering === 'handwriting-sequential') return true;
+        return false;
     }
 
     orientPlotItemFromPoint(item, currentPoint = null) {
@@ -749,6 +757,36 @@ class HpglParser {
     }
 
     optimizePlotUnitItems(items = [], currentPoint = null) {
+        const allHandwriting = items.length > 0 && items.every(item => this.isHandwritingPlotPath(item?.path));
+        if (allHandwriting) {
+            const inOrder = items
+                .slice()
+                .sort((left, right) => {
+                    const a = Number.isFinite(left?.path?.plotOrder) ? left.path.plotOrder : left?.sequence ?? 0;
+                    const b = Number.isFinite(right?.path?.plotOrder) ? right.path.plotOrder : right?.sequence ?? 0;
+                    return a - b;
+                })
+                .map(item => {
+                    const tracePoints = Array.isArray(item.tracePoints) ? item.tracePoints : [];
+                    const startPoint = tracePoints[0] || this.getPathRepresentativePoint(item.path, tracePoints);
+                    const endPoint = tracePoints.length > 0
+                        ? tracePoints[tracePoints.length - 1]
+                        : this.getPathRepresentativePoint(item.path, tracePoints);
+                    return {
+                        path: item.path,
+                        plotPoints: tracePoints.length ? tracePoints : null,
+                        startPoint,
+                        endPoint
+                    };
+                });
+
+            return {
+                items: inOrder,
+                entryPoint: inOrder[0]?.startPoint || currentPoint || { x: 0, y: 0 },
+                exitPoint: inOrder[inOrder.length - 1]?.endPoint || currentPoint || { x: 0, y: 0 }
+            };
+        }
+
         const remaining = items.slice();
         const ordered = [];
         let cursor = currentPoint;
@@ -805,7 +843,8 @@ class HpglParser {
                 unitMap.get(groupKey).push({
                     path,
                     tracePoints,
-                    reversible
+                    reversible,
+                    sequence: index
                 });
             });
 
