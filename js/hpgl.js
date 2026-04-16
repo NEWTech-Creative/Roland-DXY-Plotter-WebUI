@@ -521,6 +521,9 @@ class HpglParser {
         }
 
         const preserveClosed = this.isClosedPath(path);
+        if (path.preserveDetail === true || path.source === 'svg-import') {
+            return tracePoints;
+        }
         return this._simplifyImportedPoints(tracePoints, preserveClosed);
     }
 
@@ -1283,7 +1286,9 @@ class HpglParser {
                 closed: poly.closed === true || this.isClosedPointLoop(scaledPoly),
                 pen: assignedPen,
                 groupId,
-                sourceColor: poly.sourceColor || null
+                sourceColor: poly.sourceColor || null,
+                source: 'svg-import',
+                preserveDetail: true
             });
             pointsCount += scaledPoly.length;
 
@@ -1779,18 +1784,17 @@ class HpglParser {
     _getImportResolutionValue() {
         const raw = this.app?.settings?.importResolution;
         const value = Number.isFinite(raw) ? raw : parseInt(raw, 10);
-        return Math.max(1, Math.min(100, Number.isFinite(value) ? value : 85));
+        return Math.max(1, Math.min(100, Number.isFinite(value) ? value : 100));
     }
 
     _getImportResolutionEffectiveValue() {
-        const raw = this._getImportResolutionValue();
-        if (raw <= 75) return raw;
-        return 75 + ((raw - 75) * (58 / 25));
+        return this._getImportResolutionValue();
     }
 
     _getImportMinSegmentLength() {
         const res = this._getImportResolutionEffectiveValue();
-        return Math.max(0.015, 0.04 + (((133 - res) / 132) * 1.2));
+        // Keep import detail by default; only cull tiny near-duplicates.
+        return Math.max(0.006, 0.18 - ((res - 1) * 0.00175));
     }
 
     _simplifyImportedPoints(points, preserveClosed = false) {
@@ -1855,7 +1859,8 @@ class HpglParser {
         };
 
         const resolution = this._getImportResolutionEffectiveValue();
-        const rdpTolerance = Math.max(0.03, 4.6 - ((resolution - 1) * 0.0355));
+        // Previous tolerance was too aggressive for common SVGs and could over-flatten curves.
+        const rdpTolerance = Math.max(0.01, 0.55 - ((resolution - 1) * 0.005));
         const rdpToleranceSquared = rdpTolerance * rdpTolerance;
         const reduced = rdp(sourcePoints, rdpToleranceSquared);
 
