@@ -1651,23 +1651,7 @@
 
     </script>
     <script src="vendor/gridstack-all.js"></script>
-    <script>
-        (function loadLocalPaperJs() {
-            // Intentionally avoid CDN access (e.g. tracking prevention on hosted pages).
-            // If a local copy exists at ./vendor/paper-full.min.js it will be loaded.
-            fetch('./vendor/paper-full.min.js', { method: 'GET', cache: 'no-store' })
-                .then((response) => {
-                    if (!response.ok) return;
-                    const script = document.createElement('script');
-                    script.src = './vendor/paper-full.min.js';
-                    script.async = false;
-                    document.head.appendChild(script);
-                })
-                .catch(() => {
-                    // Optional dependency; continue without it.
-                });
-        })();
-    </script>
+    <!-- Paper.js intentionally not auto-loaded from CDN or local path to avoid tracking/404 noise. -->
     <script src="./js/clip.js"></script>
     <script src="./js/make.js"></script>
     <script src="js/ui.js"></script>

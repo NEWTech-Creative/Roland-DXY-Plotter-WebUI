@@ -521,9 +521,6 @@ class HpglParser {
         }
 
         const preserveClosed = this.isClosedPath(path);
-        if (path.preserveDetail === true || path.source === 'svg-import') {
-            return tracePoints;
-        }
         return this._simplifyImportedPoints(tracePoints, preserveClosed);
     }
 
