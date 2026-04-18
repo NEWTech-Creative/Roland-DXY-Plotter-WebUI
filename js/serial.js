@@ -891,6 +891,16 @@ class SerialManager {
         return Math.max(2, Math.ceil(msPerByte * Math.max(1, chunkLength) * 0.75));
     }
 
+    getInterCommandDelayMs(command = '') {
+        if (this.isHardwareHandshakeEnabled() && this.hardwareFlowSupported) {
+            return 0;
+        }
+
+        const baseDelay = this.commandDelay || 50;
+        const fallbackDelay = this.getInterChunkDelayMs(String(command || '').length || 1);
+        return Math.max(baseDelay, fallbackDelay);
+    }
+
     async _writePartWithFlowControl(part, encoder) {
         const bytes = encoder.encode(part);
         const chunkSize = this.getTransmitChunkSize();
@@ -1127,7 +1137,6 @@ class SerialManager {
     async runStream() {
         if (!this.isConnected || this.queue.length === 0) return;
         if (this.isStreaming) return this.runPromise;
-        const initialQueueLength = this.queue.length;
 
             this.runPromise = (async () => {
                 this.isStreaming = true;
@@ -1152,14 +1161,11 @@ class SerialManager {
                     this.incrementLinesStat();
                     this.updateStats();
 
-                    // Retain a small pacing delay as a fallback for adapters that expose CTS unreliably.
-                    const baseDelay = this.commandDelay || 50;
-                    const safeDelay = this.hardwareFlowSupported
-                        ? baseDelay
-                        : initialQueueLength > 1000 ? Math.max(baseDelay, 180)
-                            : initialQueueLength > 300 ? Math.max(baseDelay, 120)
-                                : baseDelay;
-                    await new Promise(r => setTimeout(r, safeDelay));
+                    // Only pace writes when flow control is unavailable.
+                    const interCommandDelayMs = this.getInterCommandDelayMs(cmd);
+                    if (interCommandDelayMs > 0) {
+                        await new Promise(r => setTimeout(r, interCommandDelayMs));
+                    }
                 }
 
                 this.isStreaming = false;
