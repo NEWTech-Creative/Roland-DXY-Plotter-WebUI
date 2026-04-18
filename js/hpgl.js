@@ -353,6 +353,7 @@ class HpglParser {
         let currentPoint = null;
         let subpathStart = null;
         const importResolution = this._getImportResolutionEffectiveValue();
+        const normalizedResolution = (importResolution - 1) / 199;
         const getCurveSteps = (curveType, startPoint, segment) => {
             const endPoint = segment && Number.isFinite(segment.x) && Number.isFinite(segment.y)
                 ? { x: segment.x, y: segment.y }
@@ -367,12 +368,12 @@ class HpglParser {
                 : Math.hypot((segment.x1 || 0) - (startPoint?.x || 0), (segment.y1 || 0) - (startPoint?.y || 0))
                     + Math.hypot((endPoint.x || 0) - (segment.x1 || 0), (endPoint.y || 0) - (segment.y1 || 0));
             const estimatedLength = Math.max(directDistance, handleDistance, 1);
-            const targetStep = Math.max(0.18, 18 - ((importResolution - 1) * 0.135));
-            const baseSteps = curveType === 'C' ? 2 : 1;
+            const targetStep = Math.max(0.1, 1.6 - (normalizedResolution * 1.45));
+            const baseSteps = curveType === 'C' ? 4 : 3;
             const lengthSteps = Math.ceil(estimatedLength / targetStep);
             return Math.max(
-                curveType === 'C' ? 3 : 2,
-                Math.min(160, baseSteps + lengthSteps)
+                curveType === 'C' ? 6 : 4,
+                Math.min(480, baseSteps + lengthSteps)
             );
         };
 
@@ -439,10 +440,10 @@ class HpglParser {
 
             const avgRadius = Math.max(0.1, (rx + ry) * 0.5);
             const arcLength = Math.abs(dTheta) * avgRadius;
-            const targetStep = Math.max(0.24, 18 - ((importResolution - 1) * 0.135));
+            const targetStep = Math.max(0.1, 1.8 - (normalizedResolution * 1.65));
             const steps = Math.max(
-                4,
-                Math.min(160, Math.ceil(arcLength / targetStep) + Math.ceil(Math.abs(dTheta) / (Math.PI / 2.5)))
+                6,
+                Math.min(480, Math.ceil(arcLength / targetStep) + Math.ceil(Math.abs(dTheta) / (Math.PI / 3)))
             );
 
             pushPoint(start);
@@ -1781,7 +1782,7 @@ class HpglParser {
     _getImportResolutionValue() {
         const raw = this.app?.settings?.importResolution;
         const value = Number.isFinite(raw) ? raw : parseInt(raw, 10);
-        return Math.max(1, Math.min(100, Number.isFinite(value) ? value : 100));
+        return Math.max(1, Math.min(200, Number.isFinite(value) ? value : 130));
     }
 
     _getImportResolutionEffectiveValue() {
@@ -1856,8 +1857,9 @@ class HpglParser {
         };
 
         const resolution = this._getImportResolutionEffectiveValue();
+        const normalizedResolution = (resolution - 1) / 199;
         // Previous tolerance was too aggressive for common SVGs and could over-flatten curves.
-        const rdpTolerance = Math.max(0.01, 0.55 - ((resolution - 1) * 0.005));
+        const rdpTolerance = Math.max(0.0025, 0.08 - (normalizedResolution * 0.072));
         const rdpToleranceSquared = rdpTolerance * rdpTolerance;
         const reduced = rdp(sourcePoints, rdpToleranceSquared);
 
@@ -2131,7 +2133,8 @@ class HpglParser {
         const isClosed = Number.isFinite(props[70]?.[0]) && ((props[70][0] & 1) === 1);
         const resolution = this._getImportResolutionEffectiveValue();
         const estimatedLength = this._estimatePolylineLength(controlPoints);
-        const targetStep = Math.max(0.01, 1.1 - ((resolution - 1) * 0.0083));
+        const normalizedResolution = (resolution - 1) / 199;
+        const targetStep = Math.max(0.06, 1.1 - (normalizedResolution * 0.98));
         const sampleCount = Math.max(
             64,
             Math.min(
@@ -2201,7 +2204,8 @@ class HpglParser {
         const isClosed = !!definition.isClosed;
         const resolution = this._getImportResolutionEffectiveValue();
         const estimatedLength = this._estimatePolylineLength(controlPoints);
-        const targetStep = Math.max(0.01, 1.1 - ((resolution - 1) * 0.0083));
+        const normalizedResolution = (resolution - 1) / 199;
+        const targetStep = Math.max(0.06, 1.1 - (normalizedResolution * 0.98));
         const sampleCount = Math.max(
             64,
             Math.min(

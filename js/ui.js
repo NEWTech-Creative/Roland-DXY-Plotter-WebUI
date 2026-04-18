@@ -306,7 +306,7 @@ class UIController {
         const valueLabel = document.getElementById('val-import-resolution');
         const buttonLabel = document.getElementById('import-resolution-label');
         const triggerButton = document.getElementById('btn-import-resolution');
-        const resolution = this.app?.settings?.importResolution || 100;
+        const resolution = this.app?.settings?.importResolution || 130;
         const disabled = this.app?.settings?.useInternalCurveEngine === true;
 
         if (input) {
@@ -379,7 +379,7 @@ class UIController {
         if (closeButton) closeButton.onclick = () => menu.classList.add('hidden');
 
         input.oninput = (e) => {
-            const value = parseInt(e.target.value, 10) || 100;
+            const value = parseInt(e.target.value, 10) || 130;
             if (valueLabel) valueLabel.textContent = String(value);
             this.app.settings.importResolution = value;
             this.app.saveSettings();

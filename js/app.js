@@ -22,7 +22,7 @@ class App {
             showPredictedCrosshair: true,
             showStartupMessage: true,
             useInternalCurveEngine: false,
-            importResolution: 100,
+            importResolution: 130,
             simBackgroundOpacity: 0.25,
             paperSize: 'A3',
             customPaperSizes: [],
