@@ -38,6 +38,8 @@ class SerialManager {
         this.blockTimingAverageDistance = 12;
         this.blockTimingPauseStartedAt = 0;
         this.streamBlocksQueued = 0;
+        this.streamingPerfModeActive = false;
+        this.streamPreviewEnabled = true;
 
         this.indicatorEls = Array.from(document.querySelectorAll('[data-stream-indicator]'));
         this.linesStatEls = Array.from(document.querySelectorAll('[data-stat="lines"]'));
@@ -394,9 +396,32 @@ class SerialManager {
             y: Math.max(0, Math.min(bedHeight, yMM))
         };
         this.updatePredictedPositionReadout();
-        if (this.app?.canvas) {
+        if (!this.streamingPerfModeActive && this.app?.canvas) {
             this.app.canvas.draw();
         }
+    }
+
+    isStreamPerformanceModeEnabled() {
+        return this.app?.settings?.streamPerformanceMode !== false;
+    }
+
+    enterStreamPerformanceMode() {
+        if (!this.isStreamPerformanceModeEnabled() || this.streamingPerfModeActive) return;
+        this.streamingPerfModeActive = true;
+        this.streamPreviewEnabled = false;
+        this.clearPreviewMotion(false);
+        this.resetStreamPrediction(false);
+        this.app?.canvas?.suspendBackgroundProcessors?.('stream');
+        this.app?.ui?.logToConsole('System: Performance mode enabled for streaming.', 'info');
+    }
+
+    exitStreamPerformanceMode() {
+        if (!this.streamingPerfModeActive) return;
+        this.streamingPerfModeActive = false;
+        this.streamPreviewEnabled = true;
+        this.app?.canvas?.resumeBackgroundProcessors?.('stream');
+        this.app?.canvas?.draw?.();
+        this.app?.ui?.logToConsole('System: Performance mode restored after streaming.', 'info');
     }
 
     updatePredictedPositionReadout() {
@@ -595,6 +620,7 @@ class SerialManager {
     }
 
     queuePredictedMotionBlock(command, options = {}) {
+        if (!this.streamPreviewEnabled) return;
         const parts = this._splitCommands(command)
             .flatMap(rawCommand => this._expandCurveCommand(rawCommand));
         if (parts.length === 0) return;
@@ -766,6 +792,7 @@ class SerialManager {
     }
 
     queuePreviewMotionFromCommand(command) {
+        if (!this.streamPreviewEnabled) return;
         const trimmed = (command || '').trim();
         if (!trimmed) return;
 
@@ -1139,44 +1166,49 @@ class SerialManager {
         if (this.isStreaming) return this.runPromise;
 
             this.runPromise = (async () => {
-                this.isStreaming = true;
-                this.isHold = false;
-                this.abortRequested = false;
-                this.hardwareFlowPaused = false;
-                this.resetStreamPrediction(false);
-                this.setTrafficLight('green');
-                let streamedBlockIndex = 0;
-
-                while (this.queue.length > 0 && this.isStreaming && !this.isHold) {
-                    const ready = await this.waitForTransmitReady();
-                    if (!ready || !this.isStreaming || this.isHold) break;
+                this.enterStreamPerformanceMode();
+                try {
+                    this.isStreaming = true;
+                    this.isHold = false;
+                    this.abortRequested = false;
+                    this.hardwareFlowPaused = false;
+                    this.resetStreamPrediction(false);
                     this.setTrafficLight('green');
+                    let streamedBlockIndex = 0;
 
-                    const cmd = this.queue.shift();
-                    const wasSent = await this.sendManualCommand(cmd, { preview: false });
-                    if (!wasSent) break;
-                    this.queuePredictedMotionBlock(cmd, { isFirstBlock: streamedBlockIndex === 0 });
-                    streamedBlockIndex++;
+                    while (this.queue.length > 0 && this.isStreaming && !this.isHold) {
+                        const ready = await this.waitForTransmitReady();
+                        if (!ready || !this.isStreaming || this.isHold) break;
+                        this.setTrafficLight('green');
 
-                    this.incrementLinesStat();
-                    this.updateStats();
+                        const cmd = this.queue.shift();
+                        const wasSent = await this.sendManualCommand(cmd, { preview: false });
+                        if (!wasSent) break;
+                        this.queuePredictedMotionBlock(cmd, { isFirstBlock: streamedBlockIndex === 0 });
+                        streamedBlockIndex++;
 
-                    // Only pace writes when flow control is unavailable.
-                    const interCommandDelayMs = this.getInterCommandDelayMs(cmd);
-                    if (interCommandDelayMs > 0) {
-                        await new Promise(r => setTimeout(r, interCommandDelayMs));
+                        this.incrementLinesStat();
+                        this.updateStats();
+
+                        // Only pace writes when flow control is unavailable.
+                        const interCommandDelayMs = this.getInterCommandDelayMs(cmd);
+                        if (interCommandDelayMs > 0) {
+                            await new Promise(r => setTimeout(r, interCommandDelayMs));
+                        }
                     }
-                }
 
-                this.isStreaming = false;
-                if (this.isHold || this.hardwareFlowPaused || this.softwareFlowPaused) {
-                    this.setTrafficLight('orange');
-                    return;
-                }
+                    this.isStreaming = false;
+                    if (this.isHold || this.hardwareFlowPaused || this.softwareFlowPaused) {
+                        this.setTrafficLight('orange');
+                        return;
+                    }
 
-                if (this.queue.length === 0) {
-                    this.app.ui.logToConsole('System: Plotting complete.');
-                    this.setTrafficLight('green');
+                    if (this.queue.length === 0) {
+                        this.app.ui.logToConsole('System: Plotting complete.');
+                        this.setTrafficLight('green');
+                    }
+                } finally {
+                    this.exitStreamPerformanceMode();
                 }
             })();
 

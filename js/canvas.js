@@ -106,8 +106,51 @@ class CanvasManager {
         this.lastSavedCanvasJson = '';
         this.persistenceEventsBound = false;
         this.textEditOriginalSnapshot = null;
-        this.cursorTimer = setInterval(() => { this.cursorBlink = !this.cursorBlink; if (this.editingPathIdx !== -1) this.draw(); }, 500);
-        this.autoSaveTimer = setInterval(() => this.saveCurrentStateIfChanged(), 5000);
+        this.cursorTimer = null;
+        this.autoSaveTimer = null;
+        this.backgroundProcessorsSuspended = false;
+        this.startBackgroundProcessors();
+    }
+
+    startBackgroundProcessors() {
+        if (!this.cursorTimer) {
+            this.cursorTimer = setInterval(() => {
+                this.cursorBlink = !this.cursorBlink;
+                if (this.editingPathIdx !== -1) this.draw();
+            }, 500);
+        }
+        if (!this.autoSaveTimer) {
+            this.autoSaveTimer = setInterval(() => this.saveCurrentStateIfChanged(), 5000);
+        }
+    }
+
+    stopBackgroundProcessors() {
+        if (this.cursorTimer) {
+            clearInterval(this.cursorTimer);
+            this.cursorTimer = null;
+        }
+        if (this.autoSaveTimer) {
+            clearInterval(this.autoSaveTimer);
+            this.autoSaveTimer = null;
+        }
+    }
+
+    suspendBackgroundProcessors(reason = '') {
+        if (this.backgroundProcessorsSuspended) return;
+        this.backgroundProcessorsSuspended = true;
+        this.stopBackgroundProcessors();
+        if (reason === 'stream') {
+            this.app?.ui?.logToConsole('System: Canvas background processors suspended during stream.', 'info');
+        }
+    }
+
+    resumeBackgroundProcessors(reason = '') {
+        if (!this.backgroundProcessorsSuspended) return;
+        this.backgroundProcessorsSuspended = false;
+        this.startBackgroundProcessors();
+        if (reason === 'stream') {
+            this.app?.ui?.logToConsole('System: Canvas background processors resumed after stream.', 'info');
+        }
     }
 
     invalidateFillRegionCache() {

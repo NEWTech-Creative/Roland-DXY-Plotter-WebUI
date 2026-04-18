@@ -12,6 +12,7 @@ class App {
             theme: 'dark-theme',
             handshake: 'normal',
             speed: 'fast',
+            streamPerformanceMode: true,
             bedWidth: 432,
             bedHeight: 297,
             marginX: 15,
