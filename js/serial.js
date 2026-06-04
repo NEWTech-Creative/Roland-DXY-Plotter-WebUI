@@ -930,38 +930,23 @@ class SerialManager {
 
     async _writePartWithFlowControl(part, encoder) {
         const bytes = encoder.encode(part);
-        const chunkSize = this.getTransmitChunkSize();
+        while (this.isConnected && !this.isHold) {
+            const ready = await this.waitForTransmitReady();
+            if (!ready) return false;
 
-        for (let offset = 0; offset < bytes.length;) {
-            while (this.isConnected && !this.isHold) {
-                const ready = await this.waitForTransmitReady();
-                if (!ready) return false;
-
-                // Re-check software flow immediately at the write boundary so every
-                // sub-chunk pauses if an XOFF was processed while awaiting readiness.
-                if (this.softwareFlowPaused) {
-                    this.setTrafficLight('orange');
-                    await this.waitForSoftwareFlowResume();
-                    continue;
-                }
-
-                const end = Math.min(bytes.length, offset + chunkSize);
-                const chunk = bytes.slice(offset, end);
-                await this.writer.write(chunk);
-                offset = end;
-
-                if (offset < bytes.length) {
-                    await new Promise(resolve => setTimeout(resolve, this.getInterChunkDelayMs(chunk.length)));
-                }
-                break;
+            // HPGL commands must stay intact. If XOFF arrives halfway through a
+            // coordinate, the browser cannot know which bytes the plotter kept.
+            if (this.softwareFlowPaused) {
+                this.setTrafficLight('orange');
+                await this.waitForSoftwareFlowResume();
+                continue;
             }
 
-            if (!this.isConnected || this.isHold) {
-                return false;
-            }
+            await this.writer.write(bytes);
+            return true;
         }
 
-        return true;
+        return false;
     }
 
     _updateEstimatedPositionFromCommand(command) {
