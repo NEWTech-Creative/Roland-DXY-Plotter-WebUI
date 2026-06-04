@@ -106,6 +106,15 @@ class CanvasManager {
         this.lastSavedCanvasJson = '';
         this.persistenceEventsBound = false;
         this.textEditOriginalSnapshot = null;
+        this.persistenceDisabled = false;
+        this.persistenceDisableReason = '';
+        this.maxPersistentSnapshotBytes = 3_500_000;
+        this.indexedDbName = 'dxyCanvasBackupDB';
+        this.indexedDbStoreName = 'snapshots';
+        this.indexedDbKey = 'latest';
+        this.indexedDbEnabled = typeof indexedDB !== 'undefined';
+        this.indexedDbOpenPromise = null;
+        this.lastIndexedDbSnapshotJson = '';
         this.cursorTimer = null;
         this.autoSaveTimer = null;
         this.backgroundProcessorsSuspended = false;
@@ -577,18 +586,211 @@ class CanvasManager {
         }
     }
 
+    createPersistentPathSnapshot(path) {
+        if (!path || typeof path !== 'object') return path;
+        const snapshot = { ...path };
+
+        // Dot-heavy artwork can be massive; keep canonical x/y only in persisted snapshots.
+        if (snapshot.type === 'dot') {
+            const firstPoint = Array.isArray(snapshot.points) && snapshot.points.length
+                ? snapshot.points[0]
+                : null;
+            if (!Number.isFinite(snapshot.x) && firstPoint && Number.isFinite(firstPoint.x)) snapshot.x = firstPoint.x;
+            if (!Number.isFinite(snapshot.y) && firstPoint && Number.isFinite(firstPoint.y)) snapshot.y = firstPoint.y;
+            delete snapshot.points;
+            return snapshot;
+        }
+
+        // Segment-based paths can rebuild points from segments on load.
+        if (snapshot.type === 'path' && Array.isArray(snapshot.segments) && snapshot.segments.length > 0) {
+            delete snapshot.points;
+        }
+
+        return snapshot;
+    }
+
     serializePathsSnapshot() {
-        return JSON.stringify(this.paths, (key, value) => {
+        const compactPaths = Array.isArray(this.paths)
+            ? this.paths.map(path => this.createPersistentPathSnapshot(path))
+            : [];
+        return JSON.stringify(compactPaths, (key, value) => {
             if (typeof key === 'string' && key.startsWith('_')) return undefined;
             return value;
         });
     }
 
+    isQuotaError(error) {
+        if (!error) return false;
+        const name = String(error.name || '');
+        const message = String(error.message || '');
+        return name === 'QuotaExceededError'
+            || name === 'NS_ERROR_DOM_QUOTA_REACHED'
+            || /quota/i.test(message);
+    }
+
+    disablePersistence(reason = 'snapshot too large') {
+        if (this.persistenceDisabled) return;
+        this.persistenceDisabled = true;
+        this.persistenceDisableReason = reason;
+        this.lastSavedCanvasJson = '';
+        this.app?.ui?.logToConsole(
+            `System Warning: Canvas autosave disabled (${reason}). Current import remains in memory for this session.`,
+            'warning'
+        );
+    }
+
+    tryPersistSessionSnapshot(serialized, reason = 'local storage unavailable') {
+        if (!serialized) return false;
+        try {
+            sessionStorage.setItem('canvasBackupSession', serialized);
+            this.lastSavedCanvasJson = serialized;
+            if (!this.persistenceDisabled) {
+                this.persistenceDisabled = true;
+                this.persistenceDisableReason = reason;
+                this.app?.ui?.logToConsole(
+                    `System Warning: Canvas autosave switched to session storage (${reason}).`,
+                    'warning'
+                );
+            }
+            return true;
+        } catch (e) {
+            this.disablePersistence(reason);
+            return false;
+        }
+    }
+
+    openIndexedDb() {
+        if (!this.indexedDbEnabled) return Promise.resolve(null);
+        if (this.indexedDbOpenPromise) return this.indexedDbOpenPromise;
+
+        this.indexedDbOpenPromise = new Promise((resolve) => {
+            try {
+                const request = indexedDB.open(this.indexedDbName, 1);
+                request.onupgradeneeded = (event) => {
+                    const db = event?.target?.result;
+                    if (!db) return;
+                    if (!db.objectStoreNames.contains(this.indexedDbStoreName)) {
+                        db.createObjectStore(this.indexedDbStoreName, { keyPath: 'id' });
+                    }
+                };
+                request.onsuccess = (event) => resolve(event?.target?.result || null);
+                request.onerror = () => {
+                    this.indexedDbEnabled = false;
+                    resolve(null);
+                };
+            } catch (error) {
+                this.indexedDbEnabled = false;
+                resolve(null);
+            }
+        });
+
+        return this.indexedDbOpenPromise;
+    }
+
+    queuePersistIndexedDbSnapshot(serialized) {
+        if (!serialized || !this.indexedDbEnabled) return;
+        if (serialized === this.lastIndexedDbSnapshotJson) return;
+        // Persist immediately so refresh right after generation still has a durable backup.
+        void this.persistIndexedDbSnapshot(serialized);
+    }
+
+    async persistIndexedDbSnapshot(serialized) {
+        if (!serialized || !this.indexedDbEnabled) return false;
+        if (serialized === this.lastIndexedDbSnapshotJson) return true;
+        try {
+            const db = await this.openIndexedDb();
+            if (!db) return false;
+            await new Promise((resolve, reject) => {
+                const tx = db.transaction(this.indexedDbStoreName, 'readwrite');
+                const store = tx.objectStore(this.indexedDbStoreName);
+                store.put({ id: this.indexedDbKey, data: serialized, updatedAt: Date.now() });
+                tx.oncomplete = () => resolve(true);
+                tx.onerror = () => reject(tx.error || new Error('IndexedDB write failed'));
+                tx.onabort = () => reject(tx.error || new Error('IndexedDB write aborted'));
+            });
+            this.lastIndexedDbSnapshotJson = serialized;
+            return true;
+        } catch (error) {
+            return false;
+        }
+    }
+
+    async loadIndexedDbSnapshot() {
+        if (!this.indexedDbEnabled) return null;
+        try {
+            const db = await this.openIndexedDb();
+            if (!db) return null;
+            return await new Promise((resolve) => {
+                const tx = db.transaction(this.indexedDbStoreName, 'readonly');
+                const store = tx.objectStore(this.indexedDbStoreName);
+                const request = store.get(this.indexedDbKey);
+                request.onsuccess = () => resolve(request.result?.data || null);
+                request.onerror = () => resolve(null);
+            });
+        } catch (error) {
+            return null;
+        }
+    }
+
+    applyLoadedSnapshot(saved, sourceLabel = 'backup') {
+        if (!saved) return false;
+        this.paths = JSON.parse(saved);
+        this.normalizeLoadedPaths();
+        this.lastSavedCanvasJson = saved;
+        this.lastIndexedDbSnapshotJson = saved;
+        this.invalidateFillRegionCache();
+        this.draw();
+        this.initializeHistoryFromCurrentState();
+        if (this.app && this.app.ui) {
+            this.app.ui.logToConsole(`System: Previous canvas drawing restored from ${sourceLabel}.`);
+        }
+        return true;
+    }
+
+    tryPersistSnapshot(serialized) {
+        if (!serialized) return false;
+        if (serialized.length > this.maxPersistentSnapshotBytes) {
+            const persisted = this.tryPersistSessionSnapshot(
+                serialized,
+                `snapshot ${Math.round(serialized.length / 1024)} KB exceeds local storage budget`
+            );
+            this.queuePersistIndexedDbSnapshot(serialized);
+            return persisted;
+        }
+        try {
+            localStorage.setItem('canvasBackup', serialized);
+            try {
+                sessionStorage.removeItem('canvasBackupSession');
+            } catch (e) {
+                // Ignore session cleanup failures.
+            }
+            if (this.persistenceDisabled) {
+                this.persistenceDisabled = false;
+                this.persistenceDisableReason = '';
+            }
+            this.lastSavedCanvasJson = serialized;
+            this.queuePersistIndexedDbSnapshot(serialized);
+            return true;
+        } catch (e) {
+            if (this.isQuotaError(e)) {
+                const persisted = this.tryPersistSessionSnapshot(serialized, 'browser storage quota exceeded');
+                this.queuePersistIndexedDbSnapshot(serialized);
+                return persisted;
+            }
+            const persisted = this.tryPersistSessionSnapshot(serialized, 'local storage write failed');
+            this.queuePersistIndexedDbSnapshot(serialized);
+            return persisted;
+        }
+    }
+
     saveCurrentState() {
         try {
+            if (this.persistenceDisabled && this.paths.length === 0) {
+                this.persistenceDisabled = false;
+                this.persistenceDisableReason = '';
+            }
             const serialized = this.serializePathsSnapshot();
-            localStorage.setItem('canvasBackup', serialized);
-            this.lastSavedCanvasJson = serialized;
+            this.tryPersistSnapshot(serialized);
         } catch (e) {
             // Persist fail
         }
@@ -596,10 +798,13 @@ class CanvasManager {
 
     saveCurrentStateIfChanged() {
         try {
+            if (this.persistenceDisabled && this.paths.length === 0) {
+                this.persistenceDisabled = false;
+                this.persistenceDisableReason = '';
+            }
             const serialized = this.serializePathsSnapshot();
             if (serialized === this.lastSavedCanvasJson) return;
-            localStorage.setItem('canvasBackup', serialized);
-            this.lastSavedCanvasJson = serialized;
+            this.tryPersistSnapshot(serialized);
         } catch (e) {
             // Persist fail
         }
@@ -607,23 +812,33 @@ class CanvasManager {
 
     loadSavedState() {
         try {
-            const saved = localStorage.getItem('canvasBackup');
+            const saved = localStorage.getItem('canvasBackup') || sessionStorage.getItem('canvasBackupSession');
             if (saved) {
-                this.paths = JSON.parse(saved);
-                this.normalizeLoadedPaths();
-                this.lastSavedCanvasJson = saved;
-                this.invalidateFillRegionCache();
-                this.draw();
-                this.initializeHistoryFromCurrentState();
-                if (this.app && this.app.ui) {
-                    this.app.ui.logToConsole('System: Previous canvas drawing restored.');
-                }
+                this.applyLoadedSnapshot(saved, 'browser storage');
             } else {
                 this.initializeHistoryFromCurrentState();
+                this.loadIndexedDbSnapshot().then((indexedSaved) => {
+                    if (!indexedSaved) return;
+                    if (Array.isArray(this.paths) && this.paths.length > 0) return;
+                    try {
+                        this.applyLoadedSnapshot(indexedSaved, 'IndexedDB');
+                    } catch (error) {
+                        // Ignore IndexedDB restore failures.
+                    }
+                });
             }
         } catch (e) {
             // Load fail
             this.initializeHistoryFromCurrentState();
+            this.loadIndexedDbSnapshot().then((indexedSaved) => {
+                if (!indexedSaved) return;
+                if (Array.isArray(this.paths) && this.paths.length > 0) return;
+                try {
+                    this.applyLoadedSnapshot(indexedSaved, 'IndexedDB');
+                } catch (error) {
+                    // Ignore IndexedDB restore failures.
+                }
+            });
         }
     }
 
@@ -1819,6 +2034,36 @@ class CanvasManager {
 
     normalizePathData(path) {
         if (!path) return path;
+        if (path.type === 'dot') {
+            const firstPoint = Array.isArray(path.points) && path.points.length
+                ? path.points[0]
+                : null;
+            if ((!Number.isFinite(path.x) || !Number.isFinite(path.y)) && firstPoint) {
+                path.x = firstPoint.x;
+                path.y = firstPoint.y;
+            }
+            if (!Array.isArray(path.points) || path.points.length === 0) {
+                if (Number.isFinite(path.x) && Number.isFinite(path.y)) {
+                    path.points = [{ x: path.x, y: path.y }];
+                }
+            }
+            if (!Number.isFinite(path.previewRadius)) path.previewRadius = 0.2;
+            return path;
+        }
+        if (path.type === 'path' && Array.isArray(path.segments) && path.segments.length > 0
+            && (!Array.isArray(path.points) || path.points.length === 0)) {
+            const rebuiltPoints = [];
+            path.segments.forEach(segment => {
+                if (!segment) return;
+                if (Number.isFinite(segment.x) && Number.isFinite(segment.y)) {
+                    const prev = rebuiltPoints[rebuiltPoints.length - 1];
+                    if (!prev || Math.abs(prev.x - segment.x) > 0.0001 || Math.abs(prev.y - segment.y) > 0.0001) {
+                        rebuiltPoints.push({ x: segment.x, y: segment.y });
+                    }
+                }
+            });
+            if (rebuiltPoints.length > 0) path.points = rebuiltPoints;
+        }
         this.normalizePathCurve(path);
         if (path.type === 'text') this.normalizeTextPath(path);
         return path;
@@ -2070,7 +2315,12 @@ class CanvasManager {
         if (!path) return [];
         let points = [];
 
-        if (path.type === 'rectangle') {
+        if (path.type === 'dot') {
+            const point = Number.isFinite(path.x) && Number.isFinite(path.y)
+                ? { x: path.x, y: path.y }
+                : path.points?.[0];
+            points = point ? [{ x: point.x, y: point.y }] : [];
+        } else if (path.type === 'rectangle') {
             points = [
                 { x: path.x, y: path.y },
                 { x: path.x + (path.w || 0), y: path.y },
@@ -2158,6 +2408,10 @@ class CanvasManager {
     getBoundingBox(p) {
         if (p.type === 'circle') {
             return { minX: p.x - p.r, minY: p.y - p.r, maxX: p.x + p.r, maxY: p.y + p.r };
+        } else if (p.type === 'dot') {
+            const point = this.getPathTracePoints(p)[0];
+            if (!point) return null;
+            return { minX: point.x, minY: point.y, maxX: point.x, maxY: point.y };
         } else if (p.type === 'rectangle') {
             const x1 = p.x;
             const y1 = p.y;
@@ -6883,6 +7137,13 @@ class CanvasManager {
                 this.ctx.beginPath();
                 this.ctx.arc(p.x * mmToPx, p.y * mmToPx, p.r * mmToPx, 0, Math.PI * 2);
                 this.ctx.stroke();
+            } else if (p.type === 'dot') {
+                const point = this.getPathTracePoints(p)[0];
+                if (!point) return;
+                const radius = Math.max(0.7 / this.viewZoom, (p.previewRadius || 0.25) * mmToPx);
+                this.ctx.beginPath();
+                this.ctx.arc(point.x * mmToPx, point.y * mmToPx, radius, 0, Math.PI * 2);
+                this.ctx.fill();
             } else if (p.type === 'rectangle') {
                 this.ctx.strokeRect(p.x * mmToPx, p.y * mmToPx, (p.w || 0.1) * mmToPx, (p.h || 0.1) * mmToPx);
             } else if (p.type === 'text') {
@@ -7071,16 +7332,24 @@ class CanvasManager {
                 this.ctx.beginPath();
                 this.ctx.moveTo(segment.x1 * mmToPx, segment.y1 * mmToPx);
 
-                if (drawLength >= segment.length) {
+                if (segment.dot) {
+                    const radius = Math.max(0.8 / this.viewZoom, 0.35 * mmToPx);
+                    this.ctx.setLineDash([]);
+                    this.ctx.beginPath();
+                    this.ctx.arc(segment.x1 * mmToPx, segment.y1 * mmToPx, radius, 0, Math.PI * 2);
+                    this.ctx.fillStyle = segment.penDown ? penCfg.color : 'rgba(148, 163, 184, 0.6)';
+                    this.ctx.fill();
+                } else if (drawLength >= segment.length) {
                     this.ctx.lineTo(segment.x2 * mmToPx, segment.y2 * mmToPx);
+                    this.ctx.stroke();
                 } else {
                     const t = segment.length > 0 ? drawLength / segment.length : 1;
                     const x = segment.x1 + ((segment.x2 - segment.x1) * t);
                     const y = segment.y1 + ((segment.y2 - segment.y1) * t);
                     this.ctx.lineTo(x * mmToPx, y * mmToPx);
+                    this.ctx.stroke();
                 }
 
-                this.ctx.stroke();
                 remainingDistance -= drawLength;
             }
             this.ctx.setLineDash([]);
@@ -7124,6 +7393,12 @@ class CanvasManager {
                     });
                 }
                 pushPolyline(points, pen);
+                return;
+            }
+
+            if (path.type === 'dot') {
+                const point = hpgl.getExportTracePointsForPath(path)[0];
+                if (point) previewPaths.push({ type: 'dot', x: point.x, y: point.y, points: [point], pen, previewRadius: path.previewRadius });
                 return;
             }
 
@@ -7487,6 +7762,10 @@ class CanvasManager {
             if (!Number.isFinite(length) || length <= 0) return;
             segments.push({ x1, y1, x2, y2, length, pen: pen || 1, penDown });
         };
+        const addDotEvent = (x, y, pen) => {
+            if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+            segments.push({ x1: x, y1: y, x2: x, y2: y, length: 0.8, pen: pen || 1, penDown: true, dot: true });
+        };
 
         const optimizedPlotItems = this.app?.hpgl?.optimizePlotPaths
             ? this.app.hpgl.optimizePlotPaths(this.paths)
@@ -7496,6 +7775,17 @@ class CanvasManager {
         optimizedPlotItems.forEach(item => {
             const path = item.path;
             const pen = path.pen || 1;
+            if (path.type === 'dot') {
+                const point = item.startPoint || this.app?.hpgl?.getExportTracePointsForPath?.(path)?.[0];
+                if (point) {
+                    if (currentPoint && Math.hypot(currentPoint.x - point.x, currentPoint.y - point.y) > 0.001) {
+                        addSegment(currentPoint.x, currentPoint.y, point.x, point.y, pen, false);
+                    }
+                    addDotEvent(point.x, point.y, pen);
+                    currentPoint = point;
+                }
+                return;
+            }
             let tracePoints = Array.isArray(item.plotPoints) && item.plotPoints.length >= 2
                 ? item.plotPoints
                 : null;
@@ -7543,6 +7833,7 @@ class CanvasManager {
         for (let i = 0; i < this.simulationRoute.length; i++) {
             const segment = this.simulationRoute[i];
             if (remaining <= segment.length) {
+                if (segment.dot) return { x: segment.x1, y: segment.y1 };
                 const t = segment.length > 0 ? remaining / segment.length : 1;
                 return {
                     x: segment.x1 + ((segment.x2 - segment.x1) * t),

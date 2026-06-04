@@ -289,6 +289,36 @@ class HpglParser {
         ];
     }
 
+    generateDotCommands(point) {
+        if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return [];
+
+        const transformed = this.transformOutputPoint(point.x, point.y);
+        const x = Math.round(transformed.x * this.UNITS_PER_MM);
+        const y = Math.round(transformed.y * this.UNITS_PER_MM);
+
+        return [
+            `PU${x},${y};`,
+            'PD;',
+            'PU;'
+        ];
+    }
+
+    appendDotCommands(target, point) {
+        if (!Array.isArray(target) || !point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return target;
+
+        const transformed = this.transformOutputPoint(point.x, point.y);
+        const x = Math.round(transformed.x * this.UNITS_PER_MM);
+        const y = Math.round(transformed.y * this.UNITS_PER_MM);
+        target.push(`PU${x},${y};`, 'PD;', 'PU;');
+        return target;
+    }
+
+    appendCommands(target, commands) {
+        if (!Array.isArray(target) || !Array.isArray(commands) || commands.length === 0) return target;
+        commands.forEach(command => target.push(command));
+        return target;
+    }
+
     generatePolylineTraceCommands(points) {
         if (!points || points.length < 2) return [];
 
@@ -648,29 +678,30 @@ class HpglParser {
             }
 
             if (p.type === 'circle') {
-                hpglCommands = hpglCommands.concat(this.generateCircle(p.x, p.y, p.r));
+                this.appendCommands(hpglCommands, this.generateCircle(p.x, p.y, p.r));
+            } else if (p.type === 'dot') {
+                const point = item.startPoint || this.getPathRepresentativePoint(p, item.plotPoints);
+                this.appendDotCommands(hpglCommands, point);
             } else if (p.type === 'text') {
                 if (this.isCreativeTextPath(p) && typeof CreativeTextEngine !== 'undefined') {
                     CreativeTextEngine.buildPlotLoops(p).forEach(loop => {
-                        hpglCommands = hpglCommands.concat(this.generatePolylineCommands(loop));
+                        this.appendCommands(hpglCommands, this.generatePolylineCommands(loop));
                     });
                 } else {
-                    hpglCommands = hpglCommands.concat(this.generateText(p.text, p.x, p.y, p.fontSize || 10, p.rotation || 0));
+                    this.appendCommands(hpglCommands, this.generateText(p.text, p.x, p.y, p.fontSize || 10, p.rotation || 0));
                 }
             } else if (p.type === 'rectangle') {
-                hpglCommands = hpglCommands.concat(
-                    this.generateRectangle(p.x, p.y, p.x + (p.w || 0), p.y + (p.h || 0))
-                );
+                this.appendCommands(hpglCommands, this.generateRectangle(p.x, p.y, p.x + (p.w || 0), p.y + (p.h || 0)));
             } else if (p.type === 'line' || p.type === 'polyline' || p.type === 'path') {
                 const pts = Array.isArray(item.plotPoints) && item.plotPoints.length >= 2
                     ? item.plotPoints
                     : this.getTracePointsForPath(p);
                 if (pts && pts.length >= 2) {
                     if (!item.plotPoints && this.pathShouldUseCurve(p)) {
-                        hpglCommands = hpglCommands.concat(this.generateCurve(pts, this.isClosedPath(p)));
+                        this.appendCommands(hpglCommands, this.generateCurve(pts, this.isClosedPath(p)));
                         hpglCommands.push('PU;');
                     } else {
-                        hpglCommands = hpglCommands.concat(this.generatePolylineCommands(pts));
+                        this.appendCommands(hpglCommands, this.generatePolylineCommands(pts));
                     }
                 }
             }
@@ -686,6 +717,15 @@ class HpglParser {
         }
         if (path?.type === 'circle') {
             return { x: path.x + (path.r || 0), y: path.y };
+        }
+        if (path?.type === 'dot') {
+            const point = Number.isFinite(path.x) && Number.isFinite(path.y)
+                ? { x: path.x, y: path.y }
+                : path.points?.[0];
+            return {
+                x: point?.x || 0,
+                y: point?.y || 0
+            };
         }
         if (path?.type === 'rectangle') {
             return { x: path.x, y: path.y };
@@ -757,7 +797,78 @@ class HpglParser {
         };
     }
 
+    optimizeDotPlotUnitItems(items = [], currentPoint = null) {
+        const oriented = items
+            .map(item => {
+                const point = item.tracePoints?.[0] || this.getPathRepresentativePoint(item.path, item.tracePoints);
+                return {
+                    path: item.path,
+                    plotPoints: Array.isArray(item.tracePoints) && item.tracePoints.length ? item.tracePoints : null,
+                    startPoint: point,
+                    endPoint: point
+                };
+            })
+            .filter(item => Number.isFinite(item.startPoint?.x) && Number.isFinite(item.startPoint?.y));
+
+        if (oriented.length <= 1) {
+            return {
+                items: oriented,
+                entryPoint: oriented[0]?.startPoint || currentPoint || { x: 0, y: 0 },
+                exitPoint: oriented[0]?.endPoint || currentPoint || { x: 0, y: 0 }
+            };
+        }
+
+        let minX = Infinity;
+        let minY = Infinity;
+        let maxX = -Infinity;
+        let maxY = -Infinity;
+        oriented.forEach(item => {
+            const point = item.startPoint;
+            minX = Math.min(minX, point.x);
+            minY = Math.min(minY, point.y);
+            maxX = Math.max(maxX, point.x);
+            maxY = Math.max(maxY, point.y);
+        });
+
+        const area = Math.max(0.001, (maxX - minX) * (maxY - minY));
+        const estimatedSpacing = Math.sqrt(area / Math.max(1, oriented.length));
+        const rowHeight = Math.max(0.25, estimatedSpacing * 0.85);
+
+        const rows = new Map();
+        oriented.forEach(item => {
+            const key = Math.round((item.startPoint.y - minY) / rowHeight);
+            if (!rows.has(key)) rows.set(key, []);
+            rows.get(key).push(item);
+        });
+
+        const ordered = [];
+        [...rows.keys()].sort((a, b) => a - b).forEach((rowKey, rowIndex) => {
+            const row = rows.get(rowKey);
+            row.sort((a, b) => rowIndex % 2 === 0
+                ? a.startPoint.x - b.startPoint.x
+                : b.startPoint.x - a.startPoint.x);
+            row.forEach(item => ordered.push(item));
+        });
+
+        if (currentPoint && ordered.length > 1) {
+            const first = ordered[0].startPoint;
+            const last = ordered[ordered.length - 1].startPoint;
+            const firstDistance = Math.hypot(first.x - currentPoint.x, first.y - currentPoint.y);
+            const lastDistance = Math.hypot(last.x - currentPoint.x, last.y - currentPoint.y);
+            if (lastDistance + 0.001 < firstDistance) ordered.reverse();
+        }
+
+        return {
+            items: ordered,
+            entryPoint: ordered[0]?.startPoint || currentPoint || { x: 0, y: 0 },
+            exitPoint: ordered[ordered.length - 1]?.endPoint || currentPoint || { x: 0, y: 0 }
+        };
+    }
+
     optimizePlotUnitItems(items = [], currentPoint = null) {
+        const allDots = items.length > 0 && items.every(item => item?.path?.type === 'dot');
+        if (allDots) return this.optimizeDotPlotUnitItems(items, currentPoint);
+
         const allHandwriting = items.length > 0 && items.every(item => this.isHandwritingPlotPath(item?.path));
         if (allHandwriting) {
             const inOrder = items
@@ -868,7 +979,7 @@ class HpglParser {
 
                 const [selectedUnit] = remainingUnits.splice(bestIndex, 1);
                 const optimizedUnit = bestOptimizedUnit || this.optimizePlotUnitItems(selectedUnit, cursor);
-                optimized.push(...optimizedUnit.items);
+                optimizedUnit.items.forEach(item => optimized.push(item));
                 cursor = optimizedUnit.exitPoint || cursor;
             }
         });
@@ -878,6 +989,12 @@ class HpglParser {
 
     getExportTracePointsForPath(path) {
         if (!path) return [];
+        if (path.type === 'dot') {
+            const point = Number.isFinite(path.x) && Number.isFinite(path.y)
+                ? { x: path.x, y: path.y }
+                : path.points?.[0];
+            return point ? [{ x: point.x, y: point.y }] : [];
+        }
         if (path.type === 'circle') {
             return this.generateCirclePoints(path.x, path.y, path.r);
         }
@@ -919,6 +1036,15 @@ class HpglParser {
             const tracePoints = Array.isArray(item.plotPoints) && item.plotPoints.length >= 2
                 ? item.plotPoints
                 : this.getExportTracePointsForPath(path);
+            if (path.type === 'dot') {
+                const point = tracePoints?.[0];
+                if (!point) return;
+                const transformedPoint = this.transformOutputPoint(point.x, point.y);
+                commands.push(`G0 X${transformedPoint.x.toFixed(3)} Y${transformedPoint.y.toFixed(3)} F${travelFeed}`);
+                commands.push(`G1 Z${zDown} F${plungeFeed}`);
+                commands.push(`G0 Z${zUp}`);
+                return;
+            }
             if (!tracePoints || tracePoints.length < 2) return;
 
             const transformedPoints = this.transformOutputPoints(tracePoints);
@@ -959,6 +1085,15 @@ class HpglParser {
             if (path.type === 'circle') {
                 const center = this.transformSvgExportPoint(path.x, path.y);
                 elements.push(`<circle cx="${center.x.toFixed(3)}" cy="${center.y.toFixed(3)}" r="${(path.r || 0).toFixed(3)}" fill="none" stroke="${stroke}" stroke-width="${strokeWidth.toFixed(3)}" />`);
+                return;
+            }
+
+            if (path.type === 'dot') {
+                const dotPoint = Number.isFinite(path.x) && Number.isFinite(path.y)
+                    ? { x: path.x, y: path.y }
+                    : path.points?.[0];
+                const point = this.transformSvgExportPoint(dotPoint?.x || 0, dotPoint?.y || 0);
+                elements.push(`<circle cx="${point.x.toFixed(3)}" cy="${point.y.toFixed(3)}" r="${Math.max(0.12, strokeWidth * 0.5).toFixed(3)}" fill="${stroke}" stroke="none" />`);
                 return;
             }
 
@@ -1035,20 +1170,25 @@ class HpglParser {
             }
 
             if (p.type === 'circle') {
-                hpglQueue = hpglQueue.concat(this.generateCircle(p.x, p.y, p.r));
+                this.appendCommands(hpglQueue, this.generateCircle(p.x, p.y, p.r));
+                commandsFound++;
+            } else if (p.type === 'dot') {
+                const point = item.startPoint || this.getPathRepresentativePoint(p, item.plotPoints);
+                this.appendDotCommands(hpglQueue, point);
                 commandsFound++;
             } else if (p.type === 'text') {
                 if (this.isCreativeTextPath(p) && typeof CreativeTextEngine !== 'undefined') {
                     CreativeTextEngine.buildPlotLoops(p).forEach(loop => {
-                        hpglQueue = hpglQueue.concat(this.generatePolylineStreamCommands(loop));
+                        this.appendCommands(hpglQueue, this.generatePolylineStreamCommands(loop));
                         commandsFound++;
                     });
                 } else {
-                    hpglQueue = hpglQueue.concat(this.generateText(p.text, p.x, p.y, p.fontSize || 10, p.rotation || 0));
+                    this.appendCommands(hpglQueue, this.generateText(p.text, p.x, p.y, p.fontSize || 10, p.rotation || 0));
                     commandsFound++;
                 }
             } else if (p.type === 'rectangle') {
-                hpglQueue = hpglQueue.concat(
+                this.appendCommands(
+                    hpglQueue,
                     this.generatePolylineStreamCommands(
                         this.getRectanglePoints(p.x, p.y, p.x + (p.w || 0), p.y + (p.h || 0))
                     )
@@ -1059,7 +1199,7 @@ class HpglParser {
                     ? item.plotPoints
                     : this.getTracePointsForPath(p);
                 if (pts && pts.length >= 2) {
-                    hpglQueue = hpglQueue.concat(this.generatePolylineStreamCommands(pts));
+                    this.appendCommands(hpglQueue, this.generatePolylineStreamCommands(pts));
                     commandsFound += pts.length;
                 }
             }

@@ -97,6 +97,38 @@ class ImageVectorEngine {
         return this.brightnessMap[y * this.width + x];
     }
 
+    _sampleSourceRgb(x, y) {
+        if (!this.imageData?.data || this.width <= 0 || this.height <= 0) return { r: 255, g: 255, b: 255 };
+        x = Math.max(0, Math.min(this.width - 1, Math.round(x)));
+        y = Math.max(0, Math.min(this.height - 1, Math.round(y)));
+        const idx = ((y * this.width) + x) * 4;
+        const data = this.imageData.data;
+        if (data[idx + 3] < 128) return { r: 255, g: 255, b: 255 };
+        return { r: data[idx], g: data[idx + 1], b: data[idx + 2] };
+    }
+
+    _getRgbInkDemand(x, y, channel = 'bw', options = {}) {
+        if (!['r', 'g', 'b'].includes(channel)) {
+            return 1 - (this._sampleMapBilinear(this.brightnessMap, x, y) / 255);
+        }
+
+        const rgb = this._sampleSourceRgb(x, y);
+        if (options.skipWhite && rgb.r >= 245 && rgb.g >= 245 && rgb.b >= 245) return 0;
+
+        const r = rgb.r / 255;
+        const g = rgb.g / 255;
+        const b = rgb.b / 255;
+        const values = { r, g, b };
+        const value = values[channel];
+        const maxChannel = Math.max(r, g, b);
+        const minChannel = Math.min(r, g, b);
+        const saturation = Math.max(0, maxChannel - minChannel);
+        const neutralInk = Math.pow(Math.max(0, 1 - maxChannel), 0.9);
+        const colorInk = Math.pow(Math.max(0, value * saturation), 1.05);
+
+        return Math.max(0, Math.min(1, (neutralInk * 0.72) + (colorInk * 0.85)));
+    }
+
     async process(method, params) {
         // Instead of reusing one brightness map, when process is called with a specific channel, 
         // we might need to regenerate the source brightness map if it's different.
@@ -128,7 +160,11 @@ class ImageVectorEngine {
         switch (method) {
             case 'trace': return await this.generateTrace(params);
             case 'contour': return this.generateContours(params);
+            case 'intaglio': return this.generateBanknoteIntaglio(params);
+            case 'hair': return this.generateHair(params);
             case 'hatch': return this.generateHatch(params);
+            case 'sketchLines': return this.generateSketchLines(params);
+            case 'mosaicRectangles': return this.generateMosaicRectangles(params);
             case 'spiral': return this.generateSpiral(params);
             case 'squiggle': return this.generateSquiggle(params);
             case 'wave': return this.generateWaves(params);
@@ -796,6 +832,457 @@ class ImageVectorEngine {
     /**
      * Improved Cross-Hatching
      */
+    generateBanknoteIntaglio(params = {}) {
+        const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+        const spacing = clamp(Number(params.spacing || 6), 1.5, 30);
+        const maxLineLength = clamp(Number(params.intaglioMaxLength || 240), 30, 900);
+        const hardMixThreshold = clamp(Number(params.intaglioBrightnessThreshold || params.threshold || 176), 40, 252);
+        const waveLength = clamp(Number(params.intaglioEdgeSensitivity || 150), 24, 340);
+        const waveAmount = clamp(Number(params.intaglioWobble || 50) / 100, 0, 2.5);
+        const lineThickness = clamp(Number(params.intaglioThickness || 0.55), 0.06, 6);
+        const smoothing = clamp(Math.round(Number(params.intaglioSmoothing ?? 2)), 0, 8);
+        const textureAngle = (Number(params.intaglioContourInfluence ?? 12) - 50) * (Math.PI / 180);
+        const rippleAmount = waveAmount * spacing * 0.65;
+
+        const toneMap = smoothing > 0
+            ? this._blurFloatMap(this.brightnessMap, this.width, this.height, Math.max(1, Math.round(smoothing * 0.65)))
+            : this.brightnessMap;
+        const sobel = this._buildSobelVectors(toneMap);
+        const paths = [];
+
+        const families = [];
+        if (params.intaglioHorizontal !== false) families.push({ angle: textureAngle, phase: 0, opacity: 1 });
+        if (params.intaglioVertical === true) families.push({ angle: textureAngle + Math.PI / 2, phase: 19.7, opacity: 0.86 });
+        if (params.intaglioCross === true) {
+            families.push({ angle: textureAngle + Math.PI / 4, phase: 41.2, opacity: 0.72 });
+            families.push({ angle: textureAngle - Math.PI / 4, phase: 67.9, opacity: 0.72 });
+        }
+        if (!families.length) families.push({ angle: textureAngle, phase: 0, opacity: 1 });
+
+        families.forEach((family, familyIndex) => {
+            this._generateTextureLabIntaglioFamily({
+                paths,
+                toneMap,
+                sobel,
+                family,
+                familyIndex,
+                spacing,
+                maxLineLength,
+                hardMixThreshold,
+                waveLength,
+                rippleAmount,
+                lineThickness,
+                smoothing
+            });
+        });
+
+        if (params.intaglioShowEdges === true) {
+            this._generateIntaglioEdgePreview(sobel, Math.max(30, waveLength * 0.7)).forEach(path => paths.push(path));
+        }
+
+        return paths;
+    }
+
+    _generateTextureLabIntaglioFamily(options) {
+        const {
+            paths,
+            toneMap,
+            sobel,
+            family,
+            familyIndex,
+            spacing,
+            maxLineLength,
+            hardMixThreshold,
+            waveLength,
+            rippleAmount,
+            lineThickness,
+            smoothing
+        } = options;
+        const angle = family.angle;
+        const alongX = Math.cos(angle + Math.PI / 2);
+        const alongY = Math.sin(angle + Math.PI / 2);
+        const normalX = Math.cos(angle);
+        const normalY = Math.sin(angle);
+        const centerX = this.width * 0.5;
+        const centerY = this.height * 0.5;
+        const diag = Math.ceil(Math.hypot(this.width, this.height));
+        const sampleStep = 2;
+        const rowGap = Math.max(1.2, spacing);
+        const maxPoints = Math.max(12, Math.floor(maxLineLength / sampleStep));
+        const lineWaveAmp = rippleAmount * (1 + familyIndex * 0.12);
+        const phase = family.phase + (this.currentLayerIndex || 0) * 12.9;
+
+        for (let offset = -diag; offset <= diag; offset += rowGap) {
+            let run = [];
+            let pointCounter = 0;
+            let runTone = 0;
+
+            for (let t = -diag; t <= diag; t += sampleStep) {
+                const wave =
+                    Math.sin((t + phase) * (Math.PI * 2 / waveLength)) * lineWaveAmp +
+                    Math.sin((t * 0.41 + offset * 0.73 + phase) * (Math.PI * 2 / Math.max(18, waveLength * 0.37))) * lineWaveAmp * 0.34;
+                const baseX = centerX + alongX * t + normalX * (offset + wave);
+                const baseY = centerY + alongY * t + normalY * (offset + wave);
+
+                if (baseX < 1 || baseY < 1 || baseX >= this.width - 2 || baseY >= this.height - 2) {
+                    this._flushTextureLabIntaglioRun(paths, run, runTone, pointCounter, lineThickness, family.opacity, smoothing);
+                    run = [];
+                    pointCounter = 0;
+                    runTone = 0;
+                    continue;
+                }
+
+                const brightness = this._sampleMapBilinear(toneMap, baseX, baseY);
+                const darkness = 1 - (brightness / 255);
+                const textureValue = this._textureLabStripeValue(offset + wave, spacing);
+                const hardMixSignal = ((255 - brightness) * 0.74) + (textureValue * 0.62);
+                const edgeDetail = Math.min(1, this._sampleMapBilinear(sobel.magnitude, baseX, baseY) / 180);
+                const visible = hardMixSignal + edgeDetail * 28 > hardMixThreshold;
+
+                if (!visible) {
+                    this._flushTextureLabIntaglioRun(paths, run, runTone, pointCounter, lineThickness, family.opacity, smoothing);
+                    run = [];
+                    pointCounter = 0;
+                    runTone = 0;
+                    continue;
+                }
+
+                const toneNudge = (darkness - 0.5) * spacing * 0.36;
+                run.push({ x: baseX + normalX * toneNudge, y: baseY + normalY * toneNudge });
+                runTone += Math.max(darkness, edgeDetail * 0.72);
+                pointCounter++;
+                if (pointCounter >= maxPoints) {
+                    this._flushTextureLabIntaglioRun(paths, run, runTone, pointCounter, lineThickness, family.opacity, smoothing);
+                    run = [];
+                    pointCounter = 0;
+                    runTone = 0;
+                }
+            }
+
+            this._flushTextureLabIntaglioRun(paths, run, runTone, pointCounter, lineThickness, family.opacity, smoothing);
+        }
+    }
+
+    _textureLabStripeValue(distance, spacing) {
+        const period = Math.max(2, spacing * 2);
+        const local = ((distance % period) + period) % period;
+        const phase = local / period;
+        const stripe = 0.5 + Math.cos(phase * Math.PI * 2) * 0.5;
+        return Math.pow(stripe, 0.7) * 255;
+    }
+
+    _flushTextureLabIntaglioRun(paths, run, toneSum, pointCount, lineThickness, opacityScale, smoothing) {
+        if (!run || run.length < 6) return;
+        let processed = smoothing > 0
+            ? this._smoothOpenPath(run, Math.max(1, Math.round(smoothing * 0.45)))
+            : run;
+        if (!processed || processed.length < 4) return;
+        processed = this._simplifyPath(processed, 0.18);
+        if (!processed || processed.length < 3) return;
+
+        const tone = Math.max(0.04, Math.min(1, toneSum / Math.max(1, pointCount)));
+        const path = this._pointsToSmoothSegments(processed, 'curves');
+        path.previewStrokeWidth = Math.max(0.06, Math.min(lineThickness * 2.2, lineThickness * (0.62 + tone * 1.1)));
+        path.opacity = Math.max(0.12, Math.min(0.9, (0.22 + tone * 0.68) * opacityScale));
+        paths.push(path);
+    }
+
+    generateHair(params = {}) {
+        const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+        const spacing = clamp(Number(params.spacing || 5), 2, 40);
+        const maxLineLength = clamp(Number(params.intaglioMaxLength || 340), 16, 720);
+        const threshold = clamp(Number(params.intaglioBrightnessThreshold || params.threshold || 246), 20, 255);
+        const edgeSensitivity = clamp(Number(params.intaglioEdgeSensitivity || 135), 4, 320);
+        const contourInfluence = clamp(Number(params.intaglioContourInfluence ?? 88) / 100, 0, 1);
+        const lineThickness = clamp(Number(params.intaglioThickness || 0.45), 0.08, 8);
+        const wobble = clamp(Number(params.intaglioWobble || 0.35), 0, 6);
+        const smoothing = clamp(Math.round(Number(params.intaglioSmoothing ?? 4)), 0, 8);
+        const curved = params.intaglioCurved !== false;
+
+        const toneMap = smoothing > 0
+            ? this._blurFloatMap(this.brightnessMap, this.width, this.height, Math.max(1, Math.round(smoothing * 0.5)))
+            : this.brightnessMap;
+        const fieldMap = this._blurFloatMap(this.brightnessMap, this.width, this.height, Math.max(3, smoothing + 3));
+        const sobel = this._buildSobelVectors(toneMap);
+        const formSobel = this._buildSobelVectors(fieldMap);
+        const paths = [];
+        const hatchAngles = [];
+
+        if (params.intaglioHorizontal === true) hatchAngles.push(0);
+        if (params.intaglioVertical === true) hatchAngles.push(Math.PI / 2);
+        if (params.intaglioCross !== false) hatchAngles.push(Math.PI * 0.23, -Math.PI * 0.23, Math.PI * 0.68, -Math.PI * 0.68);
+        if (hatchAngles.length === 0) hatchAngles.push(Math.PI * 0.23, -Math.PI * 0.23);
+
+        const settings = {
+            spacing,
+            maxLineLength,
+            threshold,
+            edgeSensitivity,
+            contourInfluence,
+            lineThickness,
+            wobble,
+            curved,
+            brightness: toneMap,
+            sobel,
+            formSobel
+        };
+
+        hatchAngles.forEach((angle, angleIndex) => {
+            const seeds = this._generateIntaglioSeeds(angle, angleIndex + (this.currentLayerIndex || 0) * 7, settings);
+            seeds.forEach(seed => {
+                const traced = this._traceIntaglioLine(seed.x, seed.y, angle, settings);
+                if (!traced || traced.points.length < 4) return;
+
+                const smoothed = smoothing > 0
+                    ? this._smoothOpenPath(traced.points, Math.max(1, Math.round(smoothing * 0.55)))
+                    : traced.points;
+                const simplified = params.simplify > 0
+                    ? this._simplifyPath(smoothed, Math.max(0.15, Number(params.simplify) / 35))
+                    : smoothed;
+                if (!simplified || simplified.length < 3) return;
+
+                const tone = this._sampleIntaglioPathTone(simplified, toneMap);
+                if (tone <= 0.025) return;
+
+                const path = this._pointsToSmoothSegments(simplified, 'curves');
+                path.previewStrokeWidth = clamp(lineThickness * (0.55 + tone * 1.65), 0.08, lineThickness * 2.7);
+                path.opacity = clamp(0.2 + tone * 0.72, 0.12, 0.92);
+                paths.push(path);
+            });
+        });
+
+        if (params.intaglioShowEdges === true) {
+            const edgePaths = this._generateIntaglioEdgePreview(sobel, edgeSensitivity);
+            edgePaths.forEach(path => paths.push(path));
+        }
+
+        return paths;
+    }
+
+    _generateIntaglioSeeds(hatchAngle, phase, settings) {
+        const seeds = [];
+        const normalAngle = hatchAngle + Math.PI / 2;
+        const diag = Math.ceil(Math.hypot(this.width, this.height));
+        const cx = this.width / 2;
+        const cy = this.height / 2;
+        const cosA = Math.cos(hatchAngle);
+        const sinA = Math.sin(hatchAngle);
+        const cosN = Math.cos(normalAngle);
+        const sinN = Math.sin(normalAngle);
+        const rowGap = Math.max(2.4, settings.spacing);
+        const step = Math.max(10, settings.spacing * 3.2);
+        const maxSeeds = Math.min(2800, Math.max(1200, Math.round(1100 + (this.width * this.height / 180000) * 320)));
+
+        for (let row = -diag; row <= diag; row += rowGap) {
+            const rowJitter = this._hash01(row * 0.031 + phase) * settings.spacing;
+            const baseX = cx + cosN * row;
+            const baseY = cy + sinN * row;
+
+            for (let col = -diag; col <= diag; col += step) {
+                const jitter = (this._hash01(col * 0.021 + row * 0.037 + phase) - 0.5) * settings.spacing * 0.9;
+                const x = baseX + cosA * (col + rowJitter) + cosN * jitter;
+                const y = baseY + sinA * (col + rowJitter) + sinN * jitter;
+                if (x < 1 || y < 1 || x >= this.width - 1 || y >= this.height - 1) continue;
+
+                const b = this._sampleMapBilinear(settings.brightness, x, y);
+                if (b > settings.threshold) continue;
+
+                const darkness = 1 - (b / 255);
+                const keepChance = Math.max(0.12, Math.min(1, Math.pow(darkness, 0.72) * 1.35));
+                const coin = this._hash01(x * 0.071 + y * 0.113 + phase * 19);
+                if (coin <= keepChance) seeds.push({ x, y });
+                if (darkness > 0.68 && coin < darkness * 0.28) {
+                    seeds.push({
+                        x: x + cosN * settings.spacing * 0.42,
+                        y: y + sinN * settings.spacing * 0.42
+                    });
+                }
+                if (seeds.length >= maxSeeds) return seeds;
+            }
+        }
+
+        return seeds;
+    }
+
+    _traceIntaglioLine(seedX, seedY, hatchAngle, settings) {
+        const forward = this._walkIntaglio(seedX, seedY, hatchAngle, 1, settings);
+        const backward = this._walkIntaglio(seedX, seedY, hatchAngle, -1, settings);
+        const points = backward.reverse().concat([{ x: seedX, y: seedY }], forward);
+        return points.length >= 4 ? { points } : null;
+    }
+
+    _walkIntaglio(seedX, seedY, hatchAngle, directionSign, settings) {
+        const points = [];
+        let x = seedX;
+        let y = seedY;
+        let previousAngle = hatchAngle;
+        const stepSize = 2.35;
+        const maxSteps = Math.max(6, Math.floor(settings.maxLineLength / stepSize));
+
+        for (let step = 0; step < maxSteps; step++) {
+            const b = this._sampleMapBilinear(settings.brightness, x, y);
+            if (b > settings.threshold) break;
+
+            const edge = this._sampleMapBilinear(settings.sobel.magnitude, x, y);
+            if (step > 8 && edge > settings.edgeSensitivity * 1.85 && b > settings.threshold - 34) break;
+
+            const localAngle = this._getIntaglioDirection(x, y, hatchAngle, settings);
+            const angle = this._blendAngles(previousAngle, localAngle, 0.58);
+            previousAngle = angle;
+
+            const darkness = 1 - (b / 255);
+            const wobbleAngle = (this._noise2D(x * 0.016, y * 0.016) - 0.5) * settings.wobble * darkness;
+            x += Math.cos(angle + wobbleAngle) * stepSize * directionSign;
+            y += Math.sin(angle + wobbleAngle) * stepSize * directionSign;
+
+            if (x < 1 || y < 1 || x >= this.width - 2 || y >= this.height - 2) break;
+            points.push({ x, y });
+        }
+
+        return points;
+    }
+
+    _getIntaglioDirection(x, y, hatchAngle, settings) {
+        const gx = (this._sampleMapBilinear(settings.sobel.gx, x, y) * 0.35) +
+            (this._sampleMapBilinear(settings.formSobel.gx, x, y) * 0.95);
+        const gy = (this._sampleMapBilinear(settings.sobel.gy, x, y) * 0.35) +
+            (this._sampleMapBilinear(settings.formSobel.gy, x, y) * 0.95);
+        const mag = Math.hypot(gx, gy);
+        if (!settings.curved || mag < 0.8) return hatchAngle;
+
+        const contourAngle = Math.atan2(gy, gx) + Math.PI / 2;
+        const edgeWeight = Math.max(0, Math.min(1, mag / Math.max(1, settings.formSobel.maxMagnitude * 0.3)));
+        return this._blendAngles(hatchAngle, contourAngle, settings.contourInfluence * (0.58 + edgeWeight * 0.42));
+    }
+
+    _sampleIntaglioPathTone(points, brightness) {
+        if (!points || points.length === 0) return 0;
+        const samples = Math.min(points.length, 12);
+        let total = 0;
+        for (let i = 0; i < samples; i++) {
+            const point = points[Math.floor(i * (points.length - 1) / Math.max(1, samples - 1))];
+            total += 1 - (this._sampleMapBilinear(brightness, point.x, point.y) / 255);
+        }
+        return Math.max(0, Math.min(1, total / samples));
+    }
+
+    _generateIntaglioEdgePreview(sobel, threshold) {
+        const paths = [];
+        const step = Math.max(5, Math.round(Math.min(this.width, this.height) / 130));
+        for (let y = step; y < this.height - step; y += step) {
+            let run = [];
+            for (let x = step; x < this.width - step; x += step) {
+                const mag = sobel.magnitude[y * this.width + x];
+                if (mag > threshold) {
+                    run.push({ x, y });
+                } else if (run.length > 1) {
+                    const path = this._pointsToSmoothSegments(run, 'lines');
+                    path.previewStrokeWidth = 0.55;
+                    path.opacity = 0.38;
+                    path.intaglioGuide = true;
+                    paths.push(path);
+                    run = [];
+                } else {
+                    run = [];
+                }
+            }
+            if (run.length > 1) {
+                const path = this._pointsToSmoothSegments(run, 'lines');
+                path.previewStrokeWidth = 0.55;
+                path.opacity = 0.38;
+                path.intaglioGuide = true;
+                paths.push(path);
+            }
+        }
+        return paths;
+    }
+
+    _buildSobelVectors(map) {
+        const gxKernel = [-1, 0, 1, -2, 0, 2, -1, 0, 1];
+        const gyKernel = [-1, -2, -1, 0, 0, 0, 1, 2, 1];
+        const gx = new Float32Array(this.width * this.height);
+        const gy = new Float32Array(this.width * this.height);
+        const magnitude = new Float32Array(this.width * this.height);
+        let maxMagnitude = 1;
+
+        for (let y = 1; y < this.height - 1; y++) {
+            for (let x = 1; x < this.width - 1; x++) {
+                let sumX = 0;
+                let sumY = 0;
+                for (let ky = -1; ky <= 1; ky++) {
+                    for (let kx = -1; kx <= 1; kx++) {
+                        const kernelIndex = (ky + 1) * 3 + (kx + 1);
+                        const value = map[(y + ky) * this.width + (x + kx)];
+                        sumX += value * gxKernel[kernelIndex];
+                        sumY += value * gyKernel[kernelIndex];
+                    }
+                }
+                const index = y * this.width + x;
+                const nx = sumX / 4;
+                const ny = sumY / 4;
+                const mag = Math.hypot(nx, ny);
+                gx[index] = nx;
+                gy[index] = ny;
+                magnitude[index] = mag;
+                if (mag > maxMagnitude) maxMagnitude = mag;
+            }
+        }
+
+        return { gx, gy, magnitude, maxMagnitude };
+    }
+
+    _blurFloatMap(map, width, height, passes) {
+        if (!map || passes <= 0) return map;
+        let source = new Float32Array(map);
+        let target = new Float32Array(map.length);
+
+        for (let pass = 0; pass < passes; pass++) {
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    let total = 0;
+                    let count = 0;
+                    for (let yy = -1; yy <= 1; yy++) {
+                        const sy = Math.max(0, Math.min(height - 1, y + yy));
+                        for (let xx = -1; xx <= 1; xx++) {
+                            const sx = Math.max(0, Math.min(width - 1, x + xx));
+                            total += source[sy * width + sx];
+                            count++;
+                        }
+                    }
+                    target[y * width + x] = total / count;
+                }
+            }
+            const swap = source;
+            source = target;
+            target = swap;
+        }
+
+        return source;
+    }
+
+    _blendAngles(a, b, t) {
+        return a + Math.atan2(Math.sin(b - a), Math.cos(b - a)) * Math.max(0, Math.min(1, t));
+    }
+
+    _hash01(value) {
+        const x = Math.sin(value * 127.1 + 311.7) * 43758.5453;
+        return x - Math.floor(x);
+    }
+
+    _noise2D(x, y) {
+        const x0 = Math.floor(x);
+        const y0 = Math.floor(y);
+        const tx = x - x0;
+        const ty = y - y0;
+        const a = this._hash01(x0 * 17.17 + y0 * 37.37);
+        const b = this._hash01((x0 + 1) * 17.17 + y0 * 37.37);
+        const c = this._hash01(x0 * 17.17 + (y0 + 1) * 37.37);
+        const d = this._hash01((x0 + 1) * 17.17 + (y0 + 1) * 37.37);
+        const ux = tx * tx * (3 - 2 * tx);
+        const uy = ty * ty * (3 - 2 * ty);
+        return (a * (1 - ux) + b * ux) * (1 - uy) + (c * (1 - ux) + d * ux) * uy;
+    }
+
     generateHatch(params) {
         const spacing = params.spacing || 5;
         const layers = params.layers || 2;
@@ -1270,28 +1757,35 @@ class ImageVectorEngine {
     }
 
     generateDots(params) {
-        const spacing = Math.max(1, Math.round(params.dotsResolution || 2));
-        const baseAngle = (Number(params.dotsDirection || 0) * Math.PI) / 180;
-        const randomDirection = Boolean(params.dotsRandomDirection);
-        const rand = this._createSeededRandom(String(params.dotsSeed || 50));
+        const spacing = Math.max(0.2, Number(params.dotsResolution || 1));
+        const channel = params.channel || 'bw';
+        const layerIndex = Number(params.layerIndex || 0);
+        const skipWhite = params.dotsSkipWhite !== false;
+        const rand = this._createSeededRandom(`${params.dotsSeed || 50}:${channel}`);
         const paths = [];
+        const layerOffsets = [
+            { x: 0.5, y: 0.5 },
+            { x: 0.18, y: 0.72 },
+            { x: 0.78, y: 0.24 }
+        ];
+        const layerOffset = layerOffsets[layerIndex % layerOffsets.length] || layerOffsets[0];
 
-        for (let y = 0; y <= this.height - spacing; y += spacing) {
-            for (let x = 0; x <= this.width - spacing; x += spacing) {
-                const darkness = 1 - (this._sampleMapBilinear(this.brightnessMap, x, y) / 255);
-                const probability = Math.min(1, Math.pow(darkness, 2.2) * Math.max(0.35, spacing * 0.22));
+        for (let y = layerOffset.y * spacing; y <= this.height - spacing * 0.5; y += spacing) {
+            for (let x = layerOffset.x * spacing; x <= this.width - spacing * 0.5; x += spacing) {
+                const inkDemand = this._getRgbInkDemand(x, y, channel, { skipWhite });
+                const probability = Math.min(1, Math.pow(inkDemand, 1.65) * Math.max(0.45, spacing * 0.32));
                 if (rand() > probability) continue;
 
-                const angle = randomDirection ? rand() * Math.PI : baseAngle;
-                const length = spacing * (0.7 + darkness * 0.8);
-                const cx = x + (spacing * 0.5);
-                const cy = y + (spacing * 0.5);
-                const dx = Math.cos(angle) * length * 0.5;
-                const dy = Math.sin(angle) * length * 0.5;
-                paths.push([
-                    { x: cx - dx, y: cy - dy },
-                    { x: cx + dx, y: cy + dy }
-                ]);
+                const jitter = spacing * 0.28;
+                const cx = x + ((rand() - 0.5) * jitter);
+                const cy = y + ((rand() - 0.5) * jitter);
+                paths.push({
+                    type: 'dot',
+                    x: cx,
+                    y: cy,
+                    points: [{ x: cx, y: cy }],
+                    previewRadius: Math.max(0.18, Math.min(0.55, spacing * 0.38))
+                });
             }
         }
 
@@ -1378,6 +1872,288 @@ class ImageVectorEngine {
         }
 
         return paths;
+    }
+
+    generateSketchLines(params) {
+        const spacing = Math.max(1.5, Number(params.sketchSpacing || params.spacing || 6));
+        const roughness = Math.max(0, Math.min(1, Number(params.sketchRoughness || 0.45)));
+        const intensity = Math.max(1, Math.min(100, Number(params.sketchIntensity || 58))) / 100;
+        const baseAngleDeg = Number(params.sketchAngle ?? 45);
+        const layerCount = Math.max(1, Math.min(8, Math.round(params.sketchLayers || 3)));
+        const channel = params.channel || 'bw';
+        const layerIndex = Number(params.layerIndex || 0);
+        const rand = this._createSeededRandom(`sketch:${params.sketchSeed || 17}:${channel}:${layerIndex}`);
+        const darkness = this._buildAdaptiveDarknessMap(channel, { skipWhite: true });
+        const minLen = Math.max(2, Math.round(spacing * 0.8));
+        const maxLen = Math.max(minLen + 2, Math.round(spacing * (3.6 + intensity * 2.5)));
+        const angleTests = Math.max(8, Math.round(12 + (roughness * 32)));
+        const drawDelta = 360;
+        const shadeDelta = 180;
+        const shadingThreshold = 0.5;
+        const squiggleMin = Math.max(3, Math.round(8 + spacing * 0.8));
+        const squiggleMax = Math.max(squiggleMin + 2, Math.round(squiggleMin * (2.4 + intensity * 1.4)));
+        const targetSegments = Math.max(500, Math.round((this.width * this.height) / (spacing * spacing) * (0.16 + intensity * 0.6)));
+        const maxSegments = Math.min(9000, targetSegments * layerCount);
+        const eraseRadius = Math.max(0.8, spacing * (0.28 + intensity * 0.48));
+        const eraseStrength = 0.18 + (intensity * 0.46);
+        const minDarkness = Math.max(0.035, 0.23 - intensity * 0.14);
+        const paths = [];
+
+        let segmentCount = 0;
+        let failCount = 0;
+        const maxFails = 1200;
+
+        while (segmentCount < maxSegments && failCount < maxFails) {
+            const start = this._pickDarkestPoint(darkness, rand, 120, minDarkness);
+            if (!start) break;
+
+            let current = start;
+            let lastAngleDeg = baseAngleDeg;
+            let drewAny = false;
+            const squiggleLength = Math.max(squiggleMin, Math.round(squiggleMin + rand() * (squiggleMax - squiggleMin)));
+            const progress = segmentCount / Math.max(1, maxSegments);
+            const shading = progress > shadingThreshold;
+
+            for (let s = 0; s < squiggleLength && segmentCount < maxSegments; s++) {
+                const startAngle = baseAngleDeg + ((rand() * 2 - 1) * (18 + roughness * 70)) + ((lastAngleDeg - baseAngleDeg) * 0.35);
+                const candidate = this._findDarkestLineCandidate({
+                    darkness,
+                    sx: current.x,
+                    sy: current.y,
+                    minLen,
+                    maxLen,
+                    tests: angleTests,
+                    startAngleDeg: startAngle,
+                    deltaAngleDeg: shading ? shadeDelta : drawDelta,
+                    rand
+                });
+
+                if (!candidate || candidate.avgDarkness < minDarkness) break;
+
+                const jitter = spacing * roughness * 0.22;
+                const line = [
+                    {
+                        x: current.x + ((rand() * 2 - 1) * jitter),
+                        y: current.y + ((rand() * 2 - 1) * jitter)
+                    },
+                    {
+                        x: candidate.x + ((rand() * 2 - 1) * jitter),
+                        y: candidate.y + ((rand() * 2 - 1) * jitter)
+                    }
+                ];
+                const styled = this._pointsToSmoothSegments(line, 'curves');
+                if (styled?.segments?.length >= 2) {
+                    paths.push(styled);
+                    this._eraseLineOnDarknessMap(darkness, line[0].x, line[0].y, line[1].x, line[1].y, eraseRadius, eraseStrength);
+                    drewAny = true;
+                    segmentCount++;
+                }
+
+                current = { x: candidate.x, y: candidate.y };
+                lastAngleDeg = candidate.angleDeg;
+            }
+
+            if (!drewAny) {
+                this._eraseDiskOnDarknessMap(darkness, current.x, current.y, Math.max(0.8, eraseRadius * 0.8), 0.55);
+                failCount++;
+            } else {
+                failCount = 0;
+            }
+        }
+
+        return paths;
+    }
+
+    generateMosaicRectangles(params) {
+        const baseSize = Math.max(4, Number(params.mosaicRectSize || 16));
+        const density = Math.max(0.3, Math.min(2.4, Number(params.mosaicRectDensity || 1)));
+        const variance = Math.max(0, Math.min(1, Number(params.mosaicRectVariance || 0.35)));
+        const maxRotationDeg = Math.max(0, Math.min(60, Number(params.mosaicRectRotation || 18)));
+        const detail = Math.max(1, Math.min(100, Number(params.mosaicRectDetail || 64))) / 100;
+        const channel = params.channel || 'bw';
+        const layerIndex = Number(params.layerIndex || 0);
+        const rand = this._createSeededRandom(`mosaicRect:${params.mosaicRectSeed || 23}:${channel}:${layerIndex}`);
+        const darkness = this._buildAdaptiveDarknessMap(channel, { skipWhite: true });
+        const minDarkness = Math.max(0.05, 0.26 - detail * 0.14);
+        const targetCount = Math.min(9000, Math.max(350, Math.round((this.width * this.height) / (baseSize * baseSize) * density * (0.38 + detail * 0.45))));
+        const eraseBase = Math.max(0.35, baseSize * (0.17 + detail * 0.23));
+        const paths = [];
+
+        const createRect = (cx, cy, w, h, angleRad) => {
+            const hw = w * 0.5;
+            const hh = h * 0.5;
+            const c = Math.cos(angleRad);
+            const s = Math.sin(angleRad);
+            const pts = [
+                { x: -hw, y: -hh },
+                { x: hw, y: -hh },
+                { x: hw, y: hh },
+                { x: -hw, y: hh },
+                { x: -hw, y: -hh }
+            ];
+            return pts.map((p) => ({
+                x: cx + p.x * c - p.y * s,
+                y: cy + p.x * s + p.y * c
+            }));
+        };
+
+        let fails = 0;
+        for (let i = 0; i < targetCount && fails < 1300; i++) {
+            const p = this._pickDarkestPoint(darkness, rand, 120, minDarkness);
+            if (!p) break;
+
+            const x = p.x;
+            const y = p.y;
+            const d = p.darkness;
+            if (d < minDarkness) {
+                fails++;
+                continue;
+            }
+
+            const angleFieldDeg = 45 + (Math.sin((x / 9) * Math.PI / 180) + Math.cos(((y / 9) + 26) * Math.PI / 180)) * (180 / Math.PI);
+            const angleDeg = angleFieldDeg + ((rand() * 2 - 1) * maxRotationDeg);
+            const angle = angleDeg * Math.PI / 180;
+            const sizeBias = 0.42 + d * (0.9 + detail * 0.65);
+            const w = Math.max(2, baseSize * density * sizeBias * (1 + ((rand() * 2 - 1) * variance)));
+            const h = Math.max(2, baseSize * (0.7 + d * 0.9) * (1 + ((rand() * 2 - 1) * variance)));
+            const rect = createRect(x, y, w, h, angle);
+            paths.push(rect);
+
+            if (d > 0.42) {
+                const hatchLength = Math.max(1, w * (0.25 + d * 0.55));
+                const hx = Math.cos(angle) * hatchLength * 0.5;
+                const hy = Math.sin(angle) * hatchLength * 0.5;
+                paths.push([{ x: x - hx, y: y - hy }, { x: x + hx, y: y + hy }]);
+            }
+
+            this._eraseDiskOnDarknessMap(darkness, x, y, eraseBase * (0.85 + d * 0.8), 0.52 + d * 0.25);
+            fails = 0;
+        }
+
+        return paths;
+    }
+
+    _buildAdaptiveDarknessMap(channel = 'bw', options = {}) {
+        const map = new Float32Array(this.width * this.height);
+        const skipWhite = !!options.skipWhite;
+        let idx = 0;
+        for (let y = 0; y < this.height; y++) {
+            for (let x = 0; x < this.width; x++, idx++) {
+                let demand;
+                if (channel === 'bw') {
+                    demand = 1 - (this.brightnessMap[idx] / 255);
+                } else {
+                    demand = this._getRgbInkDemand(x, y, channel, { skipWhite });
+                }
+                map[idx] = Math.max(0, Math.min(1, demand));
+            }
+        }
+        return map;
+    }
+
+    _pickDarkestPoint(darknessMap, rand, probes = 120, minDarkness = 0.05) {
+        let bestIdx = -1;
+        let best = minDarkness;
+        const len = darknessMap.length;
+        for (let i = 0; i < probes; i++) {
+            const idx = Math.min(len - 1, Math.floor(rand() * len));
+            const d = darknessMap[idx];
+            if (d > best) {
+                best = d;
+                bestIdx = idx;
+            }
+        }
+        if (bestIdx < 0) return null;
+        const x = bestIdx % this.width;
+        const y = Math.floor(bestIdx / this.width);
+        return { x, y, darkness: best };
+    }
+
+    _findDarkestLineCandidate(options) {
+        const {
+            darkness,
+            sx,
+            sy,
+            minLen,
+            maxLen,
+            tests,
+            startAngleDeg,
+            deltaAngleDeg,
+            rand
+        } = options;
+
+        let best = null;
+        const iterations = Math.max(4, tests);
+        const stepDeg = deltaAngleDeg / Math.max(1, iterations);
+
+        for (let i = 0; i < iterations; i++) {
+            const angleDeg = startAngleDeg + (stepDeg * i);
+            const angle = angleDeg * Math.PI / 180;
+            const len = Math.max(minLen, Math.round(minLen + rand() * (maxLen - minLen)));
+            const tx = Math.round(sx + Math.cos(angle) * len);
+            const ty = Math.round(sy + Math.sin(angle) * len);
+            if (tx < 0 || ty < 0 || tx >= this.width || ty >= this.height) continue;
+            const sample = this._sampleDarknessAlongLine(darkness, sx, sy, tx, ty);
+            if (!sample) continue;
+            // Slightly favour non-axis lines to avoid digital artifacts.
+            const axisPenalty = (sx === tx || sy === ty) ? 0.006 : 0;
+            const score = sample.avgDarkness - axisPenalty;
+            if (!best || score > best.score) {
+                best = { x: tx, y: ty, avgDarkness: sample.avgDarkness, score, angleDeg };
+            }
+        }
+        return best;
+    }
+
+    _sampleDarknessAlongLine(darkness, x1, y1, x2, y2) {
+        const dx = x2 - x1;
+        const dy = y2 - y1;
+        const dist = Math.hypot(dx, dy);
+        const steps = Math.max(2, Math.round(dist));
+        let sum = 0;
+        let count = 0;
+        for (let i = 0; i <= steps; i++) {
+            const t = i / steps;
+            const x = Math.max(0, Math.min(this.width - 1, Math.round(x1 + dx * t)));
+            const y = Math.max(0, Math.min(this.height - 1, Math.round(y1 + dy * t)));
+            sum += darkness[y * this.width + x];
+            count++;
+        }
+        if (count < 2) return null;
+        return { avgDarkness: sum / count };
+    }
+
+    _eraseLineOnDarknessMap(darkness, x1, y1, x2, y2, radius, amount) {
+        const dx = x2 - x1;
+        const dy = y2 - y1;
+        const dist = Math.hypot(dx, dy);
+        const steps = Math.max(2, Math.round(dist));
+        for (let i = 0; i <= steps; i++) {
+            const t = i / steps;
+            const x = x1 + dx * t;
+            const y = y1 + dy * t;
+            this._eraseDiskOnDarknessMap(darkness, x, y, radius, amount);
+        }
+    }
+
+    _eraseDiskOnDarknessMap(darkness, cx, cy, radius, amount) {
+        const r = Math.max(0.5, radius);
+        const r2 = r * r;
+        const minX = Math.max(0, Math.floor(cx - r));
+        const maxX = Math.min(this.width - 1, Math.ceil(cx + r));
+        const minY = Math.max(0, Math.floor(cy - r));
+        const maxY = Math.min(this.height - 1, Math.ceil(cy + r));
+        for (let y = minY; y <= maxY; y++) {
+            const dy = y - cy;
+            for (let x = minX; x <= maxX; x++) {
+                const dx = x - cx;
+                const d2 = dx * dx + dy * dy;
+                if (d2 > r2) continue;
+                const idx = y * this.width + x;
+                const falloff = 1 - Math.sqrt(d2) / r;
+                darkness[idx] = Math.max(0, darkness[idx] - (amount * falloff));
+            }
+        }
     }
 
     generateWoven(params) {

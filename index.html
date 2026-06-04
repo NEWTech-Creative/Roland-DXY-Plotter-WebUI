@@ -126,6 +126,13 @@
                     </div>
                     <div class="panel-body">
                         <h3>Jog Machine</h3>
+                        <div id="jog-sync-note" class="panel-note panel-note-warning" role="note">
+                            <div class="panel-note-header">
+                                <strong>Keep jogs in sync</strong>
+                                <button id="btn-dismiss-jog-sync-note" type="button" class="panel-note-dismiss" aria-label="Dismiss jog sync note">&times;</button>
+                            </div>
+                            <span>Use the UI jog controls only. Jogging from the physical machine controls can move the machine without updating the Visualiser position.</span>
+                        </div>
                         <div class="jog-container">
                             <div class="jog-pen-controls">
                                 <button id="btn-pen-up" class="btn btn-action jog-pen-btn" title="Send PU; command">Pen Up</button>
@@ -436,6 +443,10 @@
                                 <option value="continuousContour">Continuous Contour Loops</option>
                             </select>
                         </div>
+                        <div class="panel-note panel-note-info" role="note">
+                            <strong>Selection required</strong>
+                            <span>Select an object in the Visualiser before applying patterns. Continuous Contour Loops is the exception and can use its own contour source.</span>
+                        </div>
 
                         <div id="pattern-controls" class="hidden compact-section compact-section-soft">
                             <hr class="divider compact-divider">
@@ -658,7 +669,11 @@
                                     <select id="sel-iv-method" style="width: 100%;">
                                         <option value="trace">Trace / Clean Vector</option>
                                         <option value="contour">Contour / Edge Tracing</option>
+                                        <option value="intaglio">Intaglio Printing</option>
+                                        <option value="hair">Hair</option>
                                         <option value="hatch">Cross-Hatching Shading</option>
+                                        <option value="sketchLines">Sketch Lines</option>
+                                        <option value="mosaicRectangles">Mosaic Rectangles</option>
                                         <option value="spiral">Spiral Halftone</option>
                                         <option value="squiggle">Squiggle</option>
                                         <option value="wave">Wave Distortion</option>
@@ -1685,4 +1700,8 @@
 </body>
 
 </html>
+
+
+
+
 

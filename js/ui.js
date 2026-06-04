@@ -84,6 +84,7 @@ class UIController {
         this._bindCustomPaperModal();
         this._bindImportResolutionMenu();
         this._bindJog();
+        this._bindJogSyncNote();
         this._bindPatterns();
         this._bindFillBucketMenu();
         this._bindBooleanMenu();
@@ -1634,7 +1635,6 @@ class UIController {
         this.positionMenuWithinHost(triggerButton, menu, { preferredSide: 'right' });
         this.syncSpecialToolHighlights();
     }
-
     _bindFillBucketMenu() {
         const menu = document.getElementById('fill-bucket-menu');
         const btnClose = document.getElementById('btn-close-fill-bucket-menu');
@@ -1650,7 +1650,9 @@ class UIController {
 
         if (selPattern) {
             selPattern.value = this.fillBucketSettings.pattern;
-            selPattern.onchange = () => { this.fillBucketSettings.pattern = selPattern.value; };
+            selPattern.onchange = () => {
+                this.fillBucketSettings.pattern = selPattern.value;
+            };
         }
         if (inputSpacing && valSpacing) {
             inputSpacing.value = this.fillBucketSettings.spacing;
@@ -1662,10 +1664,10 @@ class UIController {
         }
         if (inputAngle && valAngle) {
             inputAngle.value = this.fillBucketSettings.angle;
-            valAngle.textContent = `${this.fillBucketSettings.angle}Â°`;
+            valAngle.textContent = `${this.fillBucketSettings.angle}°`;
             inputAngle.oninput = () => {
                 this.fillBucketSettings.angle = parseFloat(inputAngle.value);
-                valAngle.textContent = `${inputAngle.value}Â°`;
+                valAngle.textContent = `${inputAngle.value}°`;
             };
         }
         if (selPen) {
@@ -1683,7 +1685,6 @@ class UIController {
         }
         if (btnClose) btnClose.onclick = () => menu.classList.add('hidden');
     }
-
     refreshFillBucketPenOptions() {
         const selPen = document.getElementById('sel-fill-pen');
         if (!selPen) return;
@@ -2272,7 +2273,21 @@ class UIController {
             };
         });
     }
+    _bindJogSyncNote() {
+        const note = document.getElementById('jog-sync-note');
+        const dismissButton = document.getElementById('btn-dismiss-jog-sync-note');
+        if (!note || !dismissButton) return;
 
+        if (localStorage.getItem('jogSyncNoticeDismissed') === 'true') {
+            note.classList.add('hidden');
+            return;
+        }
+
+        dismissButton.addEventListener('click', () => {
+            localStorage.setItem('jogSyncNoticeDismissed', 'true');
+            note.classList.add('hidden');
+        });
+    }
     _bindPatterns() {
         const selType = document.getElementById('sel-pattern-type');
         const controls = document.getElementById('pattern-controls');
@@ -2596,3 +2611,4 @@ class UIController {
         });
     }
 }
+

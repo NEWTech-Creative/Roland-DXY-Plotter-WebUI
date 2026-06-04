@@ -22,6 +22,14 @@ class ImageVectorPanel {
         this.updateMethodParams(); // Initialize sliders
     }
 
+    appendMany(target, items) {
+        if (!Array.isArray(target) || !Array.isArray(items) || items.length === 0) return;
+        const chunkSize = 1000;
+        for (let i = 0; i < items.length; i += chunkSize) {
+            Array.prototype.push.apply(target, items.slice(i, i + chunkSize));
+        }
+    }
+
     _bindUI() {
         const uploadBtn = document.getElementById('iv-upload-btn');
         const uploadZone = document.getElementById('iv-upload-zone');
@@ -245,6 +253,9 @@ class ImageVectorPanel {
                 const previewStrokeWidth = (this.lastParams && this.lastParams.previewStrokeWidth) || 1.2;
                 ctx.strokeStyle = '#2563eb';
                 ctx.lineWidth = Math.max(0.25, previewStrokeWidth) / this.scale;
+            } else if (method === 'intaglio' || method === 'hair') {
+                ctx.strokeStyle = '#053b6f';
+                ctx.lineWidth = Math.max(0.08, (this.lastParams && this.lastParams.intaglioThickness) || 0.45) / this.scale;
             } else {
                 ctx.strokeStyle = '#3b82f6';
                 ctx.lineWidth = 1 / this.scale;
@@ -254,10 +265,14 @@ class ImageVectorPanel {
             ctx.lineCap = 'round';
             this.vectorPaths.forEach(path => {
                 const points = Array.isArray(path) ? path : path?.points;
-                if (!path || ((!points || points.length < 2) && !path.segments)) return;
+                if (!path) return;
 
+                if ((method === 'intaglio' || method === 'hair') && path.intaglioGuide) {
+                    ctx.strokeStyle = 'rgba(239, 68, 68, 0.42)';
+                    ctx.lineWidth = Math.max(0.35, path.previewStrokeWidth || 0.55) / this.scale;
+                }
                 // Set color based on path.layer or method
-                if (path.layer !== undefined && document.getElementById('sel-iv-color-mode').value === 'color') {
+                else if (path.layer !== undefined && document.getElementById('sel-iv-color-mode').value === 'color') {
                     let colorHex = this.layerColors[path.layer] || this.layerColors[0];
                     
                     // Convert hex to rgba for string art
@@ -266,12 +281,38 @@ class ImageVectorPanel {
                         const g = parseInt(colorHex.slice(3, 5), 16);
                         const b = parseInt(colorHex.slice(5, 7), 16);
                         ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, ${strokeOpacity.toFixed(3)})`;
+                    } else if (method === 'intaglio' || method === 'hair') {
+                        const r = parseInt(colorHex.slice(1, 3), 16);
+                        const g = parseInt(colorHex.slice(3, 5), 16);
+                        const b = parseInt(colorHex.slice(5, 7), 16);
+                        const opacity = Number.isFinite(path.opacity) ? path.opacity : 0.75;
+                        ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, ${opacity.toFixed(3)})`;
                     } else {
                         ctx.strokeStyle = colorHex;
                     }
+                } else if (method === 'intaglio' || method === 'hair') {
+                    const opacity = Number.isFinite(path.opacity) ? path.opacity : 0.8;
+                    ctx.strokeStyle = `rgba(5, 59, 111, ${opacity.toFixed(3)})`;
                 }
 
+                if (path.type === 'dot') {
+                    const x = Number.isFinite(path.x) ? path.x : points?.[0]?.x;
+                    const y = Number.isFinite(path.y) ? path.y : points?.[0]?.y;
+                    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+                    const radius = Math.max(0.65 / this.scale, path.previewRadius || 0.55);
+                    ctx.beginPath();
+                    ctx.arc(x, y, radius, 0, Math.PI * 2);
+                    ctx.fillStyle = ctx.strokeStyle;
+                    ctx.fill();
+                    return;
+                }
+
+                if (((!points || points.length < 2) && !path.segments)) return;
+
                 ctx.beginPath();
+                if ((method === 'intaglio' || method === 'hair') && Number.isFinite(path.previewStrokeWidth)) {
+                    ctx.lineWidth = Math.max(0.12, path.previewStrokeWidth) / this.scale;
+                }
                 if (path.segments && path.segments.length > 0) {
                     const s0 = path.segments[0];
                     ctx.moveTo(s0.x, s0.y);
@@ -343,7 +384,7 @@ class ImageVectorPanel {
 
         // Hide global sliders when a mode has its own dedicated tone controls.
         const globalVisibility = {
-            threshold: !['string', 'spiral'].includes(method),
+            threshold: !['string', 'spiral', 'intaglio', 'hair'].includes(method),
             contrast: method !== 'string',
             simplify: method !== 'string'
         };
@@ -385,8 +426,80 @@ class ImageVectorPanel {
                     </select>
                 </div>`;
                 break;
+            case 'intaglio':
+                addS('spacing', 'Stripe Size', 2, 18, 6, 0.5);
+                addS('intaglioThickness', 'Vector Stroke Width', 0.08, 2, 0.55, 0.02);
+                addS('intaglioContourInfluence', 'Texture Rotation', 0, 100, 62, 1);
+                addS('intaglioEdgeSensitivity', 'Wave Length', 24, 340, 150, 1);
+                addS('intaglioBrightnessThreshold', 'Hard Mix Threshold', 40, 252, 176, 1);
+                addS('intaglioWobble', 'Wave/Ripple Amount', 0, 250, 50, 1);
+                addS('intaglioMaxLength', 'Segment Length', 30, 900, 240, 10);
+                addS('intaglioSmoothing', 'Texture Softness', 0, 8, 2, 1);
+                addSelect('intaglioHorizontal', 'Main Line Texture', [
+                    { value: 'true', label: 'On' },
+                    { value: 'false', label: 'Off' }
+                ], 'true');
+                addSelect('intaglioVertical', 'Rotated 90 Degree Layer', [
+                    { value: 'false', label: 'Off' },
+                    { value: 'true', label: 'On' }
+                ], 'false');
+                addSelect('intaglioCross', 'Extra Cross Texture', [
+                    { value: 'true', label: 'On' },
+                    { value: 'false', label: 'Off' }
+                ], 'false');
+                addSelect('intaglioShowEdges', 'Show Detected Edges', [
+                    { value: 'false', label: 'Off' },
+                    { value: 'true', label: 'On' }
+                ], 'false');
+                break;
+            case 'hair':
+                addS('spacing', 'Strand Spacing', 2, 18, 5, 0.5);
+                addS('intaglioThickness', 'Strand Thickness', 0.1, 2.5, 0.45, 0.05);
+                addS('intaglioContourInfluence', 'Flow Influence', 0, 100, 88, 1);
+                addS('intaglioEdgeSensitivity', 'Break Sensitivity', 20, 260, 135, 1);
+                addS('intaglioBrightnessThreshold', 'Highlight Cutoff', 120, 255, 246, 1);
+                addS('intaglioWobble', 'Strand Wobble', 0, 2, 0.35, 0.05);
+                addS('intaglioMaxLength', 'Max Strand Length', 60, 620, 340, 10);
+                addS('intaglioSmoothing', 'Smoothing', 0, 8, 4, 1);
+                addSelect('intaglioHorizontal', 'Horizontal Strands', [
+                    { value: 'false', label: 'Off' },
+                    { value: 'true', label: 'On' }
+                ], 'false');
+                addSelect('intaglioVertical', 'Vertical Strands', [
+                    { value: 'false', label: 'Off' },
+                    { value: 'true', label: 'On' }
+                ], 'false');
+                addSelect('intaglioCurved', 'Curved Flow Lines', [
+                    { value: 'true', label: 'On' },
+                    { value: 'false', label: 'Off' }
+                ], 'true');
+                addSelect('intaglioCross', 'Cross Flow Lines', [
+                    { value: 'true', label: 'On' },
+                    { value: 'false', label: 'Off' }
+                ], 'true');
+                addSelect('intaglioShowEdges', 'Show Detected Edges', [
+                    { value: 'false', label: 'Off' },
+                    { value: 'true', label: 'On' }
+                ], 'false');
+                break;
             case 'topo': addS('spacing', 'Path Detail', 1, 10, 2, 0.5); break;
             case 'hatch': addS('spacing', 'Line Spacing', 2, 25, 5); addS('layers', 'Layers', 1, 4, 2); break;
+            case 'sketchLines':
+                addS('sketchSpacing', 'Stroke Spacing', 1.5, 30, 6, 0.5);
+                addS('sketchLayers', 'Layers', 1, 7, 3, 1);
+                addS('sketchRoughness', 'Roughness', 0, 1, 0.45, 0.01);
+                addS('sketchIntensity', 'Dark Region Bias', 1, 100, 58, 1);
+                addS('sketchAngle', 'Direction Angle', 0, 180, 45, 1);
+                addS('sketchSeed', 'Seed', 0, 999, 17, 1);
+                break;
+            case 'mosaicRectangles':
+                addS('mosaicRectSize', 'Tile Size', 4, 60, 16, 1);
+                addS('mosaicRectDensity', 'Tile Density', 0.3, 2.4, 1, 0.05);
+                addS('mosaicRectVariance', 'Size Variance', 0, 1, 0.35, 0.01);
+                addS('mosaicRectRotation', 'Rotation Range', 0, 60, 18, 1);
+                addS('mosaicRectDetail', 'Detail Amount', 1, 100, 64, 1);
+                addS('mosaicRectSeed', 'Seed', 0, 999, 23, 1);
+                break;
             case 'spiral':
                 addSelect('spiralPreset', 'Preset', [
                     { value: 'portraitClean', label: 'Portrait Clean' },
@@ -471,13 +584,12 @@ class ImageVectorPanel {
                 ], 'circles');
                 break;
             case 'dots':
-                addS('dotsResolution', 'Resolution', 1, 20, 2, 1);
-                addS('dotsDirection', 'Line Direction', 0, 180, 0, 1);
+                addS('dotsResolution', 'Dot Spacing (lower = finer)', 0.2, 3, 1, 0.1);
                 addS('dotsSeed', 'Seed', 0, 999, 50, 1);
-                addSelect('dotsRandomDirection', 'Random Direction', [
-                    { value: 'false', label: 'Off' },
-                    { value: 'true', label: 'On' }
-                ], 'false');
+                html += `<label class="checkbox-label iv-dynamic-group" style="margin-top: 8px;">
+                    <input type="checkbox" id="input-iv-dotsSkipWhite" checked>
+                    <span>Skip white pixels</span>
+                </label>`;
                 break;
             case 'mosaic':
                 addS('mosaicScale', 'Scale', 2, 100, 10, 1);
@@ -736,11 +848,17 @@ class ImageVectorPanel {
             minDotSize: gV('minDotSize', 1.5),
             dotSizeRange: gV('dotSizeRange', 4),
             stippleSeed: gV('stippleSeed', 1),
-            dotsResolution: gV('dotsResolution', 2),
-            dotsDirection: gV('dotsDirection', 0),
+            dotsResolution: gV('dotsResolution', 1),
             dotsSeed: gV('dotsSeed', 50),
+            dotsSkipWhite: document.getElementById('input-iv-dotsSkipWhite') ? document.getElementById('input-iv-dotsSkipWhite').checked : true,
             mosaicScale: gV('mosaicScale', 10),
             mosaicHatches: gV('mosaicHatches', 6),
+            mosaicRectSize: gV('mosaicRectSize', 16),
+            mosaicRectDensity: gV('mosaicRectDensity', 1),
+            mosaicRectVariance: gV('mosaicRectVariance', 0.35),
+            mosaicRectRotation: gV('mosaicRectRotation', 18),
+            mosaicRectDetail: gV('mosaicRectDetail', 64),
+            mosaicRectSeed: gV('mosaicRectSeed', 23),
             wovenFrequency: gV('wovenFrequency', 24),
             wovenLineCount: gV('wovenLineCount', 8),
             wovenSeed: gV('wovenSeed', 1),
@@ -757,6 +875,12 @@ class ImageVectorPanel {
             fillSpacing: gV('fillSpacing', 8),
             fillAngle: gV('fillAngle', 45),
             zigzagSize: gV('zigzagSize', 5),
+            sketchSpacing: gV('sketchSpacing', 6),
+            sketchLayers: gV('sketchLayers', 3),
+            sketchRoughness: gV('sketchRoughness', 0.45),
+            sketchIntensity: gV('sketchIntensity', 58),
+            sketchAngle: gV('sketchAngle', 45),
+            sketchSeed: gV('sketchSeed', 17),
             lineWeight: gV('lineWeight', 30),
             edgeBoost: gV('saSharp', 50),
             direction: (document.getElementById('input-iv-direction') || {}).value || 'cw',
@@ -766,11 +890,22 @@ class ImageVectorPanel {
             squiggleModulation: (document.getElementById('input-iv-squiggleModulation') || {}).value || 'both',
             longWaveDirection: (document.getElementById('input-iv-longWaveDirection') || {}).value || 'vertical',
             stippleType: (document.getElementById('input-iv-stippleType') || {}).value || 'circles',
-            dotsRandomDirection: ((document.getElementById('input-iv-dotsRandomDirection') || {}).value || 'false') === 'true',
             mosaicOutlines: ((document.getElementById('input-iv-mosaicOutlines') || {}).value || 'false') === 'true',
             wovenCosine: ((document.getElementById('input-iv-wovenCosine') || {}).value || 'false') === 'true',
             wovenRandom: ((document.getElementById('input-iv-wovenRandom') || {}).value || 'false') === 'true',
-            wovenPower: parseFloat((document.getElementById('input-iv-wovenPower') || {}).value || '2')
+            wovenPower: parseFloat((document.getElementById('input-iv-wovenPower') || {}).value || '2'),
+            intaglioThickness: gV('intaglioThickness', method === 'intaglio' ? 0.55 : 0.45),
+            intaglioContourInfluence: gV('intaglioContourInfluence', method === 'intaglio' ? 62 : 88),
+            intaglioEdgeSensitivity: gV('intaglioEdgeSensitivity', method === 'intaglio' ? 150 : 135),
+            intaglioBrightnessThreshold: gV('intaglioBrightnessThreshold', method === 'intaglio' ? 176 : 246),
+            intaglioWobble: gV('intaglioWobble', method === 'intaglio' ? 50 : 0.35),
+            intaglioMaxLength: gV('intaglioMaxLength', method === 'intaglio' ? 240 : 340),
+            intaglioSmoothing: gV('intaglioSmoothing', method === 'intaglio' ? 2 : 4),
+            intaglioHorizontal: ((document.getElementById('input-iv-intaglioHorizontal') || {}).value || (method === 'intaglio' ? 'true' : 'false')) === 'true',
+            intaglioVertical: ((document.getElementById('input-iv-intaglioVertical') || {}).value || 'false') === 'true',
+            intaglioCurved: ((document.getElementById('input-iv-intaglioCurved') || {}).value || 'true') === 'true',
+            intaglioCross: ((document.getElementById('input-iv-intaglioCross') || {}).value || (method === 'intaglio' ? 'false' : 'true')) === 'true',
+            intaglioShowEdges: ((document.getElementById('input-iv-intaglioShowEdges') || {}).value || 'false') === 'true'
         };
 
         this.lastParams = params;
@@ -784,15 +919,15 @@ class ImageVectorPanel {
                     const channels = ['r', 'g', 'b'];
                     this.vectorPaths = [];
                     for (let i = 0; i < 3; i++) {
-                        const layerParams = { ...params, channel: channels[i], layerIndex: i };
+                        const layerParams = { ...params, channel: channels[i], layerIndex: i, colorMode };
                         const paths = await this.engine.process(method, layerParams);
                         // Tag paths with their layer index
                         paths.forEach(p => p.layer = i);
-                        this.vectorPaths.push(...paths);
+                        this.appendMany(this.vectorPaths, paths);
                     }
                 } else {
                     // Standard BW generation
-                    const layerParams = { ...params, channel: 'bw', layerIndex: 0 };
+                    const layerParams = { ...params, channel: 'bw', layerIndex: 0, colorMode };
                     this.vectorPaths = await this.engine.process(method, layerParams);
                     this.vectorPaths.forEach(p => p.layer = 0);
                 }
@@ -839,8 +974,9 @@ class ImageVectorPanel {
         const ty = centerY - (minY + h / 2) * scale;
 
         const shifted = this.vectorPaths.map(path => {
+            if (path?.intaglioGuide) return null;
             const points = Array.isArray(path) ? path : path?.points;
-            if (!Array.isArray(points) || points.length < 2) return null;
+            if (!Array.isArray(points) || (points.length < 2 && path?.type !== 'dot')) return null;
 
             const scaledPoints = points.map(p => ({
                 x: p.x * scale + tx,
@@ -877,12 +1013,20 @@ class ImageVectorPanel {
             }
 
             const pathObj = {
-                type: scaledSegments ? 'path' : 'polyline',
+                type: path?.type === 'dot' ? 'dot' : (scaledSegments ? 'path' : 'polyline'),
                 groupId: subGroupId,
                 parentGroupId: colorMode === 'color' ? importGroupId : undefined,
                 points: scaledPoints,
-                pen: physicalPen
+                pen: physicalPen,
+                opacity: Number.isFinite(path?.opacity) ? path.opacity : undefined,
+                lineWidth: Number.isFinite(path?.previewStrokeWidth) ? path.previewStrokeWidth * scale : undefined
             };
+
+            if (pathObj.type === 'dot') {
+                pathObj.x = scaledPoints[0].x;
+                pathObj.y = scaledPoints[0].y;
+                pathObj.previewRadius = Math.max(0.2, (path.previewRadius || 0.55) * scale);
+            }
 
             if (scaledSegments) pathObj.segments = scaledSegments;
             if (path?.closed === true) pathObj.closed = true;
@@ -892,7 +1036,7 @@ class ImageVectorPanel {
         // Refresh the visible pen palette after remapping RGB layers to visualizer pens.
         if (this.app.ui && this.app.ui.updateVisualizerPalette) this.app.ui.updateVisualizerPalette();
 
-        this.app.canvas.paths.push(...shifted);
+        this.appendMany(this.app.canvas.paths, shifted);
         this.app.canvas.saveUndoState();
         this.app.canvas.draw();
         this.app.ui.logToConsole(`System: Added ${shifted.length} paths (centered).`);

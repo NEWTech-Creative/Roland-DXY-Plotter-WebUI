@@ -517,6 +517,10 @@ class App {
 
                 if (data.paths) {
                     this.canvas.paths = data.paths;
+                    this.canvas.normalizeLoadedPaths?.();
+                    this.canvas.invalidateFillRegionCache?.();
+                    this.canvas.initializeHistoryFromCurrentState?.();
+                    this.canvas.saveCurrentState?.();
                 }
 
                 if (data.penConfig) {

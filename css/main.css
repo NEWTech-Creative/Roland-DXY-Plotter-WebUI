@@ -1301,6 +1301,71 @@ input[type="color"] {
     background: rgba(255, 255, 255, 0.025);
 }
 
+.panel-note {
+    display: grid;
+    gap: 4px;
+    padding: 9px 10px;
+    border-radius: 8px;
+    border: 1px solid rgba(148, 163, 184, 0.22);
+    background: rgba(15, 23, 42, 0.22);
+    color: var(--text-secondary);
+    font-size: 0.76rem;
+    line-height: 1.35;
+}
+
+.panel-note strong {
+    color: var(--text-primary);
+    font-size: 0.74rem;
+    letter-spacing: 0;
+}
+
+.panel-note-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.panel-note-dismiss {
+    width: 22px;
+    height: 22px;
+    flex: 0 0 22px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    border-radius: 6px;
+    background: rgba(15, 23, 42, 0.18);
+    color: var(--text-secondary);
+    line-height: 1;
+    cursor: pointer;
+    transition: var(--transition);
+}
+
+.panel-note-dismiss:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: var(--text-primary);
+}
+
+.panel-note-warning {
+    border-color: rgba(245, 158, 11, 0.42);
+    background: rgba(245, 158, 11, 0.1);
+}
+
+.panel-note-warning strong {
+    color: var(--warning);
+}
+
+.panel-note-info {
+    border-color: rgba(59, 130, 246, 0.34);
+    background: rgba(59, 130, 246, 0.09);
+}
+
+.panel-note-info strong {
+    color: var(--accent-color);
+}
+
 .compact-divider {
     margin: 8px 0 12px !important;
     opacity: 0.55;
