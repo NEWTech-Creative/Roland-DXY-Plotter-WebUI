@@ -228,6 +228,43 @@
                                 <button id="btn-cancel" data-stream-action="cancel" class="btn btn-action btn-stream-cancel" disabled>Cancel</button>
                             </div>
                         </div>
+
+                        <div id="serial-debug-panel" class="serial-debug-panel hidden">
+                            <div class="serial-debug-header">
+                                <span>Serial Debug</span>
+                                <div class="serial-debug-actions">
+                                    <button id="btn-debug-export" class="btn btn-secondary btn-mini" type="button">Export</button>
+                                    <button id="btn-debug-reset" class="btn btn-secondary btn-mini" type="button">Reset</button>
+                                </div>
+                            </div>
+                            <div class="serial-debug-command-row">
+                                <input type="text" id="debug-hpgl-input" placeholder="Debug command (e.g. PD1000,1000;)">
+                                <button id="btn-debug-send" class="btn btn-action btn-mini" type="button">Send</button>
+                            </div>
+                            <div class="serial-debug-repeat-row">
+                                <button id="btn-debug-repeat-start" class="btn btn-action btn-mini" type="button">Start 10mm Repeat</button>
+                                <button id="btn-debug-repeat-stop" class="btn btn-secondary btn-mini" type="button" disabled>Stop</button>
+                                <span>Loops <strong data-debug-stat="repeat-loops">0</strong></span>
+                            </div>
+                            <div class="serial-debug-repeat-row">
+                                <button id="btn-debug-stress-start" class="btn btn-warning btn-mini" type="button">Start Buffer Stress</button>
+                                <button id="btn-debug-stress-stop" class="btn btn-secondary btn-mini" type="button" disabled>Stop</button>
+                                <span>Stress TX <strong data-debug-stat="stress-writes">0</strong></span>
+                            </div>
+                            <div class="serial-debug-stats">
+                                <div><span>Total TX</span><strong data-debug-stat="total-bytes">0</strong></div>
+                                <div><span>Last TX</span><strong data-debug-stat="last-write-bytes">0</strong></div>
+                                <div><span>Max TX</span><strong data-debug-stat="max-write-bytes">0</strong></div>
+                                <div><span>Since Flow</span><strong data-debug-stat="bytes-since-flow">0</strong></div>
+                                <div><span>Max Before XOFF</span><strong data-debug-stat="max-before-xoff">0</strong></div>
+                                <div><span>XON / XOFF</span><strong><span data-debug-stat="xon-count">0</span> / <span data-debug-stat="xoff-count">0</span></strong></div>
+                                <div><span>Max Before CTS Hold</span><strong data-debug-stat="max-before-cts-hold">0</strong></div>
+                                <div><span>CTS Ready / Hold</span><strong><span data-debug-stat="cts-ready-count">0</span> / <span data-debug-stat="cts-hold-count">0</span></strong></div>
+                            </div>
+                            <div id="serial-debug-log" class="serial-debug-log">
+                                <div class="serial-debug-line">Waiting for serial activity.</div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -1182,6 +1219,11 @@
                                 <span>Combine creative tools into one tabbed panel</span>
                             </label>
                             <small class="settings-help">Groups 3D Vector, Pattern Generator, Live Finger Tracker, Image to Vector, and Handwriting Generator into one panel with tabs across the top.</small>
+                            <label class="panel-toggle-item settings-inline-toggle">
+                                <input type="checkbox" id="input-show-serial-debug">
+                                <span>Show Serial Debug Window</span>
+                            </label>
+                            <small class="settings-help">Off by default. Shows byte counters plus XON/XOFF timing for flow-control testing.</small>
                             <div class="panel-toggle-list settings-panel-toggle-list">
                                 <label class="panel-toggle-item">
                                     <input type="checkbox" data-panel-toggle="panel-connection" checked disabled>

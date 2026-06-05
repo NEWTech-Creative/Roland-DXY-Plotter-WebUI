@@ -1774,6 +1774,26 @@ input[type="color"] {
     color: var(--text-secondary);
 }
 
+.form-row .form-group select {
+    width: 100%;
+}
+
+.form-group label.form-label-with-action {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-height: 20px;
+    margin-bottom: 2px;
+    gap: 8px;
+}
+
+.form-group label.form-label-with-action .btn-inline-help {
+    flex: 0 0 auto;
+    margin-left: 0;
+    padding-left: 0;
+    line-height: 1;
+}
+
 .form-row {
     display: flex;
     gap: 10px;
@@ -1826,6 +1846,115 @@ input[type="color"] {
     border-color: var(--accent-color);
     background: rgba(255, 255, 255, 0.1);
     box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.3);
+}
+
+.serial-debug-panel {
+    border-top: 1px solid var(--panel-border);
+    background: rgba(0, 0, 0, 0.12);
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.serial-debug-header,
+.serial-debug-command-row,
+.serial-debug-repeat-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.serial-debug-header {
+    justify-content: space-between;
+    color: var(--text-secondary);
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0;
+    text-transform: uppercase;
+}
+
+.serial-debug-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.serial-debug-command-row input {
+    min-width: 0;
+    flex: 1;
+    padding: 7px 9px;
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+}
+
+.serial-debug-repeat-row {
+    flex-wrap: wrap;
+}
+
+.serial-debug-repeat-row span {
+    color: var(--text-secondary);
+    font-size: 0.72rem;
+    margin-left: auto;
+}
+
+.serial-debug-repeat-row strong {
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+}
+
+.btn-mini {
+    min-height: 28px;
+    padding: 6px 9px;
+    font-size: 0.72rem;
+}
+
+.serial-debug-stats {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+}
+
+.serial-debug-stats div {
+    min-width: 0;
+    border: 1px solid var(--panel-border);
+    border-radius: 4px;
+    padding: 6px;
+    background: rgba(255, 255, 255, 0.04);
+}
+
+.serial-debug-stats span {
+    display: block;
+    color: var(--text-secondary);
+    font-size: 0.64rem;
+    line-height: 1.2;
+}
+
+.serial-debug-stats strong {
+    display: block;
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    line-height: 1.3;
+    overflow-wrap: anywhere;
+}
+
+.serial-debug-log {
+    min-height: 74px;
+    max-height: 112px;
+    overflow-y: auto;
+    border: 1px solid var(--panel-border);
+    border-radius: 4px;
+    background: rgba(0, 0, 0, 0.22);
+    padding: 6px;
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    color: var(--text-secondary);
+}
+
+.serial-debug-line {
+    overflow-wrap: anywhere;
+    line-height: 1.35;
 }
 
 /* Buttons */

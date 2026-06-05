@@ -14,6 +14,15 @@ class SerialManager {
         this.hardwareFlowSupported = false;
         this.lastSignals = null;
         this.hardwareFlowPollMs = 25;
+        this.ctsPriorityByteWindow = 1024;
+        this.ctsRecoveryByteWindow = 256;
+        this.ctsRecoveryRampMs = 3000;
+        this.ctsReadyCooldownMs = 500;
+        this.ctsPriorityDrainMs = 40;
+        this.bytesSincePriorityCtsPoll = 0;
+        this.ctsRecoveryMode = false;
+        this.ctsLastHoldAt = 0;
+        this.ctsLastReadyAt = 0;
         this.estimatedPosition = { x: 0, y: 0 };
         this.estimatedAbsoluteMode = true;
 
@@ -46,9 +55,22 @@ class SerialManager {
         this.queueStatEls = Array.from(document.querySelectorAll('[data-stat="queue"]'));
         this.positionXEls = Array.from(document.querySelectorAll('[data-stat="pos-x"]'));
         this.positionYEls = Array.from(document.querySelectorAll('[data-stat="pos-y"]'));
+        this.debugStatEls = Array.from(document.querySelectorAll('[data-debug-stat]'));
+        this.debugPanelEl = document.getElementById('serial-debug-panel');
+        this.debugLogEl = document.getElementById('serial-debug-log');
+        this.serialDebugStats = this.createEmptySerialDebugStats();
+        this.serialDebugHistory = [];
+        this.debugRepeatActive = false;
+        this.debugRepeatStopRequested = false;
+        this.debugRepeatPromise = null;
+        this.debugStressActive = false;
+        this.debugStressStopRequested = false;
+        this.debugStressPromise = null;
 
         this._bindControls();
         this.updatePredictedPositionReadout();
+        this.updateSerialDebugStats();
+        this.applySerialDebugVisibility();
     }
 
     isTestMode() {
@@ -83,6 +105,10 @@ class SerialManager {
             this.hardwareFlowPaused = false;
             this.hardwareFlowSupported = false;
             this.lastSignals = null;
+            this.bytesSincePriorityCtsPoll = 0;
+            this.ctsRecoveryMode = false;
+            this.ctsLastHoldAt = 0;
+            this.ctsLastReadyAt = 0;
             this.rxLineBuffer = '';
             this.estimatedPosition = { x: 0, y: 0 };
             this.estimatedAbsoluteMode = true;
@@ -135,6 +161,10 @@ class SerialManager {
             this.isConnected = true;
             this.softwareFlowPaused = false;
             this.rxLineBuffer = '';
+            this.bytesSincePriorityCtsPoll = 0;
+            this.ctsRecoveryMode = false;
+            this.ctsLastHoldAt = 0;
+            this.ctsLastReadyAt = 0;
             this.estimatedPosition = { x: 0, y: 0 };
             this.estimatedAbsoluteMode = true;
             this.clearPreviewMotion(false);
@@ -161,6 +191,8 @@ class SerialManager {
         this.isConnected = false;
         this.isStreaming = false;
         this.isHold = false;
+        this.stopSerialDebugRepeat();
+        this.stopSerialDebugStress();
         this.queue = [];
         this.updateStats();
 
@@ -204,6 +236,10 @@ class SerialManager {
             this.hardwareFlowPaused = false;
             this.hardwareFlowSupported = false;
             this.lastSignals = null;
+            this.bytesSincePriorityCtsPoll = 0;
+            this.ctsRecoveryMode = false;
+            this.ctsLastHoldAt = 0;
+            this.ctsLastReadyAt = 0;
             this.estimatedPosition = { x: 0, y: 0 };
             this.estimatedAbsoluteMode = true;
             this.clearPreviewMotion(false);
@@ -246,6 +282,7 @@ class SerialManager {
                 this.softwareFlowPaused = false;
                 this.handleSoftwareFlowResume();
                 this._flushResumeWaiters();
+                this.recordSerialDebugFlowSignal('XON');
                 this.app.ui.logToConsole('RX: <XON>', 'info');
                 continue;
             }
@@ -254,6 +291,7 @@ class SerialManager {
                 this._flushPrintableBytes(printableBytes, textDecoder);
                 this.softwareFlowPaused = true;
                 this.handleSoftwareFlowPause();
+                this.recordSerialDebugFlowSignal('XOFF');
                 this.app.ui.logToConsole('RX: <XOFF>', 'info');
                 continue;
             }
@@ -367,6 +405,7 @@ class SerialManager {
             const isReady = signals.clearToSend !== false;
             if (isReady) {
                 if (this.hardwareFlowPaused) {
+                    this.recordSerialDebugCtsSignal(true);
                     this.app.ui.logToConsole('System: CTS asserted. Resuming transmission.', 'info');
                 }
                 this.hardwareFlowPaused = false;
@@ -374,6 +413,7 @@ class SerialManager {
             }
 
             if (!this.hardwareFlowPaused) {
+                this.recordSerialDebugCtsSignal(false);
                 this.hardwareFlowPaused = true;
                 this.app.ui.logToConsole('System: CTS deasserted. Pausing transmission until plotter is ready.', 'warning');
             }
@@ -382,6 +422,60 @@ class SerialManager {
         }
 
         return false;
+    }
+
+    getActiveCtsPriorityWindow() {
+        if (!this.ctsRecoveryMode) return this.ctsPriorityByteWindow;
+
+        if (!this.ctsLastReadyAt) {
+            return this.ctsRecoveryByteWindow;
+        }
+
+        const elapsedSinceReady = performance.now() - this.ctsLastReadyAt;
+        if (elapsedSinceReady >= this.ctsRecoveryRampMs) {
+            this.ctsRecoveryMode = false;
+            this.appendSerialDebugLog(
+                `${this.getSerialDebugTimestamp()} CTS recovery ramp complete; normal ${this.ctsPriorityByteWindow}B window restored.`,
+                'flow'
+            );
+            return this.ctsPriorityByteWindow;
+        }
+
+        return this.ctsRecoveryByteWindow;
+    }
+
+    async waitForCtsRecoveryCooldown() {
+        if (!this.ctsRecoveryMode || !this.ctsLastReadyAt) return;
+        const elapsedSinceReady = performance.now() - this.ctsLastReadyAt;
+        const remainingMs = this.ctsReadyCooldownMs - elapsedSinceReady;
+        if (remainingMs <= 0) return;
+
+        this.appendSerialDebugLog(
+            `${this.getSerialDebugTimestamp()} CTS recovery cooldown ${Math.ceil(remainingMs)}ms.`,
+            'flow'
+        );
+        await new Promise(resolve => setTimeout(resolve, remainingMs));
+    }
+
+    async waitForCtsPriorityWindow(nextByteLength = 0) {
+        if (!this.isHardwareHandshakeEnabled() || !this.hardwareFlowSupported) return true;
+
+        await this.waitForCtsRecoveryCooldown();
+        const activeWindow = this.getActiveCtsPriorityWindow();
+        const projectedBytes = this.bytesSincePriorityCtsPoll + Math.max(0, Number(nextByteLength) || 0);
+        if (projectedBytes < activeWindow) return true;
+
+        this.appendSerialDebugLog(
+            `${this.getSerialDebugTimestamp()} CTS priority poll after ${this.bytesSincePriorityCtsPoll}B window=${activeWindow}B, next=${nextByteLength}B.`,
+            'flow'
+        );
+
+        await new Promise(resolve => setTimeout(resolve, this.ctsPriorityDrainMs));
+        const ready = await this.waitForTransmitReady();
+        if (ready) {
+            this.bytesSincePriorityCtsPoll = 0;
+        }
+        return ready;
     }
 
     getEstimatedPosition() {
@@ -942,7 +1036,12 @@ class SerialManager {
                 continue;
             }
 
+            const ctsReady = await this.waitForCtsPriorityWindow(bytes.length);
+            if (!ctsReady) return false;
+
             await this.writer.write(bytes);
+            this.bytesSincePriorityCtsPoll += bytes.length;
+            this.recordSerialDebugTx(bytes.length, part);
             return true;
         }
 
@@ -1074,7 +1173,9 @@ class SerialManager {
         if (!this.writer || this.isTestMode()) return false;
         try {
             const encoder = new TextEncoder();
-            await this.writer.write(encoder.encode(data));
+            const bytes = encoder.encode(data);
+            await this.writer.write(bytes);
+            this.recordSerialDebugTx(bytes.length, data, 'RAW');
             return true;
         } catch (error) {
             this.app.ui.logToConsole(`System Warning: Failed to send abort sequence. ${error.message}`, 'warning');
@@ -1088,6 +1189,8 @@ class SerialManager {
         this.abortRequested = true;
         this.isStreaming = false;
         this.isHold = true;
+        this.stopSerialDebugRepeat();
+        this.stopSerialDebugStress();
         this.queue = [];
         this.softwareFlowPaused = false;
         this.hardwareFlowPaused = false;
@@ -1204,6 +1307,300 @@ class SerialManager {
         }
     }
 
+    createEmptySerialDebugStats() {
+        return {
+            totalBytes: 0,
+            lastWriteBytes: 0,
+            maxWriteBytes: 0,
+            bytesSinceFlow: 0,
+            maxBeforeXoff: 0,
+            maxBeforeCtsHold: 0,
+            xonCount: 0,
+            xoffCount: 0,
+            ctsReadyCount: 0,
+            ctsHoldCount: 0,
+            repeatLoops: 0,
+            stressWrites: 0,
+            eventCount: 0
+        };
+    }
+
+    resetSerialDebugStats() {
+        this.serialDebugStats = this.createEmptySerialDebugStats();
+        this.serialDebugHistory = ['Debug counters reset.'];
+        if (this.debugLogEl) {
+            this.debugLogEl.innerHTML = '<div class="serial-debug-line">Debug counters reset.</div>';
+        }
+        this.updateSerialDebugStats();
+    }
+
+    applySerialDebugVisibility() {
+        if (!this.debugPanelEl) return;
+        this.debugPanelEl.classList.toggle('hidden', this.app?.settings?.showSerialDebug !== true);
+    }
+
+    exportSerialDebugLog() {
+        const stats = this.serialDebugStats || this.createEmptySerialDebugStats();
+        const lines = [
+            'Roland DXY Serial Debug Log',
+            `Exported: ${new Date().toISOString()}`,
+            '',
+            `Total TX bytes: ${stats.totalBytes}`,
+            `Last TX bytes: ${stats.lastWriteBytes}`,
+            `Max TX bytes: ${stats.maxWriteBytes}`,
+            `Bytes since last flow signal: ${stats.bytesSinceFlow}`,
+            `Max bytes before XOFF: ${stats.maxBeforeXoff}`,
+            `Max bytes before CTS hold: ${stats.maxBeforeCtsHold}`,
+            `XON count: ${stats.xonCount}`,
+            `XOFF count: ${stats.xoffCount}`,
+            `CTS ready count: ${stats.ctsReadyCount}`,
+            `CTS hold count: ${stats.ctsHoldCount}`,
+            `CTS recovery mode active: ${this.ctsRecoveryMode ? 'yes' : 'no'}`,
+            `CTS normal window bytes: ${this.ctsPriorityByteWindow}`,
+            `CTS recovery window bytes: ${this.ctsRecoveryByteWindow}`,
+            `CTS ready cooldown ms: ${this.ctsReadyCooldownMs}`,
+            `CTS recovery ramp ms: ${this.ctsRecoveryRampMs}`,
+            `Repeat loops: ${stats.repeatLoops}`,
+            `Stress writes: ${stats.stressWrites}`,
+            `Exported event lines: ${(this.serialDebugHistory || []).length}`,
+            '',
+            'Events:'
+        ];
+
+        lines.push(...(this.serialDebugHistory || []));
+
+        const blob = new Blob([lines.join('\n')], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `serial_debug_${new Date().getTime()}.txt`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+    }
+
+    updateSerialDebugStats() {
+        if (!this.debugStatEls || !this.serialDebugStats) return;
+        const stats = this.serialDebugStats;
+        const values = {
+            'total-bytes': stats.totalBytes,
+            'last-write-bytes': stats.lastWriteBytes,
+            'max-write-bytes': stats.maxWriteBytes,
+            'bytes-since-flow': stats.bytesSinceFlow,
+            'max-before-xoff': stats.maxBeforeXoff,
+            'max-before-cts-hold': stats.maxBeforeCtsHold,
+            'xon-count': stats.xonCount,
+            'xoff-count': stats.xoffCount,
+            'cts-ready-count': stats.ctsReadyCount,
+            'cts-hold-count': stats.ctsHoldCount,
+            'repeat-loops': stats.repeatLoops,
+            'stress-writes': stats.stressWrites
+        };
+        this.debugStatEls.forEach(el => {
+            if (Object.prototype.hasOwnProperty.call(values, el.dataset.debugStat)) {
+                el.textContent = values[el.dataset.debugStat];
+            }
+        });
+    }
+
+    appendSerialDebugLog(message, type = 'info') {
+        if (!this.serialDebugHistory) this.serialDebugHistory = [];
+        this.serialDebugHistory.push(message);
+        if (!this.debugLogEl) {
+            this.serialDebugStats.eventCount += 1;
+            return;
+        }
+        if (this.serialDebugStats.eventCount === 0) {
+            this.debugLogEl.innerHTML = '';
+        }
+        const line = document.createElement('div');
+        line.className = 'serial-debug-line';
+        line.textContent = message;
+        if (type === 'tx') line.style.color = 'var(--success)';
+        if (type === 'flow') line.style.color = 'var(--warning)';
+        this.debugLogEl.appendChild(line);
+        while (this.debugLogEl.children.length > 120) {
+            this.debugLogEl.removeChild(this.debugLogEl.firstChild);
+        }
+        this.debugLogEl.scrollTop = this.debugLogEl.scrollHeight;
+        this.serialDebugStats.eventCount += 1;
+    }
+
+    getSerialDebugTimestamp() {
+        const now = new Date();
+        return now.toLocaleTimeString([], {
+            hour12: false,
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit'
+        }) + `.${String(now.getMilliseconds()).padStart(3, '0')}`;
+    }
+
+    recordSerialDebugTx(byteLength, command = '', label = 'TX') {
+        if (!this.serialDebugStats) return;
+        const length = Math.max(0, Number(byteLength) || 0);
+        const stats = this.serialDebugStats;
+        stats.totalBytes += length;
+        stats.lastWriteBytes = length;
+        stats.maxWriteBytes = Math.max(stats.maxWriteBytes, length);
+        stats.bytesSinceFlow += length;
+        this.updateSerialDebugStats();
+
+        const compactCommand = String(command || '').replace(/\s+/g, ' ').trim();
+        const shownCommand = compactCommand.length > 48 ? `${compactCommand.slice(0, 45)}...` : compactCommand;
+        this.appendSerialDebugLog(
+            `${this.getSerialDebugTimestamp()} ${label} ${length}B total=${stats.totalBytes}${shownCommand ? ` ${shownCommand}` : ''}`,
+            'tx'
+        );
+    }
+
+    recordSerialDebugFlowSignal(signal) {
+        if (!this.serialDebugStats) return;
+        const stats = this.serialDebugStats;
+        const bytesBeforeSignal = stats.bytesSinceFlow;
+        if (signal === 'XON') {
+            stats.xonCount += 1;
+        } else if (signal === 'XOFF') {
+            stats.xoffCount += 1;
+            stats.maxBeforeXoff = Math.max(stats.maxBeforeXoff, bytesBeforeSignal);
+        }
+        stats.bytesSinceFlow = 0;
+        this.updateSerialDebugStats();
+        this.appendSerialDebugLog(
+            `${this.getSerialDebugTimestamp()} RX <${signal}> after ${bytesBeforeSignal}B total=${stats.totalBytes}`,
+            'flow'
+        );
+    }
+
+    recordSerialDebugCtsSignal(isReady) {
+        if (!this.serialDebugStats) return;
+        const stats = this.serialDebugStats;
+        const bytesBeforeSignal = stats.bytesSinceFlow;
+        this.bytesSincePriorityCtsPoll = 0;
+        if (isReady) {
+            stats.ctsReadyCount += 1;
+            this.ctsLastReadyAt = performance.now();
+        } else {
+            stats.ctsHoldCount += 1;
+            stats.maxBeforeCtsHold = Math.max(stats.maxBeforeCtsHold, bytesBeforeSignal);
+            this.ctsRecoveryMode = true;
+            this.ctsLastHoldAt = performance.now();
+            this.ctsLastReadyAt = 0;
+        }
+        stats.bytesSinceFlow = 0;
+        this.updateSerialDebugStats();
+        this.appendSerialDebugLog(
+            `${this.getSerialDebugTimestamp()} CTS ${isReady ? 'READY' : 'HOLD'} after ${bytesBeforeSignal}B total=${stats.totalBytes}${this.ctsRecoveryMode ? ` recoveryWindow=${this.ctsRecoveryByteWindow}B` : ''}`,
+            'flow'
+        );
+    }
+
+    setSerialDebugRepeatButtons(isRunning) {
+        const startButton = document.getElementById('btn-debug-repeat-start');
+        const stopButton = document.getElementById('btn-debug-repeat-stop');
+        if (startButton) startButton.disabled = isRunning;
+        if (stopButton) stopButton.disabled = !isRunning;
+    }
+
+    setSerialDebugStressButtons(isRunning) {
+        const startButton = document.getElementById('btn-debug-stress-start');
+        const stopButton = document.getElementById('btn-debug-stress-stop');
+        if (startButton) startButton.disabled = isRunning;
+        if (stopButton) stopButton.disabled = !isRunning;
+    }
+
+    async startSerialDebugRepeat() {
+        if (this.debugRepeatActive) return;
+        if (!this.isConnected) {
+            this.app.ui.logToConsole('Error: Connect to the plotter before starting the debug repeat.', 'error');
+            return;
+        }
+
+        this.debugRepeatActive = true;
+        this.debugRepeatStopRequested = false;
+        this.stopSerialDebugStress();
+        this.setSerialDebugRepeatButtons(true);
+        this.appendSerialDebugLog(`${this.getSerialDebugTimestamp()} Repeat test started: PU; PR400,0; PR-400,0;`, 'info');
+
+        this.debugRepeatPromise = (async () => {
+            try {
+                await this.sendManualCommand('PU;', { preview: false, updateEstimatedFromCommand: false });
+                let direction = 1;
+                while (this.isConnected && !this.debugRepeatStopRequested) {
+                    const units = direction * 400;
+                    const sent = await this.sendManualCommand(`PR${units},0;`, {
+                        preview: false,
+                        updateEstimatedFromCommand: false
+                    });
+                    if (!sent) break;
+                    if (direction < 0) {
+                        this.serialDebugStats.repeatLoops += 1;
+                        this.updateSerialDebugStats();
+                    }
+                    direction *= -1;
+                    await new Promise(resolve => setTimeout(resolve, 20));
+                }
+            } finally {
+                this.debugRepeatActive = false;
+                this.debugRepeatStopRequested = false;
+                this.debugRepeatPromise = null;
+                this.setSerialDebugRepeatButtons(false);
+                this.appendSerialDebugLog(`${this.getSerialDebugTimestamp()} Repeat test stopped.`, 'info');
+            }
+        })();
+
+        await this.debugRepeatPromise;
+    }
+
+    stopSerialDebugRepeat() {
+        this.debugRepeatStopRequested = true;
+    }
+
+    async startSerialDebugStress() {
+        if (this.debugStressActive) return;
+        if (!this.isConnected) {
+            this.app.ui.logToConsole('Error: Connect to the plotter before starting the buffer stress test.', 'error');
+            return;
+        }
+
+        this.stopSerialDebugRepeat();
+        this.debugStressActive = true;
+        this.debugStressStopRequested = false;
+        this.setSerialDebugStressButtons(true);
+        this.appendSerialDebugLog(`${this.getSerialDebugTimestamp()} Buffer stress started: no-delay PR400,0 / PR-400,0.`, 'info');
+
+        this.debugStressPromise = (async () => {
+            try {
+                await this.sendManualCommand('PU;', { preview: false, updateEstimatedFromCommand: false });
+                let direction = 1;
+                while (this.isConnected && !this.debugStressStopRequested) {
+                    const units = direction * 400;
+                    const sent = await this.sendManualCommand(`PR${units},0;`, {
+                        preview: false,
+                        updateEstimatedFromCommand: false
+                    });
+                    if (!sent) break;
+                    this.serialDebugStats.stressWrites += 1;
+                    this.updateSerialDebugStats();
+                    direction *= -1;
+                }
+            } finally {
+                this.debugStressActive = false;
+                this.debugStressStopRequested = false;
+                this.debugStressPromise = null;
+                this.setSerialDebugStressButtons(false);
+                this.appendSerialDebugLog(`${this.getSerialDebugTimestamp()} Buffer stress stopped.`, 'info');
+            }
+        })();
+
+        await this.debugStressPromise;
+    }
+
+    stopSerialDebugStress() {
+        this.debugStressStopRequested = true;
+    }
+
     _bindControls() {
         document.querySelectorAll('[data-stream-action]').forEach(button => {
             button.addEventListener('click', async () => {
@@ -1256,6 +1653,54 @@ class SerialManager {
                 }
             });
         });
+
+        const debugInput = document.getElementById('debug-hpgl-input');
+        const debugSendButton = document.getElementById('btn-debug-send');
+        const debugResetButton = document.getElementById('btn-debug-reset');
+        const debugExportButton = document.getElementById('btn-debug-export');
+        const debugRepeatStartButton = document.getElementById('btn-debug-repeat-start');
+        const debugRepeatStopButton = document.getElementById('btn-debug-repeat-stop');
+        const debugStressStartButton = document.getElementById('btn-debug-stress-start');
+        const debugStressStopButton = document.getElementById('btn-debug-stress-stop');
+        const sendDebugCommand = async () => {
+            const cmd = debugInput?.value?.trim();
+            if (!cmd) return;
+            if (!this.isConnected) {
+                this.app.ui.logToConsole('Error: Connect to the plotter before sending a debug command.', 'error');
+                return;
+            }
+            await this.sendManualCommand(cmd);
+            debugInput.value = '';
+        };
+
+        if (debugSendButton) {
+            debugSendButton.addEventListener('click', sendDebugCommand);
+        }
+        if (debugInput) {
+            debugInput.addEventListener('keyup', event => {
+                if (event.key === 'Enter') {
+                    sendDebugCommand();
+                }
+            });
+        }
+        if (debugResetButton) {
+            debugResetButton.addEventListener('click', () => this.resetSerialDebugStats());
+        }
+        if (debugExportButton) {
+            debugExportButton.addEventListener('click', () => this.exportSerialDebugLog());
+        }
+        if (debugRepeatStartButton) {
+            debugRepeatStartButton.addEventListener('click', () => this.startSerialDebugRepeat());
+        }
+        if (debugRepeatStopButton) {
+            debugRepeatStopButton.addEventListener('click', () => this.stopSerialDebugRepeat());
+        }
+        if (debugStressStartButton) {
+            debugStressStartButton.addEventListener('click', () => this.startSerialDebugStress());
+        }
+        if (debugStressStopButton) {
+            debugStressStopButton.addEventListener('click', () => this.stopSerialDebugStress());
+        }
     }
 
     async sendJogCommand(dxMM, dyMM) {

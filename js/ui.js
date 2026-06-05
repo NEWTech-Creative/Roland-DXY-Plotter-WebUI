@@ -1267,6 +1267,7 @@ class UIController {
         const valSimOpacity = document.getElementById('val-sim-opacity');
         const inputUseInternalCurveEngine = document.getElementById('input-use-internal-curve-engine');
         const inputCreativeTabsMode = document.getElementById('input-creative-tabs-mode');
+        const inputShowSerialDebug = document.getElementById('input-show-serial-debug');
         const inputMarginX = document.getElementById('input-margin-x');
         const inputMarginY = document.getElementById('input-margin-y');
         const inputOutputFlipX = document.getElementById('input-output-flip-x');
@@ -1290,6 +1291,9 @@ class UIController {
             }
             if (inputCreativeTabsMode) {
                 inputCreativeTabsMode.checked = this._isCreativeTabModeEnabled();
+            }
+            if (inputShowSerialDebug) {
+                inputShowSerialDebug.checked = this.app.settings.showSerialDebug === true;
             }
             if (inputMarginX) inputMarginX.value = this.app.settings.marginX || 15;
             if (inputMarginY) inputMarginY.value = this.app.settings.marginY || 10;
@@ -1358,6 +1362,9 @@ class UIController {
             if (inputCreativeTabsMode) {
                 this.app.settings.creativePanelsTabbed = inputCreativeTabsMode.checked;
             }
+            if (inputShowSerialDebug) {
+                this.app.settings.showSerialDebug = inputShowSerialDebug.checked;
+            }
             if (inputMarginX) this.app.settings.marginX = parseFloat(inputMarginX.value);
             if (inputMarginY) this.app.settings.marginY = parseFloat(inputMarginY.value);
             if (inputOutputFlipX) this.app.settings.outputFlipHorizontal = inputOutputFlipX.checked;
@@ -1372,6 +1379,7 @@ class UIController {
             this.app.saveSettings();
             this.refreshImportResolutionControl();
             this.applyPanelVisibilitySettings();
+            this.app.serial?.applySerialDebugVisibility?.();
             this.applyResponsiveGridLayout();
             this.forceLayoutSave();
             if (this.app.serial) this.app.serial.setSpeedDelay(this.app.settings.speed || 'fast');

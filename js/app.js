@@ -27,6 +27,7 @@ class App {
             paperSize: 'A3',
             customPaperSizes: [],
             creativePanelsTabbed: true,
+            showSerialDebug: false,
             panelVisibility: {
                 'panel-connection': true,
                 'panel-machine-jog': true,
