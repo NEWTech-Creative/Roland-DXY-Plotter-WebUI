@@ -89,6 +89,7 @@ class CanvasManager {
         this.bucketHoverPathIdx = -1;
         this.bucketHoverLookupQueued = false;
         this.bucketHoverPendingPos = null;
+        this.bucketHoverLookupKey = '';
         this.editingPathIdx = -1;
         this.displayedCrosshairPoint = null;
         this.warpHandlePositions = null;
@@ -165,6 +166,7 @@ class CanvasManager {
     invalidateFillRegionCache() {
         this.closedFillRegionsCache = null;
         this.bucketHoverPendingPos = null;
+        this.bucketHoverLookupKey = '';
     }
 
     clearBucketHoverPreview() {
@@ -172,14 +174,19 @@ class CanvasManager {
         this.bucketHoverRegion = null;
         this.bucketHoverPathIdx = -1;
         this.bucketHoverPendingPos = null;
+        this.bucketHoverLookupKey = '';
         return hadHover;
     }
 
     queueBucketHoverPreview(xMM, yMM) {
-        this.bucketHoverPendingPos = {
-            xMM: Number.isFinite(xMM) ? xMM : 0,
-            yMM: Number.isFinite(yMM) ? yMM : 0
-        };
+        const safeX = Number.isFinite(xMM) ? xMM : 0;
+        const safeY = Number.isFinite(yMM) ? yMM : 0;
+        const mmPerScreenPx = 1 / Math.max(0.0001, (this.scale || 1) * Math.max(0.0001, this.viewZoom || 1));
+        const hoverCellSize = Math.max(0.2, mmPerScreenPx * 3);
+        const lookupKey = `${Math.round(safeX / hoverCellSize)},${Math.round(safeY / hoverCellSize)}`;
+        if (lookupKey === this.bucketHoverLookupKey && !this.bucketHoverLookupQueued) return;
+        this.bucketHoverLookupKey = lookupKey;
+        this.bucketHoverPendingPos = { xMM: safeX, yMM: safeY };
         if (this.bucketHoverLookupQueued) return;
         this.bucketHoverLookupQueued = true;
         requestAnimationFrame(() => {
@@ -469,7 +476,7 @@ class CanvasManager {
         const path = this.paths[this.currentBezierPathIdx];
         if (!path || !Array.isArray(path.points) || !point) return;
         const lastPoint = path.points[path.points.length - 1];
-        if (lastPoint && Math.hypot((point.x || 0) - lastPoint.x, (point.y || 0) - lastPoint.y) < 0.35) return;
+        if (lastPoint && Math.hypot((point.x || 0) - lastPoint.x, (point.y || 0) - lastPoint.y) < 0.12) return;
         path.points.push({ x: point.x, y: point.y });
     }
 
@@ -494,7 +501,9 @@ class CanvasManager {
                 else paperPath.lineTo(new scope.Point(point.x, point.y));
             });
             paperPath.closed = false;
-            paperPath.simplify(1.2);
+            paperPath.simplify(0.28);
+            paperPath.smooth({ type: 'catmull-rom', factor: 0.55 });
+            paperPath.simplify(0.08);
             const simplified = this.buildAppPathFromPaperPath(scope, paperPath, { pen: path.pen });
             paperPath.remove();
             this.clearPaperBooleanScope(scope);
@@ -3267,7 +3276,7 @@ class CanvasManager {
             const endLimit = Math.min(source.length, start + maxLoopSpan);
             for (let end = start + 4; end < endLimit; end++) {
                 loopChecks++;
-                if (loopChecks > maxLoopChecks) return loops;
+                if (loopChecks > maxLoopChecks) return this.pruneEmbeddedLoopFillRegions(loops);
                 const startPoint = source[start];
                 const endPoint = source[end];
                 if (Math.hypot((endPoint.x || 0) - (startPoint.x || 0), (endPoint.y || 0) - (startPoint.y || 0)) > closeThreshold) {
@@ -3298,7 +3307,52 @@ class CanvasManager {
             }
         }
 
-        return loops;
+        return this.pruneEmbeddedLoopFillRegions(loops);
+    }
+
+    pruneEmbeddedLoopFillRegions(regions = []) {
+        const candidates = regions
+            .map(region => ({
+                ...region,
+                cachedArea: this.getRegionArea(region),
+                samplePoint: this.getPolygonInteriorPoint(region.polygon)
+            }))
+            .filter(region => region.samplePoint && Number.isFinite(region.cachedArea) && region.cachedArea >= 1.0)
+            .sort((a, b) => a.cachedArea - b.cachedArea);
+
+        const accepted = [];
+        candidates.forEach(region => {
+            const isDuplicate = accepted.some(existing => {
+                const areaRatio = region.cachedArea / Math.max(0.0001, existing.cachedArea);
+                if (areaRatio > 1.12) return false;
+                if (!existing.box || !region.box) return false;
+                return Math.abs(existing.box.minX - region.box.minX) < 2
+                    && Math.abs(existing.box.minY - region.box.minY) < 2
+                    && Math.abs(existing.box.maxX - region.box.maxX) < 2
+                    && Math.abs(existing.box.maxY - region.box.maxY) < 2;
+            });
+            if (isDuplicate) return;
+
+            const overlappingLocalBoxes = accepted.filter(existing => {
+                if (!existing.box || !region.box) return false;
+                const overlapWidth = Math.min(existing.box.maxX, region.box.maxX) - Math.max(existing.box.minX, region.box.minX);
+                const overlapHeight = Math.min(existing.box.maxY, region.box.maxY) - Math.max(existing.box.minY, region.box.minY);
+                if (overlapWidth <= 0 || overlapHeight <= 0) return false;
+                const existingBoxArea = Math.max(0.0001, (existing.box.maxX - existing.box.minX) * (existing.box.maxY - existing.box.minY));
+                return (overlapWidth * overlapHeight) / existingBoxArea > 0.22;
+            });
+            if (overlappingLocalBoxes.length >= 2) return;
+
+            const enclosedAccepted = accepted.filter(existing => {
+                if (existing.cachedArea >= region.cachedArea * 0.85) return false;
+                return region.contains(existing.samplePoint.x, existing.samplePoint.y);
+            });
+            if (enclosedAccepted.length >= 2) return;
+
+            accepted.push(region);
+        });
+
+        return accepted.map(({ samplePoint, ...region }) => region);
     }
 
     getClosedFillRegions() {
@@ -4799,34 +4853,40 @@ class CanvasManager {
         if (region.fillCells instanceof Set && Number.isFinite(region.cellSize) && region.cellSize > 0) {
             return region.fillCells.size * region.cellSize * region.cellSize;
         }
+        if (Number.isFinite(region.cachedArea)) return region.cachedArea;
+        let area = Infinity;
         if (Array.isArray(region.polygon) && region.polygon.length >= 3) {
             const polygonArea = this.getPolygonArea(region.polygon);
-            if (polygonArea > 0) return polygonArea;
+            if (polygonArea > 0) area = polygonArea;
         }
-        if (region.box) {
-            return Math.max(0, (region.box.maxX - region.box.minX) * (region.box.maxY - region.box.minY));
+        if (!Number.isFinite(area) && region.box) {
+            area = Math.max(0, (region.box.maxX - region.box.minX) * (region.box.maxY - region.box.minY));
         }
-        return Infinity;
+        if (Number.isFinite(area)) region.cachedArea = area;
+        return area;
     }
 
     getRegionPerimeter(region) {
         if (!region) return Infinity;
+        if (Number.isFinite(region.cachedPerimeter)) return region.cachedPerimeter;
+        let perimeter = Infinity;
         if (Array.isArray(region.polygon) && region.polygon.length >= 2) {
-            let perimeter = 0;
+            let polygonPerimeter = 0;
             for (let i = 0; i < region.polygon.length; i++) {
                 const current = region.polygon[i];
                 const next = region.polygon[(i + 1) % region.polygon.length];
                 if (!Number.isFinite(current?.x) || !Number.isFinite(current?.y) || !Number.isFinite(next?.x) || !Number.isFinite(next?.y)) continue;
-                perimeter += Math.hypot(next.x - current.x, next.y - current.y);
+                polygonPerimeter += Math.hypot(next.x - current.x, next.y - current.y);
             }
-            if (perimeter > 0) return perimeter;
+            if (polygonPerimeter > 0) perimeter = polygonPerimeter;
         }
-        if (region.box) {
+        if (!Number.isFinite(perimeter) && region.box) {
             const width = Math.max(0, region.box.maxX - region.box.minX);
             const height = Math.max(0, region.box.maxY - region.box.minY);
-            return (width + height) * 2;
+            perimeter = (width + height) * 2;
         }
-        return Infinity;
+        if (Number.isFinite(perimeter)) region.cachedPerimeter = perimeter;
+        return perimeter;
     }
 
     getFillRegionRenderMetrics(region) {
@@ -4940,7 +5000,7 @@ class CanvasManager {
 
     getExactFaceRegionAt(x, y, allRegions = []) {
         const exactContainingRegions = allRegions
-            .filter(region => this.isExactFillRegion(region) && region.contains(x, y))
+            .filter(region => this.isExactFillRegion(region) && this.regionBoxContainsPoint(region, x, y) && region.contains(x, y))
             .sort((a, b) => this.getRegionArea(a) - this.getRegionArea(b));
         if (!exactContainingRegions.length) return null;
 
@@ -4957,9 +5017,17 @@ class CanvasManager {
         return areaPx >= minAreaPx && estimatedThicknessPx >= minThicknessPx;
     }
 
+    regionBoxContainsPoint(region, x, y) {
+        if (!region?.box) return true;
+        return x >= region.box.minX
+            && x <= region.box.maxX
+            && y >= region.box.minY
+            && y <= region.box.maxY;
+    }
+
     getFillSignatureAt(x, y, regions) {
         return regions
-            .filter(region => region.contains(x, y))
+            .filter(region => this.regionBoxContainsPoint(region, x, y) && region.contains(x, y))
             .map(region => region.regionId || `${region.pathIdx}`)
             .sort((a, b) => String(a).localeCompare(String(b)));
     }
@@ -5141,7 +5209,8 @@ class CanvasManager {
 
     getFillTargetAt(xMM, yMM, options = {}) {
         const allRegions = this.getClosedFillRegions();
-        const containingRegions = allRegions.filter(region => region.contains(xMM, yMM));
+        const candidateRegions = allRegions.filter(region => this.regionBoxContainsPoint(region, xMM, yMM));
+        const containingRegions = candidateRegions.filter(region => region.contains(xMM, yMM));
         if (!containingRegions.length) return null;
 
         containingRegions.sort((a, b) => {
@@ -5213,6 +5282,20 @@ class CanvasManager {
         };
     }
 
+    getBucketHoverPreviewPolygon(points = [], maxPoints = 700) {
+        if (!Array.isArray(points) || points.length <= maxPoints) return points;
+        const stride = Math.max(1, Math.ceil(points.length / maxPoints));
+        const previewPoints = [];
+        for (let i = 0; i < points.length; i += stride) {
+            previewPoints.push(points[i]);
+        }
+        const lastPoint = points[points.length - 1];
+        if (lastPoint && previewPoints[previewPoints.length - 1] !== lastPoint) {
+            previewPoints.push(lastPoint);
+        }
+        return previewPoints;
+    }
+
     drawBucketHoverPreview() {
         if (!this.bucketHoverRegion) return;
         const dpr = window.devicePixelRatio || 1;
@@ -5224,11 +5307,12 @@ class CanvasManager {
         this.ctx.lineWidth = 1.5;
 
         if (Array.isArray(this.bucketHoverRegion?.polygon) && this.bucketHoverRegion.polygon.length >= 3) {
+            const previewPolygon = this.getBucketHoverPreviewPolygon(this.bucketHoverRegion.polygon);
             this.ctx.beginPath();
-            const start = this.mmToCanvasPx(this.bucketHoverRegion.polygon[0].x, this.bucketHoverRegion.polygon[0].y);
+            const start = this.mmToCanvasPx(previewPolygon[0].x, previewPolygon[0].y);
             this.ctx.moveTo(start.x, start.y);
-            for (let i = 1; i < this.bucketHoverRegion.polygon.length; i++) {
-                const point = this.bucketHoverRegion.polygon[i];
+            for (let i = 1; i < previewPolygon.length; i++) {
+                const point = previewPolygon[i];
                 const screenPoint = this.mmToCanvasPx(point.x, point.y);
                 this.ctx.lineTo(screenPoint.x, screenPoint.y);
             }
@@ -5236,10 +5320,11 @@ class CanvasManager {
             if (Array.isArray(this.bucketHoverRegion.holePolygons)) {
                 this.bucketHoverRegion.holePolygons.forEach(holePolygon => {
                     if (!Array.isArray(holePolygon) || holePolygon.length < 3) return;
-                    const holeStart = this.mmToCanvasPx(holePolygon[0].x, holePolygon[0].y);
+                    const previewHole = this.getBucketHoverPreviewPolygon(holePolygon, 300);
+                    const holeStart = this.mmToCanvasPx(previewHole[0].x, previewHole[0].y);
                     this.ctx.moveTo(holeStart.x, holeStart.y);
-                    for (let i = 1; i < holePolygon.length; i++) {
-                        const point = holePolygon[i];
+                    for (let i = 1; i < previewHole.length; i++) {
+                        const point = previewHole[i];
                         const holePoint = this.mmToCanvasPx(point.x, point.y);
                         this.ctx.lineTo(holePoint.x, holePoint.y);
                     }

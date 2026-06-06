@@ -118,6 +118,7 @@ class UIController {
         this._bindVisualizerToolbarOverflow();
         this._bindPredictedCrosshairToggle();
         this._bindVisualizerViewToggle();
+        this._bindCommandLogVerboseToggle();
         this._bindToolHoverLabels();
         // HandwritingPanel is initialized by its own window.load listener in handwriting-panel.js
 
@@ -503,6 +504,37 @@ class UIController {
 
         this.refreshVisualizerViewToggleButton();
     }
+
+    _bindCommandLogVerboseToggle() {
+        const button = document.getElementById('btn-command-log-verbose');
+        if (!button) return;
+
+        const sync = () => {
+            const isVerbose = this.app?.settings?.commandLogVerbose === true;
+            button.classList.toggle('active', isVerbose);
+            button.setAttribute('aria-pressed', isVerbose ? 'true' : 'false');
+            button.title = isVerbose
+                ? 'Verbose command log is on: streamed HPGL lines are shown'
+                : 'Verbose command log is off: streamed HPGL lines are hidden';
+        };
+
+        button.addEventListener('pointerdown', (event) => event.stopPropagation());
+        button.addEventListener('click', (event) => {
+            event.stopPropagation();
+            this.app.settings.commandLogVerbose = this.app.settings.commandLogVerbose !== true;
+            this.app.saveSettings();
+            sync();
+            this.logToConsole(
+                this.app.settings.commandLogVerbose
+                    ? 'System: Command Log verbose mode enabled. Streamed HPGL lines will be shown.'
+                    : 'System: Command Log verbose mode disabled. Streamed HPGL lines will be hidden.'
+            );
+        });
+
+        sync();
+    }
+
+
 
     showLoading(title = 'Importing File...') {
         const overlay = document.getElementById('loading-overlay');
@@ -1473,13 +1505,15 @@ class UIController {
     }
 
     logToConsole(msg, type = 'info') {
+        if (type === 'tx-stream' && this.app?.settings?.commandLogVerbose !== true) return;
+
         const consoleEl = document.getElementById('hpgl-console');
         if (!consoleEl) return;
         const line = document.createElement('div');
         line.className = 'log-line';
         line.textContent = `> ${msg}`;
         if (type === 'error') line.style.color = 'var(--danger)';
-        if (type === 'tx') line.style.color = 'var(--success)';
+        if (type === 'tx' || type === 'tx-stream') line.style.color = 'var(--success)';
         consoleEl.appendChild(line);
         consoleEl.scrollTop = consoleEl.scrollHeight;
     }

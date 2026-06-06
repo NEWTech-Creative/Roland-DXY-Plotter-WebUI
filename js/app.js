@@ -28,6 +28,7 @@ class App {
             customPaperSizes: [],
             creativePanelsTabbed: true,
             showSerialDebug: false,
+            commandLogVerbose: false,
             panelVisibility: {
                 'panel-connection': true,
                 'panel-machine-jog': true,

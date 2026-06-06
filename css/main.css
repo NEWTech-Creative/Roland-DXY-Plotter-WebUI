@@ -1277,6 +1277,28 @@ input[type="color"] {
     letter-spacing: 1px;
 }
 
+.header-toggle-btn {
+    border: 1px solid var(--panel-border);
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--text-secondary);
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-family: var(--font-ui);
+    font-size: 0.72rem;
+    font-weight: 600;
+    line-height: 1;
+    cursor: pointer;
+    text-transform: uppercase;
+    transition: var(--transition);
+}
+
+.header-toggle-btn:hover,
+.header-toggle-btn.active {
+    background: color-mix(in srgb, var(--accent-color) 25%, transparent);
+    border-color: color-mix(in srgb, var(--accent-color) 55%, var(--panel-border));
+    color: var(--text-primary);
+}
+
 .panel-body {
     flex: 1;
     padding: 15px;

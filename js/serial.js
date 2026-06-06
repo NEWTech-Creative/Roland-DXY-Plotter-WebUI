@@ -1134,7 +1134,7 @@ class SerialManager {
             if (expandedCommands.length === 0) continue;
 
             for (const part of expandedCommands) {
-                this.app.ui.logToConsole(part, 'tx');
+                this.app.ui.logToConsole(part, options.commandLogType || 'tx');
 
                 let wasTransmitted = this.isTestMode();
                 if (!this.isTestMode()) {
@@ -1270,7 +1270,7 @@ class SerialManager {
                         this.setTrafficLight('green');
 
                         const cmd = this.queue.shift();
-                        const wasSent = await this.sendManualCommand(cmd, { preview: false });
+                        const wasSent = await this.sendManualCommand(cmd, { preview: false, commandLogType: 'tx-stream' });
                         if (!wasSent) break;
                         this.queuePredictedMotionBlock(cmd, { isFirstBlock: streamedBlockIndex === 0 });
                         streamedBlockIndex++;
