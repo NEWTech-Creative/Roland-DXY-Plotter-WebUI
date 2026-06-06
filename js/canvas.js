@@ -844,6 +844,13 @@ class CanvasManager {
 
     undo() {
         this.resetBezierToolState();
+        const currentSnapshot = this.serializePathsSnapshot();
+        const topSnapshot = this.undoStack[this.undoStack.length - 1];
+        if (this.undoStack.length > 0 && currentSnapshot !== topSnapshot) {
+            this.redoStack.push(currentSnapshot);
+            this.restoreSnapshot(topSnapshot, { logMessage: 'System: Undo action performed.' });
+            return;
+        }
         if (this.undoStack.length > 1) {
             const current = this.undoStack.pop();
             this.redoStack.push(current);
@@ -2334,8 +2341,8 @@ class CanvasManager {
             for (let i = 0; i < steps; i++) {
                 const angle = (i / steps) * Math.PI * 2;
                 points.push({
-                    x: path.x + Math.cos(angle) * path.r,
-                    y: path.y + Math.sin(angle) * path.r
+                    x: path.x + Math.cos(angle) * radius,
+                    y: path.y + Math.sin(angle) * radius
                 });
             }
         } else if (path.type === 'path' && Array.isArray(path.segments) && path.segments.length > 0) {
@@ -2407,7 +2414,8 @@ class CanvasManager {
 
     getBoundingBox(p) {
         if (p.type === 'circle') {
-            return { minX: p.x - p.r, minY: p.y - p.r, maxX: p.x + p.r, maxY: p.y + p.r };
+            const radius = Math.max(0.1, Math.abs(p.r || 0));
+            return { minX: p.x - radius, minY: p.y - radius, maxX: p.x + radius, maxY: p.y + radius };
         } else if (p.type === 'dot') {
             const point = this.getPathTracePoints(p)[0];
             if (!point) return null;
@@ -3097,6 +3105,7 @@ class CanvasManager {
         if (path.type === 'circle') {
             const polygon = this.flattenPathForFill(path);
             const box = this.getBoundingBox(path);
+            const radius = Math.max(0.1, Math.abs(path.r || 0));
             if (!box || polygon.length < 3) return [];
             return [{
                 regionId: `${pathIdx}:circle`,
@@ -3104,7 +3113,7 @@ class CanvasManager {
                 polygon,
                 pathIdx,
                 path,
-                contains: (x, y) => Math.hypot(x - path.x, y - path.y) <= path.r
+                contains: (x, y) => Math.hypot(x - path.x, y - path.y) <= radius
             }];
         }
         if (path.type === 'rectangle') {
@@ -4967,26 +4976,14 @@ class CanvasManager {
         if (!signature.length) return null;
 
         const anchorRegion = options?.anchorRegion || null;
-        const anchorArea = this.getRegionArea(anchorRegion);
         const signatureRegions = resolvedRegions.filter(region => signature.includes(region.regionId || `${region.pathIdx}`));
-        const relevantSignature = signature.filter(regionId => {
-            const region = signatureRegions.find(candidate => (candidate.regionId || `${candidate.pathIdx}`) === regionId);
-            if (!region) return false;
-            if (anchorRegion && (region.regionId || `${region.pathIdx}`) === (anchorRegion.regionId || `${anchorRegion.pathIdx}`)) return true;
-            if (Array.isArray(region.holePolygons) && region.holePolygons.length > 0) return true;
-            if (region.isEmbeddedLoop) return true;
-            const regionArea = this.getRegionArea(region);
-            if (!Number.isFinite(anchorArea) || anchorArea <= 0) return true;
-            return regionArea >= Math.max(0.6, anchorArea * 0.12);
-        });
-        const effectiveSignature = relevantSignature.length ? relevantSignature : signature;
+        const effectiveSignature = signature;
         const targetKey = this.getFillSignatureKey(effectiveSignature);
         const matchesEffectiveSignature = (sampleX, sampleY) => {
             if (anchorRegion && !anchorRegion.contains(sampleX, sampleY)) return false;
             const sampleSignature = this.getFillSignatureAt(sampleX, sampleY, resolvedRegions);
             if (!sampleSignature.length) return false;
-            const filteredSampleSignature = sampleSignature.filter(regionId => effectiveSignature.includes(regionId));
-            return this.getFillSignatureKey(filteredSampleSignature) === targetKey;
+            return this.getFillSignatureKey(sampleSignature) === targetKey;
         };
         const intersectionBox = signatureRegions.reduce((box, region) => {
             if (!box) return { ...region.box };
@@ -5154,11 +5151,40 @@ class CanvasManager {
 
         const directRegion = containingRegions[0];
         const previewOnly = options?.previewOnly === true;
-        const exactFaceRegion = this.getExactFaceRegionAt(xMM, yMM, allRegions);
         const usabilityOptions = previewOnly
             ? { minAreaPx: 24, minThicknessPx: 1.4 }
             : { minAreaPx: 24, minThicknessPx: 1.4 };
 
+        const directRegionIsExactCompound = Array.isArray(directRegion?.holePolygons) && directRegion.holePolygons.length > 0;
+        const directRegionId = directRegion.regionId || `${directRegion.pathIdx}`;
+        const directBox = directRegion.box;
+        const hasIntersectingBoundary = !!directBox && allRegions.some(region => {
+            const regionId = region.regionId || `${region.pathIdx}`;
+            if (regionId === directRegionId || !region?.box) return false;
+            return region.box.minX <= directBox.maxX
+                && region.box.maxX >= directBox.minX
+                && region.box.minY <= directBox.maxY
+                && region.box.maxY >= directBox.minY;
+        });
+        const shouldTryComposite = !directRegionIsExactCompound && (containingRegions.length > 1 || hasIntersectingBoundary);
+        const compositeRegion = shouldTryComposite
+            ? this.getCompositeFillRegionAt(xMM, yMM, allRegions, { anchorRegion: directRegion })
+            : null;
+        const compositeUsable = this.isFillRegionUsable(compositeRegion, usabilityOptions);
+
+        if (compositeUsable) {
+            const compositePathIdx = Number.isInteger(compositeRegion.primaryPathIdx)
+                ? compositeRegion.primaryPathIdx
+                : compositeRegion?.pathIdx ?? -1;
+            return {
+                pathIdx: compositePathIdx,
+                path: compositePathIdx > -1 ? this.paths[compositePathIdx] : null,
+                region: compositeRegion
+            };
+        }
+        if (shouldTryComposite) return null;
+
+        const exactFaceRegion = this.getExactFaceRegionAt(xMM, yMM, allRegions);
         if (exactFaceRegion) {
             const exactPathIdx = Number.isInteger(exactFaceRegion.primaryPathIdx)
                 ? exactFaceRegion.primaryPathIdx
@@ -5170,13 +5196,7 @@ class CanvasManager {
             };
         }
 
-        const directRegionIsExactCompound = Array.isArray(directRegion?.holePolygons) && directRegion.holePolygons.length > 0;
-        const shouldTryComposite = !previewOnly && !directRegionIsExactCompound;
-        const compositeRegion = shouldTryComposite
-            ? this.getCompositeFillRegionAt(xMM, yMM, allRegions, { anchorRegion: directRegion })
-            : null;
         const directUsable = this.isFillRegionUsable(directRegion, usabilityOptions);
-        const compositeUsable = this.isFillRegionUsable(compositeRegion, usabilityOptions);
         const directArea = this.getRegionArea(directRegion);
         const compositeArea = this.getRegionArea(compositeRegion);
         const shouldPreferDirect = directUsable && (!compositeUsable || directArea <= (compositeArea * 1.35));

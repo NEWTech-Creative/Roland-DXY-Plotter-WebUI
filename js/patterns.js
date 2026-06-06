@@ -132,7 +132,8 @@ class PatternGenerator {
     _pathToLoopPoints(path) {
         if (!path) return [];
         if (path.type === 'circle') {
-            return this._ensureClosed(this._sampleCircle(path.x, path.y, path.r, 128));
+            const radius = Math.max(0.1, Math.abs(path.r || 0));
+            return this._ensureClosed(this._sampleCircle(path.x, path.y, radius, 128));
         }
         if (path.type === 'rectangle') {
             return this._ensureClosed([
@@ -308,7 +309,7 @@ class PatternGenerator {
                 const pt = transformPoint({ x: clone.x, y: clone.y });
                 clone.x = pt.x;
                 clone.y = pt.y;
-                clone.r *= scale;
+                clone.r = Math.max(0.1, Math.abs(clone.r || 0) * Math.abs(scale || 1));
             } else if (clone.type === 'rectangle') {
                 const pt = transformPoint({ x: clone.x, y: clone.y });
                 clone.x = pt.x;

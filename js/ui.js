@@ -23,7 +23,7 @@ class UIController {
         };
         this.textToolPersistTimer = null;
         this.jogStepSize = 1; // Default Small (1mm)
-        this.layoutVersion = 2;
+        this.layoutVersion = 3;
         this.gridBaseColumns = 12;
         this.gridMinPanelWidth = 320;
         this.currentGridColumns = this.gridBaseColumns;
@@ -38,7 +38,7 @@ class UIController {
             { id: 'panel-image-vector', x: 3, y: 19, w: 6, h: 12 },
             { id: 'panel-3d-vector', x: 3, y: 31, w: 6, h: 12 }
         ];
-        this.defaultGridLayout = [
+        this.previousDefaultLayout = [
             { id: 'panel-connection', x: 0, y: 0, w: 2, h: 4 },
             { id: 'panel-machine-jog', x: 0, y: 4, w: 2, h: 4 },
             { id: 'panel-console', x: 0, y: 8, w: 2, h: 7 },
@@ -48,6 +48,18 @@ class UIController {
             { id: 'panel-image-vector', x: 5, y: 8, w: 3, h: 7 },
             { id: 'panel-patterns', x: 8, y: 8, w: 2, h: 7 },
             { id: 'panel-3d-vector', x: 2, y: 15, w: 8, h: 8 }
+        ];
+        this.defaultGridLayout = [
+            { id: 'panel-connection', x: 0, y: 0, w: 2, h: 4 },
+            { id: 'panel-machine-jog', x: 0, y: 4, w: 2, h: 4 },
+            { id: 'panel-console', x: 0, y: 8, w: 2, h: 7 },
+            { id: 'panel-visualiser', x: 2, y: 0, w: 5, h: 7 },
+            { id: 'panel-live-tracker', x: 8, y: 0, w: 2, h: 7 },
+            { id: 'panel-handwriting', x: 2, y: 7, w: 3, h: 7 },
+            { id: 'panel-image-vector', x: 5, y: 7, w: 3, h: 7 },
+            { id: 'panel-patterns', x: 8, y: 7, w: 2, h: 7 },
+            { id: 'panel-3d-vector', x: 2, y: 14, w: 8, h: 8 },
+            { id: 'panel-creative-tabs', x: 2, y: 7, w: 8, h: 15 }
         ];
         this.panelDefinitions = [
             { id: 'panel-connection', label: 'Connection', alwaysVisible: true },
@@ -61,7 +73,7 @@ class UIController {
             { id: 'panel-3d-vector', label: '3D Vector' }
         ];
         this.creativeTabHostId = 'panel-creative-tabs';
-        this.creativeTabHostLayout = { id: this.creativeTabHostId, x: 2, y: 8, w: 8, h: 15 };
+        this.creativeTabHostLayout = { id: this.creativeTabHostId, x: 2, y: 7, w: 8, h: 15 };
         this.creativePanelDefinitions = this._getDefaultCreativePanelDefinitions();
         this.activeCreativeTabId = this.creativePanelDefinitions[0].id;
         this.draggingCreativeTabId = null;
@@ -565,7 +577,7 @@ class UIController {
             if (!Array.isArray(layout)) return [];
 
             const savedVersion = parseInt(localStorage.getItem('plotterLayoutVersion') || '0', 10);
-            if (savedVersion < this.layoutVersion && this._layoutsMatch(layout, this.legacyDefaultLayout)) {
+            if (savedVersion < this.layoutVersion && (this._layoutsMatch(layout, this.legacyDefaultLayout) || this._layoutsMatch(layout, this.previousDefaultLayout))) {
                 const migratedLayout = this.defaultGridLayout.map(item => ({ ...item }));
                 localStorage.setItem('plotterLayout', JSON.stringify(migratedLayout));
                 localStorage.setItem('plotterLayoutVersion', String(this.layoutVersion));
