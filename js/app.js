@@ -11,6 +11,7 @@ class App {
             model: '1200',
             theme: 'dark-theme',
             handshake: 'normal',
+            ctsPriorityEnabled: true,
             speed: 'fast',
             streamPerformanceMode: true,
             bedWidth: 432,
@@ -262,6 +263,7 @@ class App {
     bindEvents() {
         const modelSelect = document.getElementById('sel-model');
         if (modelSelect) {
+            modelSelect.value = this.settings.model || '1200';
             modelSelect.addEventListener('change', () => {
                 this.settings.model = modelSelect.value || '1200';
                 this.applyMachineProfile(true);
@@ -272,6 +274,18 @@ class App {
                     this.canvas.draw(true);
                 }
                 this.ui.logToConsole(`System: ${this.getMachineProfile().label} workspace set to ${this.settings.bedWidth} x ${this.settings.bedHeight} mm.`);
+            });
+        }
+
+        const ctsPriorityInput = document.getElementById('input-cts-priority');
+        if (ctsPriorityInput) {
+            ctsPriorityInput.checked = this.settings.ctsPriorityEnabled !== false;
+            ctsPriorityInput.addEventListener('change', () => {
+                this.settings.ctsPriorityEnabled = ctsPriorityInput.checked;
+                this.saveSettings();
+                this.ui.logToConsole(
+                    `System: CTS priority handshaking ${ctsPriorityInput.checked ? 'enabled' : 'disabled'}.`
+                );
             });
         }
 

@@ -23,6 +23,11 @@ class SerialManager {
         this.ctsRecoveryMode = false;
         this.ctsLastHoldAt = 0;
         this.ctsLastReadyAt = 0;
+        this.noCtsPacingByteWindow = 256;
+        this.noCtsPacingDrainMs = 120;
+        this.noCtsMinCommandGapMs = 12;
+        this.noCtsBytesSinceDrain = 0;
+        this.noCtsLastWriteAt = 0;
         this.estimatedPosition = { x: 0, y: 0 };
         this.estimatedAbsoluteMode = true;
 
@@ -109,6 +114,8 @@ class SerialManager {
             this.ctsRecoveryMode = false;
             this.ctsLastHoldAt = 0;
             this.ctsLastReadyAt = 0;
+            this.noCtsBytesSinceDrain = 0;
+            this.noCtsLastWriteAt = 0;
             this.rxLineBuffer = '';
             this.estimatedPosition = { x: 0, y: 0 };
             this.estimatedAbsoluteMode = true;
@@ -135,13 +142,18 @@ class SerialManager {
             });
 
             const handshake = this.app.settings.handshake || 'normal';
-            // Open the serial port with the chosen baud rate and flow control if 'normal'
+            const ctsPriorityEnabled = this.app.settings.ctsPriorityEnabled !== false;
+            const useHardwareFlowControl = handshake === 'normal' && ctsPriorityEnabled;
+            // DXY-1200 DB25 notes from the manual:
+            // pin 2 TXD -> host RX, pin 3 RXD <- host TX, pin 7 SG -> host GND.
+            // CTS is DXY pin 5 input; if unconnected, the plotter treats CTS as ON.
+            // Host adapters without DXY RTS/DTR wired to host CTS should disable CTS priority.
             await this.port.open({
                 baudRate: baudRate,
                 dataBits: 8,
                 parity: 'none',
                 stopBits: 1,
-                flowControl: handshake === 'normal' ? 'hardware' : 'none'
+                flowControl: useHardwareFlowControl ? 'hardware' : 'none'
             });
 
             // If using Y-drop / manual mode, many plotters require DTR/RTS to be asserted manually to begin listening
@@ -154,8 +166,12 @@ class SerialManager {
                 }
             }
 
-            if (handshake === 'normal') {
+            if (useHardwareFlowControl) {
                 await this._primeHardwareFlowControl();
+            } else if (handshake === 'normal') {
+                this.hardwareFlowSupported = false;
+                this.hardwareFlowPaused = false;
+                this.app.ui.logToConsole(`System: CTS priority disabled. Using no-CTS paced streaming (${this.noCtsPacingByteWindow}B window, ${this.noCtsPacingDrainMs}ms drain).`, 'info');
             }
 
             this.isConnected = true;
@@ -165,6 +181,8 @@ class SerialManager {
             this.ctsRecoveryMode = false;
             this.ctsLastHoldAt = 0;
             this.ctsLastReadyAt = 0;
+            this.noCtsBytesSinceDrain = 0;
+            this.noCtsLastWriteAt = 0;
             this.estimatedPosition = { x: 0, y: 0 };
             this.estimatedAbsoluteMode = true;
             this.clearPreviewMotion(false);
@@ -240,6 +258,8 @@ class SerialManager {
             this.ctsRecoveryMode = false;
             this.ctsLastHoldAt = 0;
             this.ctsLastReadyAt = 0;
+            this.noCtsBytesSinceDrain = 0;
+            this.noCtsLastWriteAt = 0;
             this.estimatedPosition = { x: 0, y: 0 };
             this.estimatedAbsoluteMode = true;
             this.clearPreviewMotion(false);
@@ -345,7 +365,9 @@ class SerialManager {
     }
 
     isHardwareHandshakeEnabled() {
-        return (this.app?.settings?.handshake || 'normal') === 'normal' && !this.isTestMode();
+        return (this.app?.settings?.handshake || 'normal') === 'normal'
+            && this.app?.settings?.ctsPriorityEnabled !== false
+            && !this.isTestMode();
     }
 
     async _readSignals() {
@@ -476,6 +498,32 @@ class SerialManager {
             this.bytesSincePriorityCtsPoll = 0;
         }
         return ready;
+    }
+
+    shouldUseNoCtsPacing() {
+        if (this.isTestMode()) return false;
+        return !this.isHardwareHandshakeEnabled() || !this.hardwareFlowSupported;
+    }
+
+    async waitForNoCtsPacing(nextByteLength = 0) {
+        if (!this.shouldUseNoCtsPacing()) return true;
+
+        const now = performance.now();
+        const elapsedSinceWrite = now - (this.noCtsLastWriteAt || 0);
+        if (this.noCtsLastWriteAt && elapsedSinceWrite < this.noCtsMinCommandGapMs) {
+            await new Promise(resolve => setTimeout(resolve, this.noCtsMinCommandGapMs - elapsedSinceWrite));
+        }
+
+        const projectedBytes = this.noCtsBytesSinceDrain + Math.max(0, Number(nextByteLength) || 0);
+        if (projectedBytes < this.noCtsPacingByteWindow) return true;
+
+        this.appendSerialDebugLog(
+            `${this.getSerialDebugTimestamp()} No-CTS pacing drain after ${this.noCtsBytesSinceDrain}B window=${this.noCtsPacingByteWindow}B, next=${nextByteLength}B.`,
+            'flow'
+        );
+        await new Promise(resolve => setTimeout(resolve, this.noCtsPacingDrainMs));
+        this.noCtsBytesSinceDrain = 0;
+        return true;
     }
 
     getEstimatedPosition() {
@@ -1039,8 +1087,15 @@ class SerialManager {
             const ctsReady = await this.waitForCtsPriorityWindow(bytes.length);
             if (!ctsReady) return false;
 
+            const noCtsReady = await this.waitForNoCtsPacing(bytes.length);
+            if (!noCtsReady) return false;
+
             await this.writer.write(bytes);
             this.bytesSincePriorityCtsPoll += bytes.length;
+            if (this.shouldUseNoCtsPacing()) {
+                this.noCtsBytesSinceDrain += bytes.length;
+                this.noCtsLastWriteAt = performance.now();
+            }
             this.recordSerialDebugTx(bytes.length, part);
             return true;
         }
@@ -1360,6 +1415,10 @@ class SerialManager {
             `CTS recovery window bytes: ${this.ctsRecoveryByteWindow}`,
             `CTS ready cooldown ms: ${this.ctsReadyCooldownMs}`,
             `CTS recovery ramp ms: ${this.ctsRecoveryRampMs}`,
+            `No-CTS pacing active: ${this.shouldUseNoCtsPacing() ? 'yes' : 'no'}`,
+            `No-CTS pacing window bytes: ${this.noCtsPacingByteWindow}`,
+            `No-CTS pacing drain ms: ${this.noCtsPacingDrainMs}`,
+            `No-CTS minimum command gap ms: ${this.noCtsMinCommandGapMs}`,
             `Repeat loops: ${stats.repeatLoops}`,
             `Stress writes: ${stats.stressWrites}`,
             `Exported event lines: ${(this.serialDebugHistory || []).length}`,

@@ -792,6 +792,47 @@ body.olive-theme {
     padding: 10px;
 }
 
+.machine-serial-reference {
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    padding: 12px;
+    background: rgba(0, 0, 0, 0.12);
+}
+
+.machine-serial-reference h3 {
+    margin-bottom: 10px;
+}
+
+.machine-serial-reference p {
+    margin: 8px 0 0;
+    color: var(--text-secondary);
+    line-height: 1.5;
+}
+
+.machine-pin-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.machine-pin-grid div {
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    padding: 8px;
+    background: rgba(255, 255, 255, 0.04);
+}
+
+.machine-pin-grid strong,
+.machine-pin-grid span {
+    display: block;
+}
+
+.machine-pin-grid span {
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+    line-height: 1.35;
+}
+
 /* =========================================
    Inputs and Buttons
    ========================================= */
@@ -1080,6 +1121,11 @@ input[type="color"] {
 
 .panel-toggle-item:has(input:disabled) {
     opacity: 0.75;
+}
+
+.connection-cts-toggle {
+    margin: 0 0 10px;
+    border-radius: 6px;
 }
 
 .machine-stream-panel {

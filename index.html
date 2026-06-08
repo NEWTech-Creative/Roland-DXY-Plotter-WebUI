@@ -98,6 +98,10 @@
                                 </select>
                             </div>
                         </div>
+                        <label class="panel-toggle-item connection-cts-toggle">
+                            <input type="checkbox" id="input-cts-priority" checked>
+                            <span>CTS priority handshaking</span>
+                        </label>
                         <div class="button-group">
                             <button id="btn-connect" class="btn btn-primary">Connect USB Serial</button>
                         </div>
@@ -1182,6 +1186,37 @@
             <div class="modal-body machine-setup-modal-body">
                 <p class="machine-setup-intro">This DIP switch setup is compatible with the USB-to-serial CH340 adapter and can be used as a quick reference when setting up your Roland DXY machine.</p>
                 <img src="References/Dip switch setup.svg" alt="Roland DXY dip switch setup compatible with CH340 USB to serial adapter" class="machine-setup-diagram">
+                <img src="References/RS232 with CTS wiring-cropped.svg" alt="Roland DXY-1200 DB25 to DB9 RS232 wiring with CTS handshaking" class="machine-setup-diagram">
+                <div class="machine-serial-reference">
+                    <h3>DXY-1200 RS232 Wiring</h3>
+                    <p><strong>Preferred CH340 USB-RS232 wiring:</strong> use the full hardware-handshake cable shown in the diagram. This lets the plotter control host transmission during large HPGL transfers.</p>
+                    <div class="machine-pin-grid">
+                        <div><strong>DB25 pin 2 -> DB9 pin 2</strong><span>DXY TXD output to host RXD</span></div>
+                        <div><strong>DB25 pin 3 -> DB9 pin 3</strong><span>DXY RXD input from host TXD</span></div>
+                        <div><strong>DB25 pin 4 -> DB9 pin 4</strong><span>DXY RTS output to host DTR</span></div>
+                        <div><strong>DB25 pin 5 -> DB9 pin 6</strong><span>DXY CTS input from host DSR</span></div>
+                        <div><strong>DB25 pin 6 -> DB9 pin 7</strong><span>DXY DSR input from host RTS</span></div>
+                        <div><strong>DB25 pin 7 -> DB9 pin 5</strong><span>Ground reference, required</span></div>
+                        <div><strong>DB25 pin 20 -> DB9 pin 8</strong><span>DXY DTR output to host CTS</span></div>
+                    </div>
+                    <p><strong>Most important handshake line:</strong> DB25 pin 20 DTR to DB9 pin 8 CTS lets the DXY-1200 slow or stop the host when its receive buffer is filling.</p>
+                    <h3>DXY-1200 DB25 Pin Functions</h3>
+                    <div class="machine-pin-grid">
+                        <div><strong>Pin 2</strong><span>TXD, plotter output to host RX</span></div>
+                        <div><strong>Pin 3</strong><span>RXD, plotter input from host TX</span></div>
+                        <div><strong>Pin 4</strong><span>RTS output, always ON at about +12V</span></div>
+                        <div><strong>Pin 5</strong><span>CTS input to plotter</span></div>
+                        <div><strong>Pin 6</strong><span>DSR input to plotter</span></div>
+                        <div><strong>Pin 7</strong><span>SG signal ground</span></div>
+                        <div><strong>Pin 20</strong><span>DTR output from plotter</span></div>
+                    </div>
+                    <p><strong>Minimum 3-wire connection:</strong> DXY pin 2 to host RX, pin 3 to host TX, and pin 7 to host GND.</p>
+                    <p><strong>TX/RX must be crossed:</strong> DXY pin 2 is the plotter's TXD output, so it must go to the adapter RXD. DXY pin 3 is the plotter's RXD input, so it must go to the adapter TXD. This cannot be swapped in software.</p>
+                    <p>CTS and DSR can be left unconnected for normal use. The Roland manual states the plotter behaves as if CTS and DSR are ON when those inputs are unconnected. In the app, turn off CTS priority handshaking when using a 3-wire cable.</p>
+                    <p><strong>DB9 reference:</strong> pin 2 RXD, pin 3 TXD, pin 5 GND, pin 7 RTS, pin 8 CTS.</p>
+                    <p>Do not use pins 14 S.TXD or 16 S.RXD for normal serial communication; these are for Y-connection use.</p>
+                    <p><strong>DB25 numbering at the plotter connector:</strong> top row left to right is 13 to 1; bottom row left to right is 25 to 14.</p>
+                </div>
             </div>
             <div class="modal-footer">
                 <div class="settings-footer-actions">
