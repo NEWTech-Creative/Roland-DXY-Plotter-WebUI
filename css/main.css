@@ -769,10 +769,15 @@ body.olive-theme {
 .machine-setup-modal-content {
     width: min(760px, calc(100vw - 32px));
     max-width: 760px;
+    max-height: calc(100vh - 32px);
+    overflow: hidden;
 }
 
 .machine-setup-modal-body {
+    flex: 1;
     gap: 14px;
+    overflow-y: auto;
+    padding-bottom: 1.5rem;
 }
 
 .machine-setup-intro {
