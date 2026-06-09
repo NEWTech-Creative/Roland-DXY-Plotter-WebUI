@@ -26,7 +26,7 @@ class SerialManager {
         this.noCtsPacingByteWindow = 256;
         this.noCtsPacingDrainMs = 120;
         this.noCtsMinCommandGapMs = 12;
-        this.communicationWriteTimeoutMs = 2500;
+        this.communicationWriteTimeoutMs = 0;
         this.ctsAutoFallbackTriggered = false;
         this.ctsBlindMoveAcknowledged = false;
         this.noCtsBytesSinceDrain = 0;
@@ -1054,6 +1054,9 @@ class SerialManager {
     }
 
     getTransmitChunkSize() {
+        const configured = Math.max(0, parseInt(this.app?.settings?.streamChunkBytes, 10) || 0);
+        if (configured > 0) return configured;
+
         const baudRateStr = document.getElementById('sel-baud')?.value;
         const baudRate = parseInt(baudRateStr, 10) || 9600;
         if (baudRate <= 9600) return 12;
@@ -1062,10 +1065,25 @@ class SerialManager {
     }
 
     getInterChunkDelayMs(chunkLength = 1) {
+        const configured = Math.max(0, parseInt(this.app?.settings?.streamChunkDelayMs, 10) || 0);
+        if (configured > 0) return configured;
+
+        return this.getAutoInterChunkDelayMs(chunkLength);
+    }
+
+    getAutoInterChunkDelayMs(chunkLength = 1) {
         const baudRateStr = document.getElementById('sel-baud')?.value;
         const baudRate = parseInt(baudRateStr, 10) || 9600;
         const msPerByte = (10 / baudRate) * 1000;
         return Math.max(2, Math.ceil(msPerByte * Math.max(1, chunkLength) * 0.75));
+    }
+
+    getConfiguredTransmitChunkSize() {
+        return Math.max(0, Math.min(1024, parseInt(this.app?.settings?.streamChunkBytes, 10) || 0));
+    }
+
+    getConfiguredInterChunkDelayMs() {
+        return Math.max(0, Math.min(5000, parseInt(this.app?.settings?.streamChunkDelayMs, 10) || 0));
     }
 
     getInterCommandDelayMs(command = '') {
@@ -1074,7 +1092,7 @@ class SerialManager {
         }
 
         const baseDelay = this.commandDelay || 50;
-        const fallbackDelay = this.getInterChunkDelayMs(String(command || '').length || 1);
+        const fallbackDelay = this.getAutoInterChunkDelayMs(String(command || '').length || 1);
         return Math.max(baseDelay, fallbackDelay);
     }
 
@@ -1104,17 +1122,23 @@ class SerialManager {
             return true;
         }
 
-        const timeoutMs = Math.max(500, Number(this.communicationWriteTimeoutMs) || 2500);
+        const timeoutMs = Number(this.communicationWriteTimeoutMs) || 0;
+        if (timeoutMs <= 0) {
+            await this.writer.write(bytes);
+            return true;
+        }
+
+        const guardedTimeoutMs = Math.max(500, timeoutMs);
         let timeoutId = null;
         try {
             const writeResult = this.writer.write(bytes).then(() => 'written');
             const timeoutResult = new Promise(resolve => {
-                timeoutId = setTimeout(() => resolve('timeout'), timeoutMs);
+                timeoutId = setTimeout(() => resolve('timeout'), guardedTimeoutMs);
             });
             const result = await Promise.race([writeResult, timeoutResult]);
             if (timeoutId) clearTimeout(timeoutId);
             if (result === 'timeout') {
-                this.handleNoCtsCommunicationStall(`write timeout after ${timeoutMs}ms`);
+                this.handleNoCtsCommunicationStall(`write timeout after ${guardedTimeoutMs}ms`);
                 this.appendSerialDebugLog(
                     `${this.getSerialDebugTimestamp()} No-CTS write stalled${part ? ` ${String(part).slice(0, 60)}` : ''}`,
                     'warning'
@@ -1128,8 +1152,8 @@ class SerialManager {
             throw error;
         }
     }
-    async _writePartWithFlowControl(part, encoder) {
-        const bytes = encoder.encode(part);
+
+    async _writeBytesWithFlowControl(bytes, debugLabel = '') {
         while (this.isConnected && !this.isHold) {
             const ready = await this.waitForTransmitReady();
             if (!ready) return false;
@@ -1148,18 +1172,42 @@ class SerialManager {
             const noCtsReady = await this.waitForNoCtsPacing(bytes.length);
             if (!noCtsReady) return false;
 
-            const writeSucceeded = await this.writeWithCommunicationWatchdog(bytes, part);
+            const writeSucceeded = await this.writeWithCommunicationWatchdog(bytes, debugLabel);
             if (!writeSucceeded) return false;
             this.bytesSincePriorityCtsPoll += bytes.length;
             if (this.shouldUseNoCtsPacing()) {
                 this.noCtsBytesSinceDrain += bytes.length;
                 this.noCtsLastWriteAt = performance.now();
             }
-            this.recordSerialDebugTx(bytes.length, part);
+            this.recordSerialDebugTx(bytes.length, debugLabel);
             return true;
         }
 
         return false;
+    }
+
+    async _writePartWithFlowControl(part, encoder) {
+        const bytes = encoder.encode(part);
+        const configuredChunkSize = this.getConfiguredTransmitChunkSize();
+        if (configuredChunkSize <= 0 || bytes.length <= configuredChunkSize) {
+            return this._writeBytesWithFlowControl(bytes, part);
+        }
+
+        const interChunkDelayMs = this.getConfiguredInterChunkDelayMs();
+        for (let offset = 0; offset < bytes.length; offset += configuredChunkSize) {
+            const chunk = bytes.slice(offset, offset + configuredChunkSize);
+            const chunkIndex = Math.floor(offset / configuredChunkSize) + 1;
+            const chunkCount = Math.ceil(bytes.length / configuredChunkSize);
+            const sent = await this._writeBytesWithFlowControl(chunk, `${part} [chunk ${chunkIndex}/${chunkCount}]`);
+            if (!sent) return false;
+
+            const hasMoreChunks = offset + configuredChunkSize < bytes.length;
+            if (hasMoreChunks && interChunkDelayMs > 0) {
+                await new Promise(resolve => setTimeout(resolve, interChunkDelayMs));
+            }
+        }
+
+        return true;
     }
 
     _updateEstimatedPositionFromCommand(command) {
@@ -1480,6 +1528,8 @@ class SerialManager {
             `No-CTS pacing window bytes: ${this.noCtsPacingByteWindow}`,
             `No-CTS pacing drain ms: ${this.noCtsPacingDrainMs}`,
             `No-CTS minimum command gap ms: ${this.noCtsMinCommandGapMs}`,
+            `Custom stream chunk bytes: ${this.getConfiguredTransmitChunkSize() || 'auto'}`,
+            `Custom stream chunk delay ms: ${this.getConfiguredInterChunkDelayMs() || 'auto'}`,
             `Repeat loops: ${stats.repeatLoops}`,
             `Stress writes: ${stats.stressWrites}`,
             `Exported event lines: ${(this.serialDebugHistory || []).length}`,

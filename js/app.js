@@ -13,6 +13,8 @@ class App {
             handshake: 'normal',
             ctsPriorityEnabled: true,
             speed: 'fast',
+            streamChunkBytes: 0,
+            streamChunkDelayMs: 0,
             streamPerformanceMode: true,
             bedWidth: 432,
             bedHeight: 297,

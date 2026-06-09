@@ -1398,6 +1398,8 @@ class UIController {
         const selHandshake = document.getElementById('sel-handshake');
         const selSpeed = document.getElementById('sel-speed');
         const inputCtsPriority = document.getElementById('input-cts-priority');
+        const inputStreamChunkBytes = document.getElementById('input-stream-chunk-bytes');
+        const inputStreamChunkDelay = document.getElementById('input-stream-chunk-delay');
         const inputBedW = document.getElementById('input-bed-w');
         const inputBedH = document.getElementById('input-bed-h');
         const inputSimOpacity = document.getElementById('input-sim-opacity');
@@ -1418,6 +1420,8 @@ class UIController {
             if (selHandshake) selHandshake.value = this.app.settings.handshake || 'normal';
             if (selSpeed) selSpeed.value = this.app.settings.speed || 'fast';
             if (inputCtsPriority) inputCtsPriority.checked = this.app.settings.ctsPriorityEnabled !== false;
+            if (inputStreamChunkBytes) inputStreamChunkBytes.value = this.app.settings.streamChunkBytes || 0;
+            if (inputStreamChunkDelay) inputStreamChunkDelay.value = this.app.settings.streamChunkDelayMs || 0;
             if (inputBedW) inputBedW.value = this.app.settings.bedWidth || this.app.getMachineProfile().bedWidth;
             if (inputBedH) inputBedH.value = this.app.settings.bedHeight || this.app.getMachineProfile().bedHeight;
             if (inputSimOpacity) {
@@ -1491,6 +1495,12 @@ class UIController {
             if (selSpeed) this.app.settings.speed = selSpeed.value;
             const previousCtsPriority = this.app.settings.ctsPriorityEnabled !== false;
             if (inputCtsPriority) this.app.settings.ctsPriorityEnabled = inputCtsPriority.checked;
+            if (inputStreamChunkBytes) {
+                this.app.settings.streamChunkBytes = Math.max(0, Math.min(1024, parseInt(inputStreamChunkBytes.value, 10) || 0));
+            }
+            if (inputStreamChunkDelay) {
+                this.app.settings.streamChunkDelayMs = Math.max(0, Math.min(5000, parseInt(inputStreamChunkDelay.value, 10) || 0));
+            }
             if (inputBedW) this.app.settings.bedWidth = parseFloat(inputBedW.value);
             if (inputBedH) this.app.settings.bedHeight = parseFloat(inputBedH.value);
             if (inputSimOpacity) {
