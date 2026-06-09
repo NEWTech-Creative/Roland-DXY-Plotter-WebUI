@@ -255,9 +255,7 @@ class HpglParser {
     }
 
     pathShouldUseCurve(path) {
-        if (!path || path.type !== 'path' || !Array.isArray(path.segments) || !Array.isArray(path.points)) return false;
-        if (this.app?.settings?.useInternalCurveEngine === false) return false;
-        return path.segments.some(segment => ['C', 'Q'].includes(segment.type));
+        return false;
     }
 
     isClosedPath(path) {

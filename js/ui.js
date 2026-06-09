@@ -389,19 +389,15 @@ class UIController {
         const buttonLabel = document.getElementById('import-resolution-label');
         const triggerButton = document.getElementById('btn-import-resolution');
         const resolution = this.app?.settings?.importResolution || 130;
-        const disabled = this.app?.settings?.useInternalCurveEngine === true;
 
         if (input) {
             input.value = resolution;
-            input.disabled = disabled;
         }
         if (valueLabel) valueLabel.textContent = String(resolution);
         if (buttonLabel) buttonLabel.textContent = `Curve ${resolution}`;
         if (triggerButton) {
-            triggerButton.classList.toggle('disabled', disabled);
-            triggerButton.title = disabled
-                ? 'Curve resolution is disabled while the DXY internal curve function is on'
-                : 'Adjust machine curve resolution';
+            triggerButton.classList.remove('disabled');
+            triggerButton.title = 'Adjust machine curve resolution';
         }
     }
 
@@ -446,10 +442,6 @@ class UIController {
         };
 
         triggerButton.onclick = () => {
-            if (this.app?.settings?.useInternalCurveEngine === true) {
-                this.logToConsole('System: Curve resolution is disabled while the DXY internal curve function is enabled.');
-                return;
-            }
             if (!menu.classList.contains('hidden')) {
                 menu.classList.add('hidden');
                 return;
@@ -1398,13 +1390,13 @@ class UIController {
         const selHandshake = document.getElementById('sel-handshake');
         const selSpeed = document.getElementById('sel-speed');
         const inputCtsPriority = document.getElementById('input-cts-priority');
-        const inputStreamChunkBytes = document.getElementById('input-stream-chunk-bytes');
-        const inputStreamChunkDelay = document.getElementById('input-stream-chunk-delay');
+        const inputNoCtsPacingWindow = document.getElementById('input-no-cts-pacing-window');
+        const inputNoCtsDrainDelay = document.getElementById('input-no-cts-drain-delay');
+        const inputNoCtsCommandGap = document.getElementById('input-no-cts-command-gap');
         const inputBedW = document.getElementById('input-bed-w');
         const inputBedH = document.getElementById('input-bed-h');
         const inputSimOpacity = document.getElementById('input-sim-opacity');
         const valSimOpacity = document.getElementById('val-sim-opacity');
-        const inputUseInternalCurveEngine = document.getElementById('input-use-internal-curve-engine');
         const inputCreativeTabsMode = document.getElementById('input-creative-tabs-mode');
         const inputShowSerialDebug = document.getElementById('input-show-serial-debug');
         const inputMarginX = document.getElementById('input-margin-x');
@@ -1420,16 +1412,14 @@ class UIController {
             if (selHandshake) selHandshake.value = this.app.settings.handshake || 'normal';
             if (selSpeed) selSpeed.value = this.app.settings.speed || 'fast';
             if (inputCtsPriority) inputCtsPriority.checked = this.app.settings.ctsPriorityEnabled !== false;
-            if (inputStreamChunkBytes) inputStreamChunkBytes.value = this.app.settings.streamChunkBytes || 0;
-            if (inputStreamChunkDelay) inputStreamChunkDelay.value = this.app.settings.streamChunkDelayMs || 0;
+            if (inputNoCtsPacingWindow) inputNoCtsPacingWindow.value = this.app.settings.noCtsPacingByteWindow ?? 256;
+            if (inputNoCtsDrainDelay) inputNoCtsDrainDelay.value = this.app.settings.noCtsPacingDrainMs ?? 120;
+            if (inputNoCtsCommandGap) inputNoCtsCommandGap.value = this.app.settings.noCtsMinCommandGapMs ?? 12;
             if (inputBedW) inputBedW.value = this.app.settings.bedWidth || this.app.getMachineProfile().bedWidth;
             if (inputBedH) inputBedH.value = this.app.settings.bedHeight || this.app.getMachineProfile().bedHeight;
             if (inputSimOpacity) {
                 inputSimOpacity.value = this.app.settings.simBackgroundOpacity || 0.25;
                 if (valSimOpacity) valSimOpacity.textContent = inputSimOpacity.value;
-            }
-            if (inputUseInternalCurveEngine) {
-                inputUseInternalCurveEngine.checked = this.app.settings.useInternalCurveEngine !== false;
             }
             if (inputCreativeTabsMode) {
                 inputCreativeTabsMode.checked = this._isCreativeTabModeEnabled();
@@ -1451,12 +1441,6 @@ class UIController {
         if (inputSimOpacity) {
             inputSimOpacity.oninput = (e) => {
                 if (valSimOpacity) valSimOpacity.textContent = e.target.value;
-            };
-        }
-
-        if (inputUseInternalCurveEngine) {
-            inputUseInternalCurveEngine.onchange = () => {
-                this.refreshImportResolutionControl();
             };
         }
 
@@ -1495,19 +1479,21 @@ class UIController {
             if (selSpeed) this.app.settings.speed = selSpeed.value;
             const previousCtsPriority = this.app.settings.ctsPriorityEnabled !== false;
             if (inputCtsPriority) this.app.settings.ctsPriorityEnabled = inputCtsPriority.checked;
-            if (inputStreamChunkBytes) {
-                this.app.settings.streamChunkBytes = Math.max(0, Math.min(1024, parseInt(inputStreamChunkBytes.value, 10) || 0));
+            if (inputNoCtsPacingWindow) {
+                this.app.settings.noCtsPacingByteWindow = Math.max(1, Math.min(4096, parseInt(inputNoCtsPacingWindow.value, 10) || 256));
             }
-            if (inputStreamChunkDelay) {
-                this.app.settings.streamChunkDelayMs = Math.max(0, Math.min(5000, parseInt(inputStreamChunkDelay.value, 10) || 0));
+            if (inputNoCtsDrainDelay) {
+                const drainDelay = parseInt(inputNoCtsDrainDelay.value, 10);
+                this.app.settings.noCtsPacingDrainMs = Math.max(0, Math.min(5000, Number.isFinite(drainDelay) ? drainDelay : 120));
+            }
+            if (inputNoCtsCommandGap) {
+                const commandGap = parseInt(inputNoCtsCommandGap.value, 10);
+                this.app.settings.noCtsMinCommandGapMs = Math.max(0, Math.min(1000, Number.isFinite(commandGap) ? commandGap : 12));
             }
             if (inputBedW) this.app.settings.bedWidth = parseFloat(inputBedW.value);
             if (inputBedH) this.app.settings.bedHeight = parseFloat(inputBedH.value);
             if (inputSimOpacity) {
                 this.app.settings.simBackgroundOpacity = parseFloat(inputSimOpacity.value);
-            }
-            if (inputUseInternalCurveEngine) {
-                this.app.settings.useInternalCurveEngine = inputUseInternalCurveEngine.checked;
             }
             if (inputCreativeTabsMode) {
                 this.app.settings.creativePanelsTabbed = inputCreativeTabsMode.checked;

@@ -175,7 +175,7 @@ class SerialManager {
             } else if (handshake === 'normal') {
                 this.hardwareFlowSupported = false;
                 this.hardwareFlowPaused = false;
-                this.app.ui.logToConsole(`System: CTS priority disabled. Using no-CTS paced streaming (${this.noCtsPacingByteWindow}B window, ${this.noCtsPacingDrainMs}ms drain).`, 'info');
+                this.app.ui.logToConsole(`System: CTS priority disabled. Using no-CTS paced streaming (${this.getNoCtsPacingByteWindow()}B window, ${this.getNoCtsPacingDrainMs()}ms drain).`, 'info');
             }
 
             this.isConnected = true;
@@ -513,23 +513,44 @@ class SerialManager {
         return !this.isHardwareHandshakeEnabled() || !this.hardwareFlowSupported;
     }
 
+    getNoCtsPacingByteWindow() {
+        const configured = parseInt(this.app?.settings?.noCtsPacingByteWindow, 10);
+        const fallback = Number.isFinite(this.noCtsPacingByteWindow) ? this.noCtsPacingByteWindow : 256;
+        return Math.max(1, Math.min(4096, Number.isFinite(configured) ? configured : fallback));
+    }
+
+    getNoCtsPacingDrainMs() {
+        const configured = parseInt(this.app?.settings?.noCtsPacingDrainMs, 10);
+        const fallback = Number.isFinite(this.noCtsPacingDrainMs) ? this.noCtsPacingDrainMs : 120;
+        return Math.max(0, Math.min(5000, Number.isFinite(configured) ? configured : fallback));
+    }
+
+    getNoCtsMinCommandGapMs() {
+        const configured = parseInt(this.app?.settings?.noCtsMinCommandGapMs, 10);
+        const fallback = Number.isFinite(this.noCtsMinCommandGapMs) ? this.noCtsMinCommandGapMs : 12;
+        return Math.max(0, Math.min(1000, Number.isFinite(configured) ? configured : fallback));
+    }
+
     async waitForNoCtsPacing(nextByteLength = 0) {
         if (!this.shouldUseNoCtsPacing()) return true;
 
         const now = performance.now();
         const elapsedSinceWrite = now - (this.noCtsLastWriteAt || 0);
-        if (this.noCtsLastWriteAt && elapsedSinceWrite < this.noCtsMinCommandGapMs) {
-            await new Promise(resolve => setTimeout(resolve, this.noCtsMinCommandGapMs - elapsedSinceWrite));
+        const minCommandGapMs = this.getNoCtsMinCommandGapMs();
+        if (this.noCtsLastWriteAt && elapsedSinceWrite < minCommandGapMs) {
+            await new Promise(resolve => setTimeout(resolve, minCommandGapMs - elapsedSinceWrite));
         }
 
+        const pacingByteWindow = this.getNoCtsPacingByteWindow();
+        const pacingDrainMs = this.getNoCtsPacingDrainMs();
         const projectedBytes = this.noCtsBytesSinceDrain + Math.max(0, Number(nextByteLength) || 0);
-        if (projectedBytes < this.noCtsPacingByteWindow) return true;
+        if (projectedBytes < pacingByteWindow) return true;
 
         this.appendSerialDebugLog(
-            `${this.getSerialDebugTimestamp()} No-CTS pacing drain after ${this.noCtsBytesSinceDrain}B window=${this.noCtsPacingByteWindow}B, next=${nextByteLength}B.`,
+            `${this.getSerialDebugTimestamp()} No-CTS pacing drain after ${this.noCtsBytesSinceDrain}B window=${pacingByteWindow}B, next=${nextByteLength}B.`,
             'flow'
         );
-        await new Promise(resolve => setTimeout(resolve, this.noCtsPacingDrainMs));
+        await new Promise(resolve => setTimeout(resolve, pacingDrainMs));
         this.noCtsBytesSinceDrain = 0;
         return true;
     }
@@ -1054,9 +1075,6 @@ class SerialManager {
     }
 
     getTransmitChunkSize() {
-        const configured = Math.max(0, parseInt(this.app?.settings?.streamChunkBytes, 10) || 0);
-        if (configured > 0) return configured;
-
         const baudRateStr = document.getElementById('sel-baud')?.value;
         const baudRate = parseInt(baudRateStr, 10) || 9600;
         if (baudRate <= 9600) return 12;
@@ -1065,9 +1083,6 @@ class SerialManager {
     }
 
     getInterChunkDelayMs(chunkLength = 1) {
-        const configured = Math.max(0, parseInt(this.app?.settings?.streamChunkDelayMs, 10) || 0);
-        if (configured > 0) return configured;
-
         return this.getAutoInterChunkDelayMs(chunkLength);
     }
 
@@ -1076,14 +1091,6 @@ class SerialManager {
         const baudRate = parseInt(baudRateStr, 10) || 9600;
         const msPerByte = (10 / baudRate) * 1000;
         return Math.max(2, Math.ceil(msPerByte * Math.max(1, chunkLength) * 0.75));
-    }
-
-    getConfiguredTransmitChunkSize() {
-        return Math.max(0, Math.min(1024, parseInt(this.app?.settings?.streamChunkBytes, 10) || 0));
-    }
-
-    getConfiguredInterChunkDelayMs() {
-        return Math.max(0, Math.min(5000, parseInt(this.app?.settings?.streamChunkDelayMs, 10) || 0));
     }
 
     getInterCommandDelayMs(command = '') {
@@ -1153,7 +1160,8 @@ class SerialManager {
         }
     }
 
-    async _writeBytesWithFlowControl(bytes, debugLabel = '') {
+    async _writePartWithFlowControl(part, encoder) {
+        const bytes = encoder.encode(part);
         while (this.isConnected && !this.isHold) {
             const ready = await this.waitForTransmitReady();
             if (!ready) return false;
@@ -1172,42 +1180,18 @@ class SerialManager {
             const noCtsReady = await this.waitForNoCtsPacing(bytes.length);
             if (!noCtsReady) return false;
 
-            const writeSucceeded = await this.writeWithCommunicationWatchdog(bytes, debugLabel);
+            const writeSucceeded = await this.writeWithCommunicationWatchdog(bytes, part);
             if (!writeSucceeded) return false;
             this.bytesSincePriorityCtsPoll += bytes.length;
             if (this.shouldUseNoCtsPacing()) {
                 this.noCtsBytesSinceDrain += bytes.length;
                 this.noCtsLastWriteAt = performance.now();
             }
-            this.recordSerialDebugTx(bytes.length, debugLabel);
+            this.recordSerialDebugTx(bytes.length, part);
             return true;
         }
 
         return false;
-    }
-
-    async _writePartWithFlowControl(part, encoder) {
-        const bytes = encoder.encode(part);
-        const configuredChunkSize = this.getConfiguredTransmitChunkSize();
-        if (configuredChunkSize <= 0 || bytes.length <= configuredChunkSize) {
-            return this._writeBytesWithFlowControl(bytes, part);
-        }
-
-        const interChunkDelayMs = this.getConfiguredInterChunkDelayMs();
-        for (let offset = 0; offset < bytes.length; offset += configuredChunkSize) {
-            const chunk = bytes.slice(offset, offset + configuredChunkSize);
-            const chunkIndex = Math.floor(offset / configuredChunkSize) + 1;
-            const chunkCount = Math.ceil(bytes.length / configuredChunkSize);
-            const sent = await this._writeBytesWithFlowControl(chunk, `${part} [chunk ${chunkIndex}/${chunkCount}]`);
-            if (!sent) return false;
-
-            const hasMoreChunks = offset + configuredChunkSize < bytes.length;
-            if (hasMoreChunks && interChunkDelayMs > 0) {
-                await new Promise(resolve => setTimeout(resolve, interChunkDelayMs));
-            }
-        }
-
-        return true;
     }
 
     _updateEstimatedPositionFromCommand(command) {
@@ -1525,11 +1509,9 @@ class SerialManager {
             `CTS ready cooldown ms: ${this.ctsReadyCooldownMs}`,
             `CTS recovery ramp ms: ${this.ctsRecoveryRampMs}`,
             `No-CTS pacing active: ${this.shouldUseNoCtsPacing() ? 'yes' : 'no'}`,
-            `No-CTS pacing window bytes: ${this.noCtsPacingByteWindow}`,
-            `No-CTS pacing drain ms: ${this.noCtsPacingDrainMs}`,
-            `No-CTS minimum command gap ms: ${this.noCtsMinCommandGapMs}`,
-            `Custom stream chunk bytes: ${this.getConfiguredTransmitChunkSize() || 'auto'}`,
-            `Custom stream chunk delay ms: ${this.getConfiguredInterChunkDelayMs() || 'auto'}`,
+            `No-CTS pacing window bytes: ${this.getNoCtsPacingByteWindow()}`,
+            `No-CTS pacing drain ms: ${this.getNoCtsPacingDrainMs()}`,
+            `No-CTS minimum command gap ms: ${this.getNoCtsMinCommandGapMs()}`,
             `Repeat loops: ${stats.repeatLoops}`,
             `Stress writes: ${stats.stressWrites}`,
             `Exported event lines: ${(this.serialDebugHistory || []).length}`,

@@ -603,6 +603,34 @@ body.olive-theme {
     gap: 14px;
 }
 
+.settings-subsection {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding-top: 2px;
+}
+
+.settings-subsection + .settings-subsection {
+    padding-top: 14px;
+    border-top: 1px solid var(--panel-border);
+}
+
+.settings-subsection h4 {
+    margin: 0;
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: var(--accent-blue);
+    text-transform: uppercase;
+}
+
+.settings-subsection-grid {
+    gap: 12px;
+}
+
+.settings-three-col {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .settings-field-full {
     grid-column: 1 / -1;
 }
