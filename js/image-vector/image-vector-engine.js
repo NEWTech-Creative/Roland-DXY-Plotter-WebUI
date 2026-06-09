@@ -216,6 +216,693 @@ class ImageVectorEngine {
         return tracedPaths;
     }
 
+    generateCenterTrace(params = {}) {
+        if (!this.imageData || !this.brightnessMap) return [];
+
+        const preparedMap = this._prepareCenterTraceBrightnessMap(this.brightnessMap);
+        const normalized = this._normalizeBrightnessMap(preparedMap);
+        const candidateCount = Math.max(1, Math.min(31, Math.round(params.centerTraceCandidates ?? 15)));
+        const thresholds = this._getCenterTraceReferenceThresholds(candidateCount);
+        const pruneLength = Math.max(0, Math.round(params.centerTracePrune ?? 1));
+        const minLength = Math.max(1, Number(params.centerTraceMinLength) || 2);
+        const simplify = 0.04 + (Math.max(0, Math.min(100, Number(params.simplify) || 0)) / 100) * 2.4;
+        const smoothingPasses = Math.max(0, Math.min(8, Math.round(params.centerTraceSmoothing ?? 3)));
+        const style = params.style || 'curves';
+        const imageSpan = this.width + this.height;
+
+        let best = [];
+        let bestScore = -Infinity;
+        let bestDebug = null;
+
+        thresholds.forEach((threshold, index) => {
+            const binary = this._buildCenterTraceThresholdMask(normalized, threshold);
+            let skeleton = this._thinCenterTraceBinary(binary);
+            skeleton = this._pruneCenterTraceSkeleton(skeleton, pruneLength);
+            const rawPaths = this._traceCenterTraceSkeleton(skeleton, 1);
+            const stats = this._scoreCenterTraceCandidate(rawPaths);
+            const centerOffset = ((candidateCount / 2) - index) * ((candidateCount / 2) - index) * imageSpan;
+            const score = (stats.length * 5) - (centerOffset * 0.005) - (stats.points * 0.2) - (stats.segments * 20);
+
+            if (score > bestScore) {
+                bestScore = score;
+                best = rawPaths;
+                bestDebug = { threshold, index, score, stats };
+            }
+        });
+
+        const connectedBest = this._connectCenterTraceFragments(best, {
+            maxGap: Math.max(3, Math.min(14, minLength * 1.8)),
+            maxAngle: 0.7,
+            maxLateral: 2.4
+        });
+
+        const output = connectedBest.map((path) => {
+            let processed = this._collapsePixelStairSteps(path);
+            if (smoothingPasses > 0) processed = this._smoothCenterTracePath(processed, smoothingPasses);
+            if (simplify > 0) processed = this._simplifyPath(processed, Math.max(simplify, smoothingPasses > 0 ? 0.55 : simplify));
+            if (style !== 'lines' && processed.length >= 3) processed = this._smoothOpenPath(processed, 1);
+            if (!this._isUsefulCenterTracePath(processed, minLength)) return null;
+            return this._pointsToSmoothSegments(processed, style);
+        }).filter(Boolean);
+
+        this.lastCenterTraceDebug = {
+            algorithm: 'inkscape-centerline-reference',
+            preprocessing: 'local-illumination-normalize',
+            candidateRuns: candidateCount,
+            smoothingPasses,
+            candidateThresholds: thresholds,
+            selectedThreshold: bestDebug?.threshold ?? null,
+            selectedIndex: bestDebug?.index ?? null,
+            selectedScore: Number.isFinite(bestScore) ? bestScore : null,
+            selectedStats: bestDebug?.stats || null,
+            outputPathCount: output.length
+        };
+
+        return output;
+    }
+
+    _prepareCenterTraceBrightnessMap(sourceMap) {
+        if (!sourceMap || sourceMap.length === 0) return new Float32Array();
+
+        const radius = Math.max(8, Math.min(48, Math.round(Math.min(this.width, this.height) / 28)));
+        const localBackground = this._boxBlurMap(sourceMap, radius);
+        const prepared = new Float32Array(sourceMap.length);
+
+        for (let i = 0; i < sourceMap.length; i++) {
+            const localInk = Math.max(0, localBackground[i] - sourceMap[i]);
+            prepared[i] = Math.max(0, Math.min(255, 255 - (localInk * 2.35)));
+        }
+
+        return prepared;
+    }
+
+    _getCenterTraceReferenceThresholds(count) {
+        const thresholds = [];
+        for (let i = 0; i < count; i++) {
+            thresholds.push(Math.max(1, Math.min(254, Math.round(256 * (1 + i) / (count + 1)))));
+        }
+        return thresholds;
+    }
+
+    _buildCenterTraceThresholdMask(normalized, threshold) {
+        const binary = new Uint8Array(normalized.length);
+        for (let i = 0; i < normalized.length; i++) {
+            binary[i] = normalized[i] <= threshold ? 1 : 0;
+        }
+        return binary;
+    }
+
+    _scoreCenterTraceCandidate(paths) {
+        let length = 0;
+        let points = 0;
+        let segments = 0;
+
+        paths.forEach(path => {
+            if (!Array.isArray(path) || path.length < 2) return;
+            points += path.length;
+            segments += 1;
+            for (let i = 1; i < path.length; i++) {
+                const dx = path[i].x - path[i - 1].x;
+                const dy = path[i].y - path[i - 1].y;
+                length += Math.sqrt(dx * dx + dy * dy);
+            }
+        });
+
+        return { length, points, segments };
+    }
+
+    // Stitch path endpoints that are within maxDist pixels of each other.
+    // Iterates until no more stitchable pairs exist. Each path participates in
+    // at most one merge per iteration so direction is always computed from the
+    // pre-merge endpoints.
+    _connectNearbyEndpoints(paths, maxDist) {
+        if (maxDist <= 0 || paths.length < 2) return paths;
+        const maxD2 = maxDist * maxDist;
+        let active = paths.slice();
+        let changed = true;
+
+        while (changed) {
+            changed = false;
+            const n = active.length;
+            if (n < 2) break;
+
+            // Build endpoint list sorted by x for fast range scan.
+            const eps = [];
+            for (let i = 0; i < n; i++) {
+                const p = active[i];
+                eps.push([p[0].x, p[0].y, i, 0]);
+                eps.push([p[p.length - 1].x, p[p.length - 1].y, i, 1]);
+            }
+            eps.sort((a, b) => a[0] - b[0]);
+
+            // Collect all valid pairs within maxDist, cheapest first.
+            const pairs = [];
+            for (let a = 0; a < eps.length; a++) {
+                for (let b = a + 1; b < eps.length; b++) {
+                    const dx = eps[b][0] - eps[a][0];
+                    if (dx > maxDist) break;
+                    if (eps[a][2] === eps[b][2]) continue; // same path
+                    const dy = eps[b][1] - eps[a][1];
+                    const d2 = dx * dx + dy * dy;
+                    if (d2 <= maxD2) pairs.push([d2, a, b]);
+                }
+            }
+            if (!pairs.length) break;
+            pairs.sort((a, b) => a[0] - b[0]);
+
+            // Greedy merge: each path participates at most once per pass.
+            const used = new Set();
+            for (const [, a, b] of pairs) {
+                const ai = eps[a][2], bi = eps[b][2];
+                if (used.has(ai) || used.has(bi)) continue;
+
+                let pa = active[ai].slice();
+                let pb = active[bi].slice();
+                // Orient so pa ends at its connecting point, pb starts at its.
+                if (eps[a][3] === 0) pa.reverse();
+                if (eps[b][3] === 1) pb.reverse();
+
+                active[ai] = pa.concat(pb);
+                active[bi] = null;
+                used.add(ai);
+                used.add(bi);
+                changed = true;
+            }
+            if (changed) active = active.filter(Boolean);
+        }
+        return active;
+    }
+
+    // Densely sample a bezier path (already pixel-transformed) into a polygon.
+    // Uses ~2px sample spacing so the outline faithfully represents the stroke shape.
+    _sampleOutlineFromPath(path) {
+        const pts = [];
+        let cx = 0, cy = 0;
+        for (const seg of path.segments) {
+            if (!seg) continue;
+            if (seg.type === 'M') {
+                cx = seg.x; cy = seg.y;
+                pts.push({ x: cx, y: cy });
+            } else if (seg.type === 'L') {
+                pts.push({ x: seg.x, y: seg.y });
+                cx = seg.x; cy = seg.y;
+            } else if (seg.type === 'C') {
+                const x1 = seg.x1, y1 = seg.y1, x2 = seg.x2, y2 = seg.y2, ex = seg.x, ey = seg.y;
+                const chord = Math.hypot(ex - cx, ey - cy);
+                const ctrl  = Math.hypot(x1 - cx, y1 - cy) + Math.hypot(x2 - x1, y2 - y1) + Math.hypot(ex - x2, ey - y2);
+                const steps = Math.max(2, Math.ceil(Math.max(chord, ctrl) / 2));
+                for (let i = 1; i <= steps; i++) {
+                    const t = i / steps, mt = 1 - t;
+                    pts.push({
+                        x: mt*mt*mt*cx + 3*mt*mt*t*x1 + 3*mt*t*t*x2 + t*t*t*ex,
+                        y: mt*mt*mt*cy + 3*mt*mt*t*y1 + 3*mt*t*t*y2 + t*t*t*ey
+                    });
+                }
+                cx = ex; cy = ey;
+            }
+        }
+        return pts;
+    }
+
+    // Compute a centerline from a closed stroke outline polygon.
+    // Uses PCA to find the principal axis of the stroke, identifies the two tips
+    // as the extremal projections, splits the outline into two halves, resamples
+    // each half to equal arc-length, then averages corresponding midpoints.
+    _outlineToCenterline(polygon) {
+        const n = polygon.length;
+        if (n < 6) return null;
+
+        // Perimeter
+        let perim = 0;
+        for (let i = 0; i < n; i++) {
+            const j = (i + 1) % n;
+            perim += Math.hypot(polygon[j].x - polygon[i].x, polygon[j].y - polygon[i].y);
+        }
+        if (perim < 4) return null;
+
+        // Area via shoelace
+        let area = 0;
+        for (let i = 0; i < n; i++) {
+            const j = (i + 1) % n;
+            area += polygon[i].x * polygon[j].y - polygon[j].x * polygon[i].y;
+        }
+        area = Math.abs(area) / 2;
+
+        // Estimated stroke width; skip regions that are too fat (not a stroke)
+        const estWidth = (2 * area) / perim;
+        if (estWidth > (perim / 2) * 0.6) return null;
+
+        // PCA: find principal axis direction
+        let mx = 0, my = 0;
+        for (const p of polygon) { mx += p.x; my += p.y; }
+        mx /= n; my /= n;
+
+        let cxx = 0, cxy = 0, cyy = 0;
+        for (const p of polygon) {
+            const dx = p.x - mx, dy = p.y - my;
+            cxx += dx * dx; cxy += dx * dy; cyy += dy * dy;
+        }
+
+        const tr  = cxx + cyy;
+        const det = cxx * cyy - cxy * cxy;
+        const lam = tr / 2 + Math.sqrt(Math.max(0, tr * tr / 4 - det));
+        let ax = lam - cyy, ay = cxy;
+        const alen = Math.hypot(ax, ay);
+        if (alen < 1e-10) { ax = 1; ay = 0; } else { ax /= alen; ay /= alen; }
+
+        // Tips = polygon points with min and max projection onto principal axis
+        let minProj = Infinity, maxProj = -Infinity, tip1 = 0, tip2 = 0;
+        for (let i = 0; i < n; i++) {
+            const proj = (polygon[i].x - mx) * ax + (polygon[i].y - my) * ay;
+            if (proj < minProj) { minProj = proj; tip1 = i; }
+            if (proj > maxProj) { maxProj = proj; tip2 = i; }
+        }
+        if (tip1 === tip2) return null;
+        if (tip1 > tip2) { const tmp = tip1; tip1 = tip2; tip2 = tmp; }
+
+        // Split polygon into two halves at the tips
+        const side1 = polygon.slice(tip1, tip2 + 1);
+        const side2 = [...polygon.slice(tip2), ...polygon.slice(0, tip1 + 1)];
+        if (side1.length < 2 || side2.length < 2) return null;
+
+        // Resample both sides to equal arc-length, then average midpoints
+        const numSamples = Math.max(8, Math.min(200, Math.round(perim / 4)));
+        const r1 = this._resamplePolyline(side1, numSamples);
+        const r2 = this._resamplePolyline(side2, numSamples);
+
+        return r1.map((p, i) => ({ x: (p.x + r2[i].x) / 2, y: (p.y + r2[i].y) / 2 }));
+    }
+
+    // Resample a polyline to exactly n evenly-spaced arc-length points.
+    _resamplePolyline(pts, n) {
+        if (!pts || pts.length < 2 || n < 2) return pts || [];
+        const cum = [0];
+        for (let i = 1; i < pts.length; i++) {
+            cum.push(cum[i - 1] + Math.hypot(pts[i].x - pts[i-1].x, pts[i].y - pts[i-1].y));
+        }
+        const total = cum[cum.length - 1];
+        if (total < 1e-10) return Array.from({ length: n }, () => ({ ...pts[0] }));
+        const result = [];
+        let j = 0;
+        for (let i = 0; i < n; i++) {
+            const target = (i / (n - 1)) * total;
+            while (j < cum.length - 2 && cum[j + 1] < target) j++;
+            const seg = cum[j + 1] - cum[j];
+            const t   = seg > 1e-10 ? (target - cum[j]) / seg : 0;
+            result.push({
+                x: pts[j].x + t * (pts[j + 1].x - pts[j].x),
+                y: pts[j].y + t * (pts[j + 1].y - pts[j].y)
+            });
+        }
+        return result;
+    }
+
+    _buildCenterTraceStrokeMask(normalized, options = {}) {
+        const w = this.width;
+        const h = this.height;
+        const total = w * h;
+        const threshold = Math.max(0, Math.min(255, Number(options.threshold) || 128));
+        const sensitivity = Math.max(0, Math.min(100, Number(options.sensitivity ?? 55))) / 100;
+        const minLength = Math.max(2, Number(options.minLength) || 14);
+        const blurRadius = Math.max(4, Math.min(18, Math.round(Math.min(w, h) / 135)));
+        const localMean = this._boxBlurMap(normalized, blurRadius);
+        const toneStats = this._getCenterTraceToneStats(normalized);
+        const lineArtMode = toneStats.whiteRatio >= 0.52 && toneStats.darkRatio <= 0.22;
+        const binary = new Uint8Array(total);
+        const contrastMin = 18 - (sensitivity * 14);
+        const softContrastMin = contrastMin * 0.58;
+        const brightnessCeiling = Math.max(45, Math.min(246, threshold + 78 + (sensitivity * 24)));
+        const lineArtCeiling = Math.min(
+            threshold,
+            Math.max(174, Math.min(238, 206 + (sensitivity * 30)))
+        );
+
+        for (let i = 0; i < total; i++) {
+            const value = normalized[i];
+            const localContrast = localMean[i] - value;
+            const darkStroke = value <= threshold && localContrast >= softContrastMin;
+            const locallyDarkStroke = value <= brightnessCeiling && localContrast >= contrastMin;
+            const cleanLineArtInk = lineArtMode
+                && value <= lineArtCeiling
+                && (localContrast >= 0.9 || value <= Math.min(178, threshold));
+            binary[i] = darkStroke || locallyDarkStroke || cleanLineArtInk ? 1 : 0;
+        }
+
+        return this._filterCenterTraceComponents(binary, {
+            minArea: Math.max(3, Math.round(minLength * 0.45)),
+            maxArea: Math.max(120, Math.round(total * 0.08))
+        });
+    }
+
+    _getCenterTraceToneStats(map) {
+        if (!map || !map.length) return { whiteRatio: 0, darkRatio: 0 };
+        const step = Math.max(1, Math.floor(map.length / 50000));
+        let total = 0;
+        let white = 0;
+        let dark = 0;
+        for (let i = 0; i < map.length; i += step) {
+            const value = map[i];
+            total++;
+            if (value >= 238) white++;
+            if (value <= 150) dark++;
+        }
+        return {
+            whiteRatio: total ? white / total : 0,
+            darkRatio: total ? dark / total : 0
+        };
+    }
+
+    _boxBlurMap(source, radius) {
+        const w = this.width;
+        const h = this.height;
+        const r = Math.max(1, Math.round(radius));
+        const horizontal = new Float32Array(source.length);
+        const output = new Float32Array(source.length);
+
+        for (let y = 0; y < h; y++) {
+            let sum = 0;
+            for (let x = -r; x <= r; x++) sum += source[y * w + Math.max(0, Math.min(w - 1, x))];
+            for (let x = 0; x < w; x++) {
+                horizontal[y * w + x] = sum / ((r * 2) + 1);
+                const removeX = Math.max(0, x - r);
+                const addX = Math.min(w - 1, x + r + 1);
+                sum += source[y * w + addX] - source[y * w + removeX];
+            }
+        }
+
+        for (let x = 0; x < w; x++) {
+            let sum = 0;
+            for (let y = -r; y <= r; y++) sum += horizontal[Math.max(0, Math.min(h - 1, y)) * w + x];
+            for (let y = 0; y < h; y++) {
+                output[y * w + x] = sum / ((r * 2) + 1);
+                const removeY = Math.max(0, y - r);
+                const addY = Math.min(h - 1, y + r + 1);
+                sum += horizontal[addY * w + x] - horizontal[removeY * w + x];
+            }
+        }
+
+        return output;
+    }
+
+    _filterCenterTraceComponents(binary, options = {}) {
+        const w = this.width;
+        const h = this.height;
+        const minArea = Math.max(1, Math.round(options.minArea || 3));
+        const maxArea = Math.max(minArea, Math.round(options.maxArea || binary.length));
+        const visited = new Uint8Array(binary.length);
+        const output = new Uint8Array(binary.length);
+        const stack = [];
+        const component = [];
+
+        for (let seed = 0; seed < binary.length; seed++) {
+            if (!binary[seed] || visited[seed]) continue;
+
+            stack.length = 0;
+            component.length = 0;
+            stack.push(seed);
+            visited[seed] = 1;
+            let minX = seed % w;
+            let maxX = minX;
+            let minY = Math.floor(seed / w);
+            let maxY = minY;
+
+            while (stack.length) {
+                const idx = stack.pop();
+                component.push(idx);
+                const x = idx % w;
+                const y = Math.floor(idx / w);
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+                if (y < minY) minY = y;
+                if (y > maxY) maxY = y;
+
+                for (let dy = -1; dy <= 1; dy++) {
+                    for (let dx = -1; dx <= 1; dx++) {
+                        if (dx === 0 && dy === 0) continue;
+                        const nx = x + dx;
+                        const ny = y + dy;
+                        if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+                        const nIdx = ny * w + nx;
+                        if (!binary[nIdx] || visited[nIdx]) continue;
+                        visited[nIdx] = 1;
+                        stack.push(nIdx);
+                    }
+                }
+            }
+
+            const area = component.length;
+            const boxArea = Math.max(1, (maxX - minX + 1) * (maxY - minY + 1));
+            const density = area / boxArea;
+            const hugeDenseBlob = area > maxArea && density > 0.16;
+            if (area < minArea || hugeDenseBlob) continue;
+            component.forEach(idx => { output[idx] = 1; });
+        }
+
+        return output;
+    }
+
+    _isUsefulCenterTracePath(points, minLength) {
+        if (!Array.isArray(points) || points.length < 2) return false;
+        let length = 0;
+        for (let i = 0; i < points.length; i++) {
+            const point = points[i];
+            if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return false;
+            if (point.x < -0.5 || point.y < -0.5 || point.x > this.width + 0.5 || point.y > this.height + 0.5) return false;
+            if (i > 0) {
+                const dx = point.x - points[i - 1].x;
+                const dy = point.y - points[i - 1].y;
+                length += Math.sqrt(dx * dx + dy * dy);
+            }
+        }
+        return length >= minLength;
+    }
+
+    _thinCenterTraceBinary(binary) {
+        const w = this.width;
+        const h = this.height;
+        let source = new Uint8Array(binary);
+        let changed = true;
+        let iterations = 0;
+        const maxIterations = Math.max(w, h);
+
+        const transitions = (p2, p3, p4, p5, p6, p7, p8, p9) => {
+            const seq = [p2, p3, p4, p5, p6, p7, p8, p9, p2];
+            let count = 0;
+            for (let i = 0; i < 8; i++) {
+                if (seq[i] === 0 && seq[i + 1] === 1) count++;
+            }
+            return count;
+        };
+
+        while (changed && iterations < maxIterations) {
+            changed = false;
+            iterations++;
+
+            for (let pass = 0; pass < 2; pass++) {
+                const remove = [];
+                for (let y = 1; y < h - 1; y++) {
+                    for (let x = 1; x < w - 1; x++) {
+                        const idx = y * w + x;
+                        if (!source[idx]) continue;
+
+                        const p2 = source[idx - w];
+                        const p3 = source[idx - w + 1];
+                        const p4 = source[idx + 1];
+                        const p5 = source[idx + w + 1];
+                        const p6 = source[idx + w];
+                        const p7 = source[idx + w - 1];
+                        const p8 = source[idx - 1];
+                        const p9 = source[idx - w - 1];
+                        const neighborCount = p2 + p3 + p4 + p5 + p6 + p7 + p8 + p9;
+
+                        if (neighborCount < 2 || neighborCount > 6) continue;
+                        if (transitions(p2, p3, p4, p5, p6, p7, p8, p9) !== 1) continue;
+
+                        if (pass === 0) {
+                            if (p2 * p4 * p6 !== 0) continue;
+                            if (p4 * p6 * p8 !== 0) continue;
+                        } else {
+                            if (p2 * p4 * p8 !== 0) continue;
+                            if (p2 * p6 * p8 !== 0) continue;
+                        }
+
+                        remove.push(idx);
+                    }
+                }
+
+                if (remove.length) {
+                    changed = true;
+                    remove.forEach(idx => { source[idx] = 0; });
+                }
+            }
+        }
+
+        return source;
+    }
+
+    _pruneCenterTraceSkeleton(skeleton, maxSpurLength) {
+        if (!maxSpurLength) return skeleton;
+
+        const w = this.width;
+        const pruned = new Uint8Array(skeleton);
+        const removed = new Uint8Array(skeleton.length);
+        const neighborsOf = (idx) => this._centerTraceNeighbors(idx, pruned);
+
+        let changed = true;
+        while (changed) {
+            changed = false;
+            removed.fill(0);
+
+            for (let idx = 0; idx < pruned.length; idx++) {
+                if (!pruned[idx] || removed[idx]) continue;
+                const neighbors = neighborsOf(idx);
+                if (neighbors.length === 0) {
+                    removed[idx] = 1;
+                    changed = true;
+                    continue;
+                }
+                if (neighbors.length !== 1) continue;
+
+                const branch = [idx];
+                let prev = idx;
+                let curr = neighbors[0];
+
+                while (branch.length <= maxSpurLength) {
+                    branch.push(curr);
+                    const nextNeighbors = neighborsOf(curr).filter(n => n !== prev);
+                    if (nextNeighbors.length !== 1) break;
+                    prev = curr;
+                    curr = nextNeighbors[0];
+                }
+
+                const endDegree = neighborsOf(branch[branch.length - 1]).length;
+                if (branch.length <= maxSpurLength && endDegree > 2) {
+                    branch.slice(0, -1).forEach(n => {
+                        removed[n] = 1;
+                    });
+                    changed = true;
+                }
+            }
+
+            for (let idx = 0; idx < removed.length; idx++) {
+                if (removed[idx]) pruned[idx] = 0;
+            }
+        }
+
+        return pruned;
+    }
+
+    _traceCenterTraceSkeleton(skeleton, minLength) {
+        const w = this.width;
+        const visitedEdges = new Set();
+        const paths = [];
+        const makePoint = (idx) => ({ x: (idx % w) + 0.5, y: Math.floor(idx / w) + 0.5 });
+        const edgeKey = (a, b) => a < b ? `${a}:${b}` : `${b}:${a}`;
+        const isEdgeVisited = (a, b) => visitedEdges.has(edgeKey(a, b));
+        const markEdge = (a, b) => visitedEdges.add(edgeKey(a, b));
+        const pathLength = (points) => {
+            let length = 0;
+            for (let i = 1; i < points.length; i++) {
+                const dx = points[i].x - points[i - 1].x;
+                const dy = points[i].y - points[i - 1].y;
+                length += Math.sqrt(dx * dx + dy * dy);
+            }
+            return length;
+        };
+        const traceFrom = (start, firstNext) => {
+            const nodes = [start];
+            let prev = start;
+            let curr = firstNext;
+
+            while (curr !== undefined && curr !== null) {
+                markEdge(prev, curr);
+                nodes.push(curr);
+
+                const degree = this._centerTraceNeighbors(curr, skeleton).length;
+                if (degree !== 2) break;
+
+                const next = this._centerTraceNeighbors(curr, skeleton)
+                    .find(n => n !== prev && !isEdgeVisited(curr, n));
+                if (next === undefined) break;
+
+                prev = curr;
+                curr = next;
+                if (curr === start) {
+                    markEdge(prev, curr);
+                    nodes.push(curr);
+                    break;
+                }
+            }
+
+            return nodes.map(makePoint);
+        };
+
+        for (let idx = 0; idx < skeleton.length; idx++) {
+            if (!skeleton[idx]) continue;
+            const neighbors = this._centerTraceNeighbors(idx, skeleton);
+            if (neighbors.length === 0 || neighbors.length === 2) continue;
+
+            neighbors.forEach((next) => {
+                if (isEdgeVisited(idx, next)) return;
+                const points = traceFrom(idx, next);
+                if (points.length >= 2 && pathLength(points) >= minLength) paths.push(points);
+            });
+        }
+
+        for (let idx = 0; idx < skeleton.length; idx++) {
+            if (!skeleton[idx]) continue;
+            const neighbors = this._centerTraceNeighbors(idx, skeleton);
+            const next = neighbors.find(n => !isEdgeVisited(idx, n));
+            if (next === undefined) continue;
+            const points = traceFrom(idx, next);
+            if (points.length >= 2 && pathLength(points) >= minLength) paths.push(points);
+        }
+
+        return paths;
+    }
+
+    _centerTraceNeighbors(idx, skeleton) {
+        const w = this.width;
+        const h = this.height;
+        const x = idx % w;
+        const y = Math.floor(idx / w);
+        const neighbors = [];
+
+        for (let dy = -1; dy <= 1; dy++) {
+            for (let dx = -1; dx <= 1; dx++) {
+                if (dx === 0 && dy === 0) continue;
+                const nx = x + dx;
+                const ny = y + dy;
+                if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+                const nIdx = ny * w + nx;
+                if (skeleton[nIdx]) neighbors.push(nIdx);
+            }
+        }
+
+        return neighbors;
+    }
+
+    _scoreCenterTracePaths(paths) {
+        let length = 0;
+        let points = 0;
+        paths.forEach((path) => {
+            const pathPoints = Array.isArray(path) ? path : path?.points;
+            if (!Array.isArray(pathPoints)) return;
+            points += pathPoints.length;
+            for (let i = 1; i < pathPoints.length; i++) {
+                const dx = pathPoints[i].x - pathPoints[i - 1].x;
+                const dy = pathPoints[i].y - pathPoints[i - 1].y;
+                length += Math.sqrt(dx * dx + dy * dy);
+            }
+        });
+
+        return {
+            length,
+            points,
+            score: (length * 4) - (paths.length * 14) - (points * 0.08)
+        };
+    }
+
     _applyTracePathTransform(path) {
         if (!path) return path;
 
@@ -452,6 +1139,179 @@ class ImageVectorEngine {
         return extremeRatio >= 0.88 && midRatio <= 0.12;
     }
 
+    _centerTracePathLength(path) {
+        if (!Array.isArray(path) || path.length < 2) return 0;
+        let length = 0;
+        for (let i = 1; i < path.length; i++) {
+            const dx = path[i].x - path[i - 1].x;
+            const dy = path[i].y - path[i - 1].y;
+            length += Math.sqrt((dx * dx) + (dy * dy));
+        }
+        return length;
+    }
+
+    _centerTraceUnitVector(a, b) {
+        if (!a || !b) return null;
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const length = Math.sqrt((dx * dx) + (dy * dy));
+        if (length < 0.0001) return null;
+        return { x: dx / length, y: dy / length };
+    }
+
+    _centerTraceEndpointDirection(path, atEnd = true) {
+        if (!Array.isArray(path) || path.length < 2) return null;
+        return atEnd
+            ? this._centerTraceUnitVector(path[path.length - 2], path[path.length - 1])
+            : this._centerTraceUnitVector(path[1], path[0]);
+    }
+
+    _dedupeCenterTracePath(path) {
+        if (!Array.isArray(path) || path.length < 2) return path;
+        const cleaned = [path[0]];
+        for (let i = 1; i < path.length; i++) {
+            const prev = cleaned[cleaned.length - 1];
+            const curr = path[i];
+            const dx = curr.x - prev.x;
+            const dy = curr.y - prev.y;
+            if (Math.sqrt((dx * dx) + (dy * dy)) > 0.15) cleaned.push(curr);
+        }
+        return cleaned;
+    }
+
+    _connectCenterTraceFragments(paths, options = {}) {
+        if (!Array.isArray(paths) || paths.length < 2) return paths;
+
+        const maxGap = Math.max(0.5, Number(options.maxGap) || 6);
+        const maxAngle = Math.max(0.05, Math.min(Math.PI / 2, Number(options.maxAngle) || 0.65));
+        const minDot = Math.cos(maxAngle);
+        const maxLateral = Math.max(0.5, Number(options.maxLateral) || 2.2);
+        const cellSize = Math.max(1, maxGap);
+        const records = paths
+            .filter(path => Array.isArray(path) && path.length >= 2)
+            .map((path, index) => ({
+                index,
+                active: true,
+                path: this._dedupeCenterTracePath(path.map(p => ({ x: p.x, y: p.y })))
+            }))
+            .filter(record => record.path.length >= 2);
+        if (records.length < 2) return records.map(record => record.path);
+
+        const endpointBins = new Map();
+        const cellKey = (point) => `${Math.floor(point.x / cellSize)}:${Math.floor(point.y / cellSize)}`;
+        const addEndpoint = (point, recordIndex, reverseCandidate) => {
+            const key = cellKey(point);
+            if (!endpointBins.has(key)) endpointBins.set(key, []);
+            endpointBins.get(key).push({ recordIndex, reverseCandidate });
+        };
+
+        records.forEach((record, recordIndex) => {
+            addEndpoint(record.path[0], recordIndex, false);
+            addEndpoint(record.path[record.path.length - 1], recordIndex, true);
+        });
+
+        const getNearbyEndpointRefs = (point) => {
+            const cx = Math.floor(point.x / cellSize);
+            const cy = Math.floor(point.y / cellSize);
+            const refs = [];
+            for (let y = cy - 1; y <= cy + 1; y++) {
+                for (let x = cx - 1; x <= cx + 1; x++) {
+                    const bucket = endpointBins.get(`${x}:${y}`);
+                    if (bucket) refs.push(...bucket);
+                }
+            }
+            return refs;
+        };
+
+        const scoreCandidate = (path, candidate, reverseCandidate) => {
+            const end = path[path.length - 1];
+            const target = reverseCandidate ? candidate[candidate.length - 1] : candidate[0];
+            const dir = this._centerTraceEndpointDirection(path, true);
+            const candidateDir = reverseCandidate
+                ? this._centerTraceUnitVector(candidate[candidate.length - 1], candidate[candidate.length - 2])
+                : this._centerTraceUnitVector(candidate[0], candidate[1]);
+            if (!dir || !candidateDir) return null;
+
+            const gapX = target.x - end.x;
+            const gapY = target.y - end.y;
+            const gap = Math.sqrt((gapX * gapX) + (gapY * gapY));
+            if (gap < 0.0001 || gap > maxGap) return null;
+
+            const forward = ((gapX * dir.x) + (gapY * dir.y));
+            if (forward <= 0) return null;
+
+            const lateral = Math.abs((gapX * dir.y) - (gapY * dir.x));
+            if (lateral > maxLateral) return null;
+
+            const gapDot = forward / gap;
+            const directionDot = (dir.x * candidateDir.x) + (dir.y * candidateDir.y);
+            if (gapDot < minDot || directionDot < minDot) return null;
+
+            const shortBonus = Math.min(8, this._centerTracePathLength(candidate)) * 0.02;
+            return gap + (lateral * 1.8) - (directionDot * 1.5) - shortBonus;
+        };
+
+        const appendBestInlineFragment = (path, currentRecordIndex) => {
+            const end = path[path.length - 1];
+            let bestRecordIndex = -1;
+            let bestReverse = false;
+            let bestScore = Infinity;
+            const seen = new Set();
+
+            getNearbyEndpointRefs(end).forEach(({ recordIndex, reverseCandidate }) => {
+                if (recordIndex === currentRecordIndex || seen.has(`${recordIndex}:${reverseCandidate}`)) return;
+                seen.add(`${recordIndex}:${reverseCandidate}`);
+                const record = records[recordIndex];
+                if (!record || !record.active) return;
+                const score = scoreCandidate(path, record.path, reverseCandidate);
+                if (score != null && score < bestScore) {
+                    bestScore = score;
+                    bestRecordIndex = recordIndex;
+                    bestReverse = reverseCandidate;
+                }
+            });
+
+            if (bestRecordIndex === -1) return null;
+            const record = records[bestRecordIndex];
+            record.active = false;
+            const oriented = bestReverse ? record.path.slice().reverse() : record.path;
+            return this._dedupeCenterTracePath(path.concat(oriented));
+        };
+
+        const connected = [];
+        for (let i = 0; i < records.length; i++) {
+            const record = records[i];
+            if (!record.active) continue;
+            record.active = false;
+            let current = record.path;
+            let extended = true;
+            let guard = 0;
+            const maxExtensions = Math.min(records.length, 2000);
+
+            while (extended && guard < maxExtensions) {
+                guard++;
+                extended = false;
+
+                const extendedEnd = appendBestInlineFragment(current, i);
+                if (extendedEnd) {
+                    current = extendedEnd;
+                    extended = true;
+                    continue;
+                }
+
+                const reversedCurrent = current.slice().reverse();
+                const extendedStart = appendBestInlineFragment(reversedCurrent, i);
+                if (extendedStart) {
+                    current = extendedStart.slice().reverse();
+                    extended = true;
+                }
+            }
+
+            connected.push(current);
+        }
+
+        return connected;
+    }
     _collapsePixelStairSteps(path) {
         if (!Array.isArray(path) || path.length < 3) return path;
 
@@ -496,6 +1356,46 @@ class ImageVectorEngine {
         }
         collapsed.push(cleaned[cleaned.length - 1]);
         return collapsed;
+    }
+
+    _smoothCenterTracePath(path, iterations = 3) {
+        if (!Array.isArray(path) || path.length < 4) return path;
+
+        let result = path.map(p => ({ x: p.x, y: p.y }));
+        const passes = Math.max(0, Math.min(8, Math.round(iterations)));
+
+        for (let pass = 0; pass < passes; pass++) {
+            const next = [result[0]];
+
+            for (let i = 1; i < result.length - 1; i++) {
+                const prev = result[i - 1];
+                const curr = result[i];
+                const following = result[i + 1];
+                const v1x = curr.x - prev.x;
+                const v1y = curr.y - prev.y;
+                const v2x = following.x - curr.x;
+                const v2y = following.y - curr.y;
+                const len1 = Math.sqrt((v1x * v1x) + (v1y * v1y));
+                const len2 = Math.sqrt((v2x * v2x) + (v2y * v2y));
+                const dot = len1 && len2 ? ((v1x * v2x) + (v1y * v2y)) / (len1 * len2) : 1;
+                const corner = Math.acos(Math.max(-1, Math.min(1, dot)));
+
+                if (corner > 1.05 && len1 > 3 && len2 > 3) {
+                    next.push(curr);
+                    continue;
+                }
+
+                next.push({
+                    x: (prev.x * 0.25) + (curr.x * 0.5) + (following.x * 0.25),
+                    y: (prev.y * 0.25) + (curr.y * 0.5) + (following.y * 0.25)
+                });
+            }
+
+            next.push(result[result.length - 1]);
+            result = next;
+        }
+
+        return result;
     }
 
     _smoothPath(path) {

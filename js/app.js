@@ -277,17 +277,6 @@ class App {
             });
         }
 
-        const ctsPriorityInput = document.getElementById('input-cts-priority');
-        if (ctsPriorityInput) {
-            ctsPriorityInput.checked = this.settings.ctsPriorityEnabled !== false;
-            ctsPriorityInput.addEventListener('change', () => {
-                this.settings.ctsPriorityEnabled = ctsPriorityInput.checked;
-                this.saveSettings();
-                this.ui.logToConsole(
-                    `System: CTS priority handshaking ${ctsPriorityInput.checked ? 'enabled' : 'disabled'}.`
-                );
-            });
-        }
 
         // Connection events
         document.getElementById('btn-connect').addEventListener('click', () => {

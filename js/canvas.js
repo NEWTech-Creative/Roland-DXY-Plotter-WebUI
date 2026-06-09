@@ -65,6 +65,8 @@ class CanvasManager {
         this.maxUndo = 50;
         this.copyBuffer = [];
         this.eventsBound = false;
+        this.workspaceContextLegendHidden = false;
+        this.workspaceContextLegendCloseBounds = null;
 
         // Rotation State
         this.isRotating = false;
@@ -1141,44 +1143,42 @@ class CanvasManager {
         document.addEventListener('wheel', (e) => {
             if (!checkTarget(e)) return;
             e.preventDefault();
-            // Zoom in/out based on wheel direction
-            const zoomFactor = 1.1;
-            const dir = Math.sign(e.deltaY);
-
-            const prevZoom = this.viewZoom;
-            if (dir < 0) this.viewZoom *= zoomFactor;
-            else this.viewZoom /= zoomFactor;
-
-            // Limit zoom
-            this.viewZoom = Math.max(1.0, Math.min(this.viewZoom, 20));
-
-            // Anchor to edges if at minimum zoom (view all)
-            if (this.viewZoom <= 1.0) {
-                this.viewZoom = 1.0;
-                this.viewOffsetX = 0;
-                this.viewOffsetY = 0;
-            }
-
-            // To zoom at cursor, we calculate cursor position in original space,
-            // then offset our view so that same coordinate sits under the cursor.
             const rect = this.canvas.getBoundingClientRect();
-            // Pixel position relative to canvas box
             const px = e.clientX - rect.left;
             const py = e.clientY - rect.top;
+            const prevZoom = this.viewZoom;
 
             // Reverse current transform to find raw coordinate under mouse
             const hx = (px - this.viewOffsetX) / prevZoom;
             const hy = (py - this.viewOffsetY) / prevZoom;
 
+            // Zoom in/out based on wheel direction
+            const zoomFactor = 1.1;
+            const dir = Math.sign(e.deltaY);
+            this.viewZoom = dir < 0
+                ? this.viewZoom * zoomFactor
+                : this.viewZoom / zoomFactor;
+
+            const minZoom = this.getMinimumViewZoom();
+
+            // Limit zoom
+            this.viewZoom = Math.max(minZoom, Math.min(this.viewZoom, 20));
+
             // Recalculate viewOffset so (hx, hy) stays under (px, py)
             this.viewOffsetX = px - (hx * this.viewZoom);
             this.viewOffsetY = py - (hy * this.viewZoom);
+
+            if (this.viewZoom <= minZoom + 0.0001) {
+                this.viewZoom = minZoom;
+                this.fitViewToVisibleBounds();
+            }
 
             this.draw();
         }, { passive: false });
 
         document.addEventListener('mousedown', (e) => {
             if (!checkTarget(e) && !this.isCreatingShape && !this.isCreatingBezier) return;
+            if (checkTarget(e) && e.button === 0 && this.handleWorkspaceContextLegendCloseClick(e)) return;
 
             const pos = this.getMousePosMM(e);
 
@@ -1460,7 +1460,7 @@ class CanvasManager {
             }
 
             if (this.isPanning) {
-                if (this.viewZoom <= 1.0) {
+                if (this.viewZoom <= this.getMinimumViewZoom() + 0.0001) {
                     this.isPanning = false;
                     return;
                 }
@@ -1984,6 +1984,122 @@ class CanvasManager {
         const horizontalShift = Number.isFinite(this.viewportHorizontalShift) ? this.viewportHorizontalShift : 0;
         const verticalShift = Number.isFinite(this.viewportVerticalShift) ? this.viewportVerticalShift : 0;
         return { mmToPx, horizontalShift, verticalShift };
+    }
+
+    getThemeColor(varName, fallback) {
+        const source = document.body || document.documentElement;
+        const value = getComputedStyle(source).getPropertyValue(varName).trim();
+        return value || fallback;
+    }
+
+    getActiveVisibleBoundsPx() {
+        const mmToPx = this.scale || 1;
+        const bedPixelW = this.bedWidth * mmToPx;
+        const bedPixelH = this.bedHeight * mmToPx;
+        const showMachineOutput = this.app?.ui?.currentVisualizerView === 'machine-output';
+
+        // Both views use the full bed as the visible region so auto-zoom always fits the machine workspace
+        return { minX: 0, minY: 0, maxX: bedPixelW, maxY: bedPixelH };
+    }
+
+    getMinimumViewZoom() {
+        const bounds = this.getActiveVisibleBoundsPx();
+        const width = Math.max(1, bounds.maxX - bounds.minX);
+        const height = Math.max(1, bounds.maxY - bounds.minY);
+        const viewportW = Math.max(1, this.pixelW || this.canvas?.getBoundingClientRect?.().width || width);
+        const viewportH = Math.max(1, this.pixelH || this.canvas?.getBoundingClientRect?.().height || height);
+        const fitZoom = Math.min(
+            Math.max(0.05, viewportW / width),
+            Math.max(0.05, viewportH / height)
+        );
+
+        return Math.max(0.05, Math.min(1, fitZoom));
+    }
+
+    fitViewToVisibleBounds() {
+        const zoom = this.getMinimumViewZoom();
+        this.viewZoom = zoom;
+        const bounds = this.getActiveVisibleBoundsPx();
+        const viewportH = Math.max(1, this.pixelH || this.canvas?.getBoundingClientRect?.().height || (bounds.maxY - bounds.minY));
+        const { horizontalShift, verticalShift } = this.getViewportTransform();
+
+        // Anchor: bed bottom-left = viewport bottom-left
+        this.viewOffsetX = -(bounds.minX * zoom) - horizontalShift;
+        this.viewOffsetY = viewportH - ((bounds.maxY - bounds.minY) * zoom) - (bounds.minY * zoom) - verticalShift;
+    }
+
+    _isLightColor(color) {
+        let r = 0, g = 0, b = 0;
+        const hex = (color || '').trim();
+        if (hex.startsWith('#')) {
+            const h = hex.slice(1);
+            if (h.length === 3) {
+                r = parseInt(h[0] + h[0], 16); g = parseInt(h[1] + h[1], 16); b = parseInt(h[2] + h[2], 16);
+            } else {
+                r = parseInt(h.slice(0, 2), 16); g = parseInt(h.slice(2, 4), 16); b = parseInt(h.slice(4, 6), 16);
+            }
+        } else {
+            const m = hex.match(/\d+/g);
+            if (m) { r = +m[0]; g = +m[1]; b = +m[2]; }
+        }
+        return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.5;
+    }
+
+    drawWorkspaceRulers(workspaceX, workspaceY, workspaceW, workspaceH, mmToPx, gridStartX, gridEndX, gridStartY, gridEndY, isLightTheme) {
+        const ctx = this.ctx;
+        if (!ctx || !Number.isFinite(mmToPx) || mmToPx <= 0) return;
+
+        const tickMm = this.gridSize || 10;
+        const tickSpacingPx = tickMm * mmToPx;
+        const labelEveryMm = tickSpacingPx >= 28 ? tickMm : tickMm * 5;
+        const rulerPad = Math.max(10, Math.min(18, tickSpacingPx * 0.9));
+        const labelSize = Math.max(5.5, Math.min(9, 7 / Math.max(0.75, this.viewZoom || 1)));
+        const topY = workspaceY + 3;
+        const leftX = workspaceX + 3;
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(workspaceX, workspaceY, workspaceW, workspaceH);
+        ctx.clip();
+        ctx.strokeStyle = isLightTheme ? 'rgba(0, 0, 0, 0.18)' : 'rgba(255, 255, 255, 0.22)';
+        ctx.fillStyle = isLightTheme ? 'rgba(0, 0, 0, 0.30)' : 'rgba(255, 255, 255, 0.38)';
+        ctx.lineWidth = 1 / Math.max(0.75, this.viewZoom || 1);
+        ctx.font = `${labelSize}px ${getComputedStyle(document.body).getPropertyValue('--font-mono').trim() || 'monospace'}`;
+        ctx.textBaseline = 'top';
+
+        ctx.beginPath();
+        ctx.moveTo(workspaceX, workspaceY + rulerPad);
+        ctx.lineTo(workspaceX + workspaceW, workspaceY + rulerPad);
+        ctx.moveTo(workspaceX + rulerPad, workspaceY);
+        ctx.lineTo(workspaceX + rulerPad, workspaceY + workspaceH);
+
+        for (let x = gridStartX; x <= gridEndX; x += tickMm) {
+            const px = x * mmToPx;
+            if (px < workspaceX || px > workspaceX + workspaceW) continue;
+            const isLabelTick = Math.abs(x % labelEveryMm) < 0.001;
+            const tickLength = isLabelTick ? rulerPad : rulerPad * 0.55;
+            ctx.moveTo(px, workspaceY);
+            ctx.lineTo(px, workspaceY + tickLength);
+            if (isLabelTick) {
+                ctx.fillText(String(Math.round(x)), px + 2, topY);
+            }
+        }
+
+        ctx.textAlign = 'right';
+        for (let y = gridStartY; y <= gridEndY; y += tickMm) {
+            const py = y * mmToPx;
+            if (py < workspaceY || py > workspaceY + workspaceH) continue;
+            const isLabelTick = Math.abs(y % labelEveryMm) < 0.001;
+            const tickLength = isLabelTick ? rulerPad : rulerPad * 0.55;
+            ctx.moveTo(workspaceX, py);
+            ctx.lineTo(workspaceX + tickLength, py);
+            if (isLabelTick) {
+                ctx.fillText(String(Math.round(y)), leftX + rulerPad - 2, py + 2);
+            }
+        }
+
+        ctx.stroke();
+        ctx.restore();
     }
 
     canvasPxToMM(px, py) {
@@ -6622,6 +6738,11 @@ class CanvasManager {
         this.canvas.style.height = `${this.pixelH}px`;
 
         this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // Reset transform and apply DPR
+        const minZoom = this.getMinimumViewZoom();
+        if (this.viewZoom <= minZoom + 0.0001) {
+            this.viewZoom = minZoom;
+            this.fitViewToVisibleBounds();
+        }
         this.clearBucketHoverPreview();
     }
 
@@ -6655,75 +6776,148 @@ class CanvasManager {
 
         const bedPixelW = this.bedWidth * mmToPx;
         const bedPixelH = this.bedHeight * mmToPx;
+        const showPaperContext = !showMachineOutput;
+
+        const pSize = this.getPaperDimensions(this.paperSize);
+        const pWPx = pSize.width * mmToPx;
+        const pHPx = pSize.height * mmToPx;
+        const startY = bedPixelH - pHPx;
+
+        const marginX = this.app?.settings?.marginX || 0;
+        const marginY = this.app?.settings?.marginY || 0;
+        const pxMarginX = marginX * mmToPx;
+        const pxMarginY = marginY * mmToPx;
+        const paperX = pxMarginX;
+        const paperY = startY - pxMarginY;
 
         // Draw outer dark grey background filling the infinite canvas bounds (visualizer backdrop)
         // We make it huge to cover panning
-        this.ctx.fillStyle = '#1e293b'; // Tailwind slate-800
+        this.ctx.fillStyle = showPaperContext
+            ? this.getThemeColor('--visualizer-workspace-bg', '#111827')
+            : this.getThemeColor('--visualizer-machine-bg', '#1e293b');
         this.ctx.fillRect(-10000, -10000, 20000, 20000);
 
-        // Draw fixed Bed background (white area) representing the actual physical space
-        this.ctx.fillStyle = '#ffffff';
-        this.ctx.shadowColor = 'rgba(0,0,0,0.5)';
-        this.ctx.shadowBlur = 15;
-        this.ctx.fillRect(0, 0, bedPixelW, bedPixelH);
+        if (showPaperContext) {
+            // Workspace area is always fixed to the machine bed dimensions regardless of paper size
+            const workspaceX = 0;
+            const workspaceY = 0;
+            const workspaceW = bedPixelW;
+            const workspaceH = bedPixelH;
 
-        // Reset shadow
-        this.ctx.shadowColor = 'transparent';
-        this.ctx.shadowBlur = 0;
+            // Draw visual workspace cushion. This is a display aid only; machine coordinates stay unchanged.
+            const workspaceBg = getComputedStyle(document.body).getPropertyValue('--visualizer-workspace-bg').trim() || '#3d4657';
+            const isLightWorkspace = this._isLightColor(workspaceBg);
+            this.ctx.fillStyle = workspaceBg;
+            this.ctx.shadowColor = 'rgba(0,0,0,0.45)';
+            this.ctx.shadowBlur = 14;
+            this.ctx.fillRect(workspaceX, workspaceY, workspaceW, workspaceH);
+            this.ctx.shadowColor = 'transparent';
+            this.ctx.shadowBlur = 0;
 
-        // Draw grid
-        this.ctx.strokeStyle = '#f1f5f9';
-        this.ctx.lineWidth = 1;
-        this.ctx.beginPath();
+            this.ctx.save();
+            this.ctx.beginPath();
+            this.ctx.rect(workspaceX, workspaceY, workspaceW, workspaceH);
+            this.ctx.clip();
+            this.ctx.strokeStyle = isLightWorkspace ? 'rgba(0, 0, 0, 0.07)' : 'rgba(255, 255, 255, 0.07)';
+            this.ctx.lineWidth = 1;
+            this.ctx.beginPath();
+            const gridStartX = Math.floor((workspaceX / mmToPx) / this.gridSize) * this.gridSize;
+            const gridEndX = Math.ceil(((workspaceX + workspaceW) / mmToPx) / this.gridSize) * this.gridSize;
+            const gridStartY = Math.floor((workspaceY / mmToPx) / this.gridSize) * this.gridSize;
+            const gridEndY = Math.ceil(((workspaceY + workspaceH) / mmToPx) / this.gridSize) * this.gridSize;
+            for (let x = gridStartX; x <= gridEndX; x += this.gridSize) {
+                const px = x * mmToPx;
+                this.ctx.moveTo(px, workspaceY);
+                this.ctx.lineTo(px, workspaceY + workspaceH);
+            }
+            for (let y = gridStartY; y <= gridEndY; y += this.gridSize) {
+                const py = y * mmToPx;
+                this.ctx.moveTo(workspaceX, py);
+                this.ctx.lineTo(workspaceX + workspaceW, py);
+            }
+            this.ctx.stroke();
+            this.drawWorkspaceRulers(workspaceX, workspaceY, workspaceW, workspaceH, mmToPx, gridStartX, gridEndX, gridStartY, gridEndY, isLightWorkspace);
 
-        for (let x = 0; x <= this.bedWidth; x += this.gridSize) {
-            this.ctx.moveTo(x * mmToPx, 0);
-            this.ctx.lineTo(x * mmToPx, bedPixelH);
+            // "Workspace" label — sits below the ruler line (~20px from top so it clears the dimension ticks)
+            const rulerPadForLabel = Math.max(10, Math.min(18, (this.gridSize || 10) * mmToPx * 0.9));
+            this.ctx.save();
+            this.ctx.textAlign = 'center';
+            this.ctx.textBaseline = 'top';
+            this.ctx.font = `600 ${Math.max(10, 13 / Math.max(0.75, this.viewZoom || 1))}px ${getComputedStyle(document.body).getPropertyValue('--font-ui').trim() || 'system-ui'}`;
+            this.ctx.fillStyle = isLightWorkspace ? 'rgba(0, 0, 0, 0.18)' : 'rgba(255, 255, 255, 0.20)';
+            this.ctx.fillText('Workspace', workspaceX + (workspaceW / 2), workspaceY + rulerPadForLabel + 4);
+            this.ctx.restore();
+            this.ctx.restore();
+
+            this.ctx.strokeStyle = isLightWorkspace ? 'rgba(0, 0, 0, 0.13)' : 'rgba(255, 255, 255, 0.13)';
+            this.ctx.lineWidth = 1.5;
+            this.ctx.strokeRect(workspaceX, workspaceY, workspaceW, workspaceH);
+        } else {
+            // Draw fixed Bed background (white area) representing the actual physical space
+            this.ctx.fillStyle = '#ffffff';
+            this.ctx.shadowColor = 'rgba(0,0,0,0.5)';
+            this.ctx.shadowBlur = 15;
+            this.ctx.fillRect(0, 0, bedPixelW, bedPixelH);
+
+            // Reset shadow
+            this.ctx.shadowColor = 'transparent';
+            this.ctx.shadowBlur = 0;
+
+            // Draw grid
+            this.ctx.strokeStyle = '#f1f5f9';
+            this.ctx.lineWidth = 1;
+            this.ctx.beginPath();
+
+            for (let x = 0; x <= this.bedWidth; x += this.gridSize) {
+                this.ctx.moveTo(x * mmToPx, 0);
+                this.ctx.lineTo(x * mmToPx, bedPixelH);
+            }
+            // Draw grid from bottom-up to ensure bottom-left origin visually
+            for (let y = this.bedHeight; y >= 0; y -= this.gridSize) {
+                const py = y * mmToPx;
+                this.ctx.moveTo(0, py);
+                this.ctx.lineTo(bedPixelW, py);
+            }
+            this.ctx.stroke();
+
+            // Draw fixed Bed bounding box edge
+            this.ctx.strokeStyle = '#94a3b8';
+            this.ctx.lineWidth = 1;
+            this.ctx.strokeRect(0, 0, bedPixelW, bedPixelH);
         }
-        // Draw grid from bottom-up to ensure bottom-left origin visually
-        for (let y = this.bedHeight; y >= 0; y -= this.gridSize) {
-            const py = y * mmToPx;
-            this.ctx.moveTo(0, py);
-            this.ctx.lineTo(bedPixelW, py);
-        }
-        this.ctx.stroke();
-
-        // Draw fixed Bed bounding box edge
-        this.ctx.strokeStyle = '#94a3b8';
-        this.ctx.lineWidth = 1;
-        this.ctx.strokeRect(0, 0, bedPixelW, bedPixelH);
 
         // Draw Paper Size over origin (Bottom-Left matched visually)
         // Wait, physical DXY places bottom-left origin in bottom-left corner.
         // Screen canvas places 0,0 at top-left.
         // Let's draw paper attached to bottom left (x=0, y=maxY).
-        const pSize = this.getPaperDimensions(this.paperSize);
-        const pWPx = pSize.width * mmToPx;
-        const pHPx = pSize.height * mmToPx;
-
-        // origin bottom-left means Y is bedPixelH - pHPx
-        const startY = bedPixelH - pHPx;
-
-        // Apply Margins
-        const marginX = this.app?.settings?.marginX || 0;
-        const marginY = this.app?.settings?.marginY || 0;
-        const pxMarginX = marginX * mmToPx;
-        const pxMarginY = marginY * mmToPx;
-
-        // Label
-        this.ctx.fillStyle = '#94a3b8';
-        this.ctx.font = 'bold 24px var(--font-ui)';
-        this.ctx.fillText(this.paperSize, pxMarginX + 20, startY - pxMarginY + pHPx - 20);
 
         this.ctx.fillStyle = '#ffffff';
-        this.ctx.shadowColor = 'rgba(0,0,0,0.5)';
-        this.ctx.shadowBlur = 10;
+        this.ctx.shadowColor = showPaperContext ? 'rgba(15,23,42,0.28)' : 'rgba(0,0,0,0.5)';
+        this.ctx.shadowBlur = showPaperContext ? 8 : 10;
         this.ctx.shadowOffsetX = 3;
         this.ctx.shadowOffsetY = 3;
-        this.ctx.fillRect(pxMarginX, startY - pxMarginY, pWPx, pHPx);
+        this.ctx.fillRect(paperX, paperY, pWPx, pHPx);
 
         // Reset shadow
         this.ctx.shadowColor = 'transparent';
+        this.ctx.shadowBlur = 0;
+        this.ctx.shadowOffsetX = 0;
+        this.ctx.shadowOffsetY = 0;
+
+        if (showPaperContext) {
+            this.ctx.strokeStyle = 'rgba(15, 23, 42, 0.3)';
+            this.ctx.lineWidth = 1.2;
+            this.ctx.strokeRect(paperX, paperY, pWPx, pHPx);
+
+            this.ctx.save();
+            this.ctx.fillStyle = 'rgba(15, 23, 42, 0.16)';
+            this.ctx.font = `600 ${Math.max(7, 9 / Math.max(0.75, this.viewZoom || 1))}px ${getComputedStyle(document.body).getPropertyValue('--font-mono').trim() || 'monospace'}`;
+            this.ctx.textAlign = 'left';
+            this.ctx.textBaseline = 'bottom';
+            const paperLabel = `${this.paperSize || 'Paper'} ${Math.round(pSize.width)} x ${Math.round(pSize.height)} mm`;
+            this.ctx.fillText(paperLabel, paperX + Math.max(4, 5 * mmToPx), paperY + pHPx - Math.max(4, 5 * mmToPx));
+            this.ctx.restore();
+        }
 
         // Plaeholder origin
         this.ctx.fillStyle = '#ef4444';
@@ -6751,6 +6945,7 @@ class CanvasManager {
         }
 
         this.ctx.restore(); // CRITICAL: Stop transformation accumulation
+        this.drawWorkspaceContextLegend();
         this.drawPatternPreviewOverlay();
         this.drawSelectionOverlay();
         this.drawLiveTrackerOverlay(mmToPx, horizontalShift, verticalShift);
@@ -6759,6 +6954,86 @@ class CanvasManager {
         if (!isInteracting && this.app.ui && this.app.ui.updateSelectionSizeControls) {
             this.app.ui.updateSelectionSizeControls();
         }
+    }
+
+    handleWorkspaceContextLegendCloseClick(e) {
+        const bounds = this.workspaceContextLegendCloseBounds;
+        if (!bounds || !this.canvas) return false;
+        const rect = this.canvas.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        const hit = x >= bounds.x && x <= bounds.x + bounds.w && y >= bounds.y && y <= bounds.y + bounds.h;
+        if (!hit) return false;
+
+        e.preventDefault();
+        e.stopPropagation();
+        this.workspaceContextLegendHidden = true;
+        this.workspaceContextLegendCloseBounds = null;
+        this.draw(true);
+        return true;
+    }
+
+    drawWorkspaceContextLegend() {
+        this.workspaceContextLegendCloseBounds = null;
+        if (this.app?.ui?.currentVisualizerView === 'machine-output') return;
+        if (this.workspaceContextLegendHidden) return;
+        if (!this.ctx || !this.canvas) return;
+
+        const ctx = this.ctx;
+        const dpr = window.devicePixelRatio || 1;
+        const items = [
+            { label: 'Workspace', color: '#dbeafe', border: 'rgba(37, 99, 235, 0.45)' },
+            { label: 'Paper', color: '#ffffff', border: 'rgba(15, 23, 42, 0.28)' }
+        ];
+        const x = 14;
+        const y = 14;
+        const width = 152;
+        const closeSize = 18;
+        const closeX = x + width - closeSize - 6;
+        const closeY = y + 5;
+        const rowH = 20;
+        const height = 18 + (items.length * rowH);
+        this.workspaceContextLegendCloseBounds = { x: closeX, y: closeY, w: closeSize, h: closeSize };
+
+        ctx.save();
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.82)';
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.16)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        if (typeof ctx.roundRect === 'function') {
+            ctx.roundRect(x, y, width, height, 8);
+        } else {
+            ctx.rect(x, y, width, height);
+        }
+        ctx.fill();
+        ctx.stroke();
+        ctx.strokeStyle = 'rgba(229, 231, 235, 0.78)';
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        ctx.moveTo(closeX + 5, closeY + 5);
+        ctx.lineTo(closeX + closeSize - 5, closeY + closeSize - 5);
+        ctx.moveTo(closeX + closeSize - 5, closeY + 5);
+        ctx.lineTo(closeX + 5, closeY + closeSize - 5);
+        ctx.stroke();
+
+        ctx.font = '11px var(--font-ui)';
+        ctx.textBaseline = 'middle';
+
+        items.forEach((item, index) => {
+            const rowY = y + 18 + (index * rowH);
+            ctx.fillStyle = item.color;
+            ctx.strokeStyle = item.border;
+            ctx.lineWidth = 1.2;
+            ctx.setLineDash(item.dashed ? [4, 3] : []);
+            ctx.fillRect(x + 12, rowY - 6, 14, 12);
+            ctx.strokeRect(x + 12, rowY - 6, 14, 12);
+            ctx.setLineDash([]);
+            ctx.fillStyle = '#e5e7eb';
+            ctx.fillText(item.label, x + 34, rowY);
+        });
+
+        ctx.restore();
     }
 
     drawPatternPreviewOverlay() {

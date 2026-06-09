@@ -172,6 +172,7 @@ class ImageVectorPanel {
 
     handleImageFile(file) {
         if (!file.type.startsWith('image/')) return;
+        this.currentImageName = file.name;
         const reader = new FileReader();
         reader.onload = (e) => {
             const img = new Image();
@@ -675,128 +676,6 @@ class ImageVectorPanel {
         if (method === 'spiral') this.applySpiralPreset('portraitClean', true);
     }
 
-    getSpiralPresetMap() {
-        return {
-            portraitClean: {
-                contrast: 58,
-                spacing: 4.0,
-                turns: 120,
-                influence: 78,
-                gamma: 92,
-                minMod: 0.3,
-                maxMod: 4.2,
-                oscAmplitude: 1.5,
-                oscFrequency: 7,
-                previewStrokeWidth: 1.1,
-                smoothing: 64,
-                detail: 62,
-                margin: 10,
-                direction: 'cw',
-                invert: 'false',
-                cropMode: 'fit',
-                centerOffsetX: 0,
-                centerOffsetY: 0
-            },
-            highDetail: {
-                contrast: 66,
-                spacing: 2.8,
-                turns: 170,
-                influence: 88,
-                gamma: 86,
-                minMod: 0.2,
-                maxMod: 3.3,
-                oscAmplitude: 1.2,
-                oscFrequency: 9.5,
-                previewStrokeWidth: 0.9,
-                smoothing: 48,
-                detail: 90,
-                margin: 8,
-                direction: 'cw',
-                invert: 'false',
-                cropMode: 'fit',
-                centerOffsetX: 0,
-                centerOffsetY: 0
-            },
-            plotterSafe: {
-                contrast: 52,
-                spacing: 5.3,
-                turns: 92,
-                influence: 62,
-                gamma: 100,
-                minMod: 0.2,
-                maxMod: 2.3,
-                oscAmplitude: 0.8,
-                oscFrequency: 5,
-                previewStrokeWidth: 1.4,
-                smoothing: 78,
-                detail: 48,
-                margin: 14,
-                direction: 'cw',
-                invert: 'false',
-                cropMode: 'fit',
-                centerOffsetX: 0,
-                centerOffsetY: 0
-            },
-            boldContrast: {
-                contrast: 78,
-                spacing: 3.5,
-                turns: 132,
-                influence: 95,
-                gamma: 72,
-                minMod: 0.5,
-                maxMod: 5.4,
-                oscAmplitude: 2.1,
-                oscFrequency: 8.5,
-                previewStrokeWidth: 1.3,
-                smoothing: 52,
-                detail: 74,
-                margin: 9,
-                direction: 'cw',
-                invert: 'false',
-                cropMode: 'square',
-                centerOffsetX: 0,
-                centerOffsetY: 0
-            },
-            softEngraving: {
-                contrast: 44,
-                spacing: 4.8,
-                turns: 108,
-                influence: 56,
-                gamma: 118,
-                minMod: 0.15,
-                maxMod: 2.7,
-                oscAmplitude: 0.9,
-                oscFrequency: 4.5,
-                previewStrokeWidth: 1.0,
-                smoothing: 82,
-                detail: 44,
-                margin: 12,
-                direction: 'cw',
-                invert: 'false',
-                cropMode: 'fit',
-                centerOffsetX: 0,
-                centerOffsetY: 0
-            }
-        };
-    }
-
-    applySpiralPreset(presetName, suppressGenerate = false) {
-        const preset = this.getSpiralPresetMap()[presetName];
-        if (!preset) return;
-
-        Object.entries(preset).forEach(([key, value]) => {
-            const input = document.getElementById('input-iv-' + key);
-            if (!input) return;
-            input.value = value;
-            const valueLabel = document.getElementById('val-iv-' + key);
-            if (valueLabel) valueLabel.textContent = value;
-        });
-
-        const presetSelect = document.getElementById('input-iv-spiralPreset');
-        if (presetSelect && presetSelect.value !== presetName) presetSelect.value = presetName;
-
-        if (!suppressGenerate) this.autoGenerate();
-    }
 
     async generateVector() {
         if (!this.currentImage || this.isGenerating) return;
@@ -1044,6 +923,7 @@ class ImageVectorPanel {
 
     clear() {
         this.currentImage = null; this.vectorPaths = []; this.engine.imageData = null;
+        this.currentImageName = null;
         this.scale = 1.0;
         this.offsetX = 0;
         this.offsetY = 0;

@@ -23,7 +23,7 @@ class UIController {
         };
         this.textToolPersistTimer = null;
         this.jogStepSize = 1; // Default Small (1mm)
-        this.layoutVersion = 4;
+        this.layoutVersion = 8;
         this.gridBaseColumns = 12;
         this.gridMinPanelWidth = 320;
         this.currentGridColumns = this.gridBaseColumns;
@@ -61,7 +61,7 @@ class UIController {
             { id: 'panel-3d-vector', x: 2, y: 14, w: 8, h: 8 },
             { id: 'panel-creative-tabs', x: 2, y: 7, w: 8, h: 15 }
         ];
-        this.defaultGridLayout = [
+        this.retiredDefaultLayoutV4 = [
             { id: 'panel-connection', x: 0, y: 0, w: 2, h: 5 },
             { id: 'panel-visualiser', x: 2, y: 0, w: 9, h: 14 },
             { id: 'panel-live-tracker', x: 8, y: 0, w: 2, h: 7 },
@@ -71,6 +71,54 @@ class UIController {
             { id: 'panel-patterns', x: 8, y: 8, w: 2, h: 7 },
             { id: 'panel-console', x: 0, y: 11, w: 2, h: 14 },
             { id: 'panel-creative-tabs', x: 2, y: 14, w: 9, h: 11 },
+            { id: 'panel-3d-vector', x: 2, y: 15, w: 8, h: 8 }
+        ];
+        this.retiredDefaultLayoutV5 = [
+            { id: 'panel-connection', x: 0, y: 0, w: 2, h: 5 },
+            { id: 'panel-visualiser', x: 2, y: 0, w: 6, h: 8 },
+            { id: 'panel-live-tracker', x: 8, y: 0, w: 2, h: 7 },
+            { id: 'panel-machine-jog', x: 0, y: 5, w: 2, h: 6 },
+            { id: 'panel-handwriting', x: 2, y: 8, w: 3, h: 7 },
+            { id: 'panel-image-vector', x: 5, y: 8, w: 3, h: 7 },
+            { id: 'panel-patterns', x: 8, y: 8, w: 2, h: 7 },
+            { id: 'panel-console', x: 0, y: 11, w: 2, h: 14 },
+            { id: 'panel-creative-tabs', x: 2, y: 8, w: 8, h: 11 },
+            { id: 'panel-3d-vector', x: 2, y: 15, w: 8, h: 8 }
+        ];
+        this.retiredDefaultLayoutV6 = [
+            { id: 'panel-connection', x: 0, y: 0, w: 2, h: 5 },
+            { id: 'panel-visualiser', x: 2, y: 0, w: 5, h: 8 },
+            { id: 'panel-live-tracker', x: 8, y: 0, w: 2, h: 7 },
+            { id: 'panel-machine-jog', x: 0, y: 5, w: 2, h: 5 },
+            { id: 'panel-creative-tabs', x: 2, y: 8, w: 5, h: 14 },
+            { id: 'panel-handwriting', x: 2, y: 8, w: 3, h: 7 },
+            { id: 'panel-image-vector', x: 5, y: 8, w: 3, h: 7 },
+            { id: 'panel-patterns', x: 8, y: 8, w: 2, h: 7 },
+            { id: 'panel-console', x: 0, y: 10, w: 2, h: 12 },
+            { id: 'panel-3d-vector', x: 2, y: 15, w: 8, h: 8 }
+        ];
+        this.retiredDefaultLayoutV7 = [
+            { id: 'panel-connection', x: 0, y: 0, w: 2, h: 5 },
+            { id: 'panel-visualiser', x: 2, y: 0, w: 5, h: 10 },
+            { id: 'panel-live-tracker', x: 8, y: 0, w: 2, h: 7 },
+            { id: 'panel-machine-jog', x: 0, y: 5, w: 2, h: 5 },
+            { id: 'panel-handwriting', x: 2, y: 8, w: 3, h: 7 },
+            { id: 'panel-image-vector', x: 5, y: 8, w: 3, h: 7 },
+            { id: 'panel-patterns', x: 8, y: 8, w: 2, h: 7 },
+            { id: 'panel-console', x: 0, y: 10, w: 2, h: 12 },
+            { id: 'panel-creative-tabs', x: 2, y: 10, w: 5, h: 14 },
+            { id: 'panel-3d-vector', x: 2, y: 15, w: 8, h: 8 }
+        ];
+        this.defaultGridLayout = [
+            { id: 'panel-connection', x: 0, y: 0, w: 2, h: 5 },
+            { id: 'panel-visualiser', x: 2, y: 0, w: 5, h: 11 },
+            { id: 'panel-live-tracker', x: 8, y: 0, w: 2, h: 7 },
+            { id: 'panel-machine-jog', x: 0, y: 5, w: 2, h: 8 },
+            { id: 'panel-handwriting', x: 2, y: 8, w: 3, h: 7 },
+            { id: 'panel-image-vector', x: 5, y: 8, w: 3, h: 7 },
+            { id: 'panel-patterns', x: 8, y: 8, w: 2, h: 7 },
+            { id: 'panel-creative-tabs', x: 2, y: 11, w: 5, h: 11 },
+            { id: 'panel-console', x: 0, y: 13, w: 2, h: 9 },
             { id: 'panel-3d-vector', x: 2, y: 15, w: 8, h: 8 }
         ];
         this.panelDefinitions = [
@@ -85,7 +133,7 @@ class UIController {
             { id: 'panel-3d-vector', label: '3D Vector' }
         ];
         this.creativeTabHostId = 'panel-creative-tabs';
-        this.creativeTabHostLayout = { id: this.creativeTabHostId, x: 2, y: 14, w: 9, h: 11 };
+        this.creativeTabHostLayout = { id: this.creativeTabHostId, x: 2, y: 11, w: 5, h: 11 };
         this.creativePanelDefinitions = this._getDefaultCreativePanelDefinitions();
         this.activeCreativeTabId = this.creativePanelDefinitions[0].id;
         this.draggingCreativeTabId = null;
@@ -98,6 +146,7 @@ class UIController {
         this.visualizerToolbarItems = [];
         this.visualizerToolbarResizeObserver = null;
         this.currentVisualizerView = 'workspace';
+        this.visualizerWorkspaceMode = 'paper-context';
 
         this.loadWorkspaceState();
         this._bindInput();
@@ -208,6 +257,8 @@ class UIController {
             if (savedVisualizerView === 'machine-output' || savedVisualizerView === 'workspace') {
                 this.currentVisualizerView = savedVisualizerView;
             }
+            this.visualizerWorkspaceMode = 'paper-context';
+            localStorage.setItem('visualizerWorkspaceMode', this.visualizerWorkspaceMode);
             const savedTextSettings = localStorage.getItem('textToolSettings');
             if (savedTextSettings) {
                 this.textToolSettings = {
@@ -247,6 +298,7 @@ class UIController {
             localStorage.setItem('penColors', JSON.stringify(this.penColors));
             localStorage.setItem('activeVisualizerPen', this.activeVisualizerPen.toString());
             localStorage.setItem('visualizerViewMode', this.currentVisualizerView);
+            localStorage.setItem('visualizerWorkspaceMode', this.visualizerWorkspaceMode);
             localStorage.setItem('textToolSettings', JSON.stringify(this.textToolSettings));
             localStorage.setItem('creativePanelOrder', JSON.stringify(this._getCreativePanelOrder()));
         } catch (e) { console.error('Workspace save fail:', e); }
@@ -258,6 +310,7 @@ class UIController {
             penColors: this.penColors,
             activeVisualizerPen: this.activeVisualizerPen,
             visualizerViewMode: this.currentVisualizerView,
+            visualizerWorkspaceMode: this.visualizerWorkspaceMode,
             creativePanelOrder: this._getCreativePanelOrder(),
             plotterLayout: localStorage.getItem('plotterLayout'),
             plotterLayoutVersion: localStorage.getItem('plotterLayoutVersion')
@@ -282,6 +335,8 @@ class UIController {
                 this.currentVisualizerView = workspaceState.visualizerViewMode;
                 localStorage.setItem('visualizerViewMode', this.currentVisualizerView);
             }
+            this.visualizerWorkspaceMode = 'paper-context';
+            localStorage.setItem('visualizerWorkspaceMode', this.visualizerWorkspaceMode);
             if (Array.isArray(workspaceState.creativePanelOrder) && workspaceState.creativePanelOrder.length) {
                 this._applySavedCreativePanelOrder(workspaceState.creativePanelOrder);
                 localStorage.setItem('creativePanelOrder', JSON.stringify(this._getCreativePanelOrder()));
@@ -326,6 +381,7 @@ class UIController {
             ? 'Show editable workspace view'
             : 'Show machine output view';
     }
+
 
     refreshImportResolutionControl() {
         const input = document.getElementById('input-import-resolution');
@@ -481,6 +537,7 @@ class UIController {
         });
     }
 
+
     _bindVisualizerViewToggle() {
         const toggleBtn = document.getElementById('btn-toggle-visualizer-view');
         if (!toggleBtn) return;
@@ -571,7 +628,7 @@ class UIController {
 
         this.grid = GridStack.init({
             column: this.gridBaseColumns,
-            cellHeight: 80,
+            cellHeight: this._getGridCellHeight(),
             margin: 10,
             handle: '.panel-header',
             animate: true,
@@ -625,6 +682,10 @@ class UIController {
                 this._layoutsMatch(layout, this.legacyDefaultLayout)
                 || this._layoutsMatch(layout, this.previousDefaultLayout)
                 || this._layoutsMatch(layout, this.retiredDefaultLayoutV3)
+                || this._layoutsMatch(layout, this.retiredDefaultLayoutV4)
+                || this._layoutsMatch(layout, this.retiredDefaultLayoutV5)
+                || this._layoutsMatch(layout, this.retiredDefaultLayoutV6)
+                || this._layoutsMatch(layout, this.retiredDefaultLayoutV7)
                 || this._layoutsMatch(layout, this.defaultGridLayout)
             )) {
                 const migratedLayout = this.defaultGridLayout.map(item => ({ ...item }));
@@ -739,6 +800,9 @@ class UIController {
 
     applyResponsiveGridLayout() {
         if (!this.grid || !this.grid.el) return;
+        if (typeof this.grid.cellHeight === 'function') {
+            this.grid.cellHeight(this._getGridCellHeight());
+        }
         const targetColumns = this._getResponsiveColumnCount();
         const sourceLayout = this.baseGridLayout.length ? this.baseGridLayout : this._getCurrentBaseLayout();
         const visibleSourceLayout = this._getVisibleLayout(sourceLayout);
@@ -767,6 +831,11 @@ class UIController {
     _getResponsiveColumnCount() {
         const width = this.grid && this.grid.el ? this.grid.el.clientWidth : window.innerWidth;
         return Math.max(1, Math.min(this.gridBaseColumns, Math.floor(width / this.gridMinPanelWidth) || 1));
+    }
+
+    _getGridCellHeight() {
+        const usableHeight = Math.max(560, (window.innerHeight || 900) - 90);
+        return Math.round(Math.max(56, Math.min(80, usableHeight / 18)));
     }
 
     _getCurrentBaseLayout() {
@@ -1216,7 +1285,7 @@ class UIController {
 
             if (this.visPenConfig[i].visible === false) {
                 btn.style.opacity = '0.3';
-                btn.innerHTML = '✕';
+                btn.innerHTML = 'âœ•';
             }
 
             btn.addEventListener('click', () => {
@@ -1328,6 +1397,7 @@ class UIController {
         const selTheme = document.getElementById('sel-theme');
         const selHandshake = document.getElementById('sel-handshake');
         const selSpeed = document.getElementById('sel-speed');
+        const inputCtsPriority = document.getElementById('input-cts-priority');
         const inputBedW = document.getElementById('input-bed-w');
         const inputBedH = document.getElementById('input-bed-h');
         const inputSimOpacity = document.getElementById('input-sim-opacity');
@@ -1347,6 +1417,7 @@ class UIController {
             selTheme.value = this.app.settings.theme || 'dark-theme';
             if (selHandshake) selHandshake.value = this.app.settings.handshake || 'normal';
             if (selSpeed) selSpeed.value = this.app.settings.speed || 'fast';
+            if (inputCtsPriority) inputCtsPriority.checked = this.app.settings.ctsPriorityEnabled !== false;
             if (inputBedW) inputBedW.value = this.app.settings.bedWidth || this.app.getMachineProfile().bedWidth;
             if (inputBedH) inputBedH.value = this.app.settings.bedHeight || this.app.getMachineProfile().bedHeight;
             if (inputSimOpacity) {
@@ -1418,6 +1489,8 @@ class UIController {
             this.app.settings.theme = selTheme.value;
             if (selHandshake) this.app.settings.handshake = selHandshake.value;
             if (selSpeed) this.app.settings.speed = selSpeed.value;
+            const previousCtsPriority = this.app.settings.ctsPriorityEnabled !== false;
+            if (inputCtsPriority) this.app.settings.ctsPriorityEnabled = inputCtsPriority.checked;
             if (inputBedW) this.app.settings.bedWidth = parseFloat(inputBedW.value);
             if (inputBedH) this.app.settings.bedHeight = parseFloat(inputBedH.value);
             if (inputSimOpacity) {
@@ -1444,10 +1517,14 @@ class UIController {
                 return acc;
             }, this._getDefaultPanelVisibility());
             this.app.saveSettings();
+            if (inputCtsPriority && previousCtsPriority !== inputCtsPriority.checked) {
+                this.logToConsole(`System: CTS priority handshaking ${inputCtsPriority.checked ? 'enabled' : 'disabled'}.`);
+            }
             this.refreshImportResolutionControl();
             this.applyPanelVisibilitySettings();
             this.app.serial?.applySerialDebugVisibility?.();
             this.applyResponsiveGridLayout();
+            this.app.canvas?.draw?.(true);
             this.forceLayoutSave();
             if (this.app.serial) this.app.serial.setSpeedDelay(this.app.settings.speed || 'fast');
             if (this.app.canvas) {
@@ -1741,10 +1818,10 @@ class UIController {
         }
         if (inputAngle && valAngle) {
             inputAngle.value = this.fillBucketSettings.angle;
-            valAngle.textContent = `${this.fillBucketSettings.angle}�`;
+            valAngle.textContent = `${this.fillBucketSettings.angle}°`;
             inputAngle.oninput = () => {
                 this.fillBucketSettings.angle = parseFloat(inputAngle.value);
-                valAngle.textContent = `${inputAngle.value}�`;
+                valAngle.textContent = `${inputAngle.value}°`;
             };
         }
         if (selPen) {
@@ -1771,7 +1848,7 @@ class UIController {
         this.visPenConfig.forEach((config, index) => {
             const option = document.createElement('option');
             option.value = String(index + 1);
-            option.textContent = `■ Pen ${index + 1}`;
+            option.textContent = `â–  Pen ${index + 1}`;
             option.style.color = config.color || '#2563eb';
             selPen.appendChild(option);
         });
@@ -2380,11 +2457,14 @@ class UIController {
             'input-pattern-contour-scale',
             'input-pattern-contour-spin',
             'input-pattern-contour-detail',
-            'input-pattern-contour-variation'
+            'input-pattern-contour-variation',
+            'input-pattern-fill-spacing',
+            'input-pattern-fill-angle'
         ];
         const selects = [
             'sel-pattern-contour-source',
-            'sel-pattern-contour-shape'
+            'sel-pattern-contour-shape',
+            'sel-pattern-fill-style'
         ];
 
         selType.onchange = () => {
@@ -2422,6 +2502,7 @@ class UIController {
         const type = document.getElementById('sel-pattern-type')?.value || 'none';
         const standardControls = document.getElementById('pattern-standard-controls');
         const contourControls = document.getElementById('pattern-contour-controls');
+        const fillControls = document.getElementById('pattern-fill-controls');
         const contourSource = document.getElementById('sel-pattern-contour-source')?.value || 'preset';
         const shapeGroup = document.getElementById('group-pattern-contour-shape');
         const sizeGroup = document.getElementById('group-pattern-contour-size');
@@ -2431,8 +2512,9 @@ class UIController {
         const detailInput = document.getElementById('input-pattern-contour-detail');
         const variationInput = document.getElementById('input-pattern-contour-variation');
 
-        if (standardControls) standardControls.classList.toggle('hidden', type === 'continuousContour');
+        if (standardControls) standardControls.classList.toggle('hidden', type === 'continuousContour' || type === 'fillSelected');
         if (contourControls) contourControls.classList.toggle('hidden', type !== 'continuousContour');
+        if (fillControls) fillControls.classList.toggle('hidden', type !== 'fillSelected');
         if (shapeGroup) shapeGroup.classList.toggle('hidden', type !== 'continuousContour' || contourSource === 'selected');
         if (sizeGroup) sizeGroup.classList.toggle('hidden', type !== 'continuousContour' || contourSource === 'selected');
 
@@ -2613,6 +2695,11 @@ class UIController {
             this.app.canvas.draw();
             return;
         }
+        if (type === 'fillSelected' && this.app.canvas.selectedPaths.length === 0) {
+            this.app.canvas.patternPreviewPaths = [];
+            this.app.canvas.draw();
+            return;
+        }
         if (type === 'continuousContour' && contourSource === 'selected' && this.app.canvas.selectedPaths.length === 0) {
             this.app.canvas.patternPreviewPaths = [];
             this.app.canvas.draw();
@@ -2634,26 +2721,75 @@ class UIController {
             contourScale: parseFloat(document.getElementById('input-pattern-contour-scale')?.value || '6'),
             contourSpin: parseFloat(document.getElementById('input-pattern-contour-spin')?.value || '12'),
             contourDetail: parseInt(document.getElementById('input-pattern-contour-detail')?.value || '6', 10),
-            contourVariation: parseInt(document.getElementById('input-pattern-contour-variation')?.value || '2', 10)
+            contourVariation: parseInt(document.getElementById('input-pattern-contour-variation')?.value || '2', 10),
+            fillPattern: document.getElementById('sel-pattern-fill-style')?.value || this.fillBucketSettings.pattern || 'lines',
+            fillSpacing: parseFloat(document.getElementById('input-pattern-fill-spacing')?.value || this.fillBucketSettings.spacing || '6'),
+            fillAngle: parseFloat(document.getElementById('input-pattern-fill-angle')?.value || this.fillBucketSettings.angle || '45')
         };
         const sourcePaths = this.app.canvas.selectedPaths.map(idx => this.app.canvas.paths[idx]);
-        this.app.canvas.patternPreviewPaths = this.app.patterns.generate(sourcePaths, params);
+        this.app.canvas.patternPreviewPaths = type === 'fillSelected'
+            ? this.generateSelectedShapePatternFill(params)
+            : this.app.patterns.generate(sourcePaths, params);
         this.app.canvas.draw();
     }
 
     applyPattern() {
+        const type = document.getElementById('sel-pattern-type')?.value || 'none';
+        if (type === 'fillSelected' && this.app.canvas.patternPreviewPaths.length === 0) {
+            this.updatePatternPreview();
+        }
         if (this.app.canvas.patternPreviewPaths.length > 0) {
             this.app.canvas.ensureUndoCheckpoint();
-            this.app.canvas.paths.push(...this.app.canvas.patternPreviewPaths);
+            const startIndex = this.app.canvas.paths.length;
+            const committedPaths = this.app.canvas.patternPreviewPaths.map(path => ({ ...path }));
+            if (type === 'fillSelected') {
+                const groupId = this.fillBucketSettings.groupPatterns === false ? null : `fill_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+                committedPaths.forEach(path => {
+                    if (groupId) path.groupId = groupId;
+                    else delete path.groupId;
+                    delete path.parentGroupId;
+                });
+            }
+            this.app.canvas.paths.push(...committedPaths);
             this.app.canvas.patternPreviewPaths = [];
-            this.app.canvas.selectedPaths = [];
+            this.app.canvas.selectedPaths = type === 'fillSelected'
+                ? committedPaths.map((_, index) => startIndex + index)
+                : [];
+            this.app.canvas.selectedNodes = [];
             this.app.canvas.saveUndoState();
             this.app.canvas.draw();
+            if (type === 'fillSelected') {
+                this.logToConsole(`System: Filled selected shape with ${committedPaths.length} pattern paths.`);
+            }
             document.getElementById('sel-pattern-type').value = 'none';
             document.getElementById('pattern-controls').classList.add('hidden');
+            this.updatePatternControlVisibility();
         }
     }
 
+    generateSelectedShapePatternFill(params = {}) {
+        const canvas = this.app.canvas;
+        if (!canvas || !Array.isArray(canvas.selectedPaths) || canvas.selectedPaths.length === 0) return [];
+        const selected = new Set(canvas.selectedPaths);
+        const regions = canvas.getClosedFillRegions()
+            .filter(region => selected.has(region.pathIdx));
+        if (!regions.length) return [];
+
+        const options = {
+            pattern: params.fillPattern || this.fillBucketSettings.pattern || 'lines',
+            spacing: Math.max(0.2, Number(params.fillSpacing) || this.fillBucketSettings.spacing || 6),
+            angle: Number.isFinite(Number(params.fillAngle)) ? Number(params.fillAngle) : (this.fillBucketSettings.angle || 45),
+            pen: this.activeVisualizerPen || this.fillBucketSettings.pen || 1,
+            groupPatterns: this.fillBucketSettings.groupPatterns !== false
+        };
+
+        const paths = [];
+        regions.forEach(region => {
+            const fillPaths = canvas.generateBucketFillPaths(region, options);
+            if (Array.isArray(fillPaths)) paths.push(...fillPaths);
+        });
+        return paths;
+    }
     clearPatternPreview() {
         this.app.canvas.patternPreviewPaths = [];
         this.app.canvas.draw();

@@ -6,13 +6,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Roland Plotter Web UI</title>
     <link rel="icon" href="data:,">
-    <!-- Fonts -->
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link
-        href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;700&family=Anton&family=Archivo+Black&family=Baloo+2:wght@400;600;700&family=Bebas+Neue&family=Bungee&family=Comfortaa:wght@400;700&family=Fredoka:wght@400;500;600;700&family=Lilita+One&family=Luckiest+Guy&family=Pacifico&display=swap"
-        rel="stylesheet">
-
     <!-- GridStack CSS -->
     <link href="vendor/gridstack.min.css" rel="stylesheet" />
     <link href="vendor/gridstack-extra.min.css" rel="stylesheet" />
@@ -98,10 +91,6 @@
                                 </select>
                             </div>
                         </div>
-                        <label class="panel-toggle-item connection-cts-toggle">
-                            <input type="checkbox" id="input-cts-priority" checked>
-                            <span>CTS priority handshaking</span>
-                        </label>
                         <div class="button-group">
                             <button id="btn-connect" class="btn btn-primary">Connect USB Serial</button>
                         </div>
@@ -123,7 +112,7 @@
             </div>
 
             <!-- Panel D: Machine Controls -->
-            <div class="grid-stack-item" gs-w="2" gs-h="6" gs-x="0" gs-y="5" id="panel-machine-jog">
+                <div class="grid-stack-item" gs-w="2" gs-h="8" gs-x="0" gs-y="5" id="panel-machine-jog">
                 <div class="grid-stack-item-content panel-glass">
                     <div class="panel-header">
                         <h2>Machine & Jog</h2>
@@ -192,7 +181,7 @@
             </div>
 
             <!-- Panel B: Command Log -->
-            <div class="grid-stack-item" gs-w="2" gs-h="14" gs-x="0" gs-y="11" id="panel-console">
+                <div class="grid-stack-item" gs-w="2" gs-h="9" gs-x="0" gs-y="13" id="panel-console">
                 <div class="grid-stack-item-content panel-glass">
                     <div class="panel-header">
                         <h2>Command Log</h2>
@@ -275,7 +264,7 @@
             </div>
 
             <!-- Panel C: Visualiser -->
-            <div class="grid-stack-item" gs-w="9" gs-h="14" gs-x="2" gs-y="0" id="panel-visualiser">
+        <div class="grid-stack-item" gs-w="5" gs-h="11" gs-x="2" gs-y="0" id="panel-visualiser">
                 <div class="grid-stack-item-content panel-glass">
                     <div class="panel-header">
                         <h2>Visualiser</h2>
@@ -482,12 +471,13 @@
                                 <option value="spiral">Spiral Pattern</option>
                                 <option value="staggered">Staggered Repeats</option>
                                 <option value="geometric">Geometric / Symmetrical</option>
+                                <option value="fillSelected">Fill Selected Shape</option>
                                 <option value="continuousContour">Continuous Contour Loops</option>
                             </select>
                         </div>
                         <div class="panel-note panel-note-info" role="note">
                             <strong>Selection required</strong>
-                            <span>Select an object in the Visualiser before applying patterns. Continuous Contour Loops is the exception and can use its own contour source.</span>
+                            <span>Select an object in the Visualiser before applying patterns. Fill Selected Shape uses closed shapes; Continuous Contour Loops can use its own contour source.</span>
                         </div>
 
                         <div id="pattern-controls" class="hidden compact-section compact-section-soft">
@@ -528,6 +518,38 @@
                                     value="1.0">
                             </div>
 
+                            </div>
+
+                            <div id="pattern-fill-controls" class="hidden">
+                                <div class="form-group">
+                                    <label>Fill Pattern</label>
+                                    <select id="sel-pattern-fill-style">
+                                        <option value="lines">Lines</option>
+                                        <option value="serpentine">Serpentine</option>
+                                        <option value="crosshatch">Cross Hatch</option>
+                                        <option value="worms">Worms</option>
+                                        <option value="pixelwave">Pixel Wave</option>
+                                        <option value="zigzag">Zigzag</option>
+                                        <option value="curves">Curves</option>
+                                        <option value="circles">Circles</option>
+                                        <option value="topography">Topography</option>
+                                        <option value="seigaiha">Seigaiha</option>
+                                        <option value="asanoha">Asanoha</option>
+                                        <option value="samekomon">Same Komon</option>
+                                        <option value="sayagata">Sayagata</option>
+                                        <option value="kagome">Kagome</option>
+                                    </select>
+                                </div>
+
+                                <div class="form-group">
+                                    <label>Fill Spacing (mm): <span id="val-pattern-fill-spacing">6</span></label>
+                                    <input type="range" id="input-pattern-fill-spacing" min="0.2" max="30" step="0.2" value="6">
+                                </div>
+
+                                <div class="form-group">
+                                    <label>Fill Angle: <span id="val-pattern-fill-angle">45</span>°</label>
+                                    <input type="range" id="input-pattern-fill-angle" min="0" max="180" step="1" value="45">
+                                </div>
                             </div>
 
                             <div id="pattern-contour-controls" class="hidden">
@@ -1102,7 +1124,7 @@
                 </div>
             </div>
 
-            <div class="grid-stack-item" gs-w="9" gs-h="11" gs-x="2" gs-y="14" id="panel-creative-tabs">
+        <div class="grid-stack-item" gs-w="5" gs-h="11" gs-x="2" gs-y="11" id="panel-creative-tabs">
                 <div class="grid-stack-item-content panel-glass">
                     <div class="panel-header">
                         <h2>Creative Tools</h2>
@@ -1121,7 +1143,10 @@
     <div id="startup-modal" class="modal-overlay hidden">
         <div class="modal-content welcome-modal-content">
             <div class="modal-header">
-                <h2>Welcome to Roland Plotter Web UI</h2>
+                <h2 class="welcome-heading">
+                    <span>Welcome to Roland Plotter Web UI</span>
+                    <span class="welcome-version">v1.2.4</span>
+                </h2>
             </div>
             <div class="modal-body welcome-modal-body">
                 <p class="welcome-intro">
@@ -1318,6 +1343,13 @@
                                     <option value="medium">Medium (150ms delay)</option>
                                     <option value="slow">Slow (300ms delay)</option>
                                 </select>
+                            </div>
+                            <div class="form-group settings-field-full">
+                                <label class="panel-toggle-item settings-inline-toggle">
+                                    <input type="checkbox" id="input-cts-priority" checked>
+                                    <span>CTS priority handshaking</span>
+                                </label>
+                                <small class="settings-help">Leave off for 3-wire/no-CTS cables. Turn on only when your hardware-handshake cable wires the plotter flow-control line to host CTS, then reconnect USB Serial.</small>
                             </div>
                             <div class="form-group">
                                 <label>Plotter Bed Width (mm)</label>
@@ -1705,29 +1737,56 @@
                 console.error('Captured global error:', details);
             }
 
+            function isBrowserFileOriginWarning(details) {
+                const message = String(details?.message || '');
+                return window.location.protocol === 'file:'
+                    && message.includes('Unsafe attempt to load URL file://');
+            }
+
+            function isResourceLoadEvent(event) {
+                if (!event || !event.target || event.target === window) return false;
+                const tagName = String(event.target.tagName || '').toUpperCase();
+                return ['LINK', 'SCRIPT', 'IMG', 'SOURCE', 'VIDEO', 'AUDIO'].includes(tagName);
+            }
+
             window.onerror = function (msg, url, lineNo, columnNo, error) {
-                showErrorOverlay({
+                const details = {
                     message: String(msg || 'Unknown error'),
                     url: url || '',
                     line: lineNo || 0,
                     column: columnNo || 0,
                     stack: error && error.stack ? String(error.stack) : 'N/A'
-                });
+                };
+
+                if (!isBrowserFileOriginWarning(details)) {
+                    showErrorOverlay(details);
+                }
+
                 return false;
             };
 
             window.addEventListener('error', function (event) {
                 if (!event) return;
+                if (isResourceLoadEvent(event)) {
+                    const url = event.target?.src || event.target?.href || '';
+                    console.warn('Ignored resource load error:', url || event.target);
+                    return;
+                }
+
                 const filename = event.filename || event.target?.src || event.target?.href || '';
                 const message = event.message || event.error?.message || 'Script load/runtime error';
                 const stack = event.error?.stack ? String(event.error.stack) : 'N/A';
-                showErrorOverlay({
+                const details = {
                     message,
                     url: filename,
                     line: event.lineno || 0,
                     column: event.colno || 0,
                     stack
-                });
+                };
+
+                if (!isBrowserFileOriginWarning(details)) {
+                    showErrorOverlay(details);
+                }
             }, true);
 
             window.addEventListener('unhandledrejection', function (event) {

@@ -20,6 +20,8 @@
 
     /* Base Action Button Color */
     --btn-action-bg: #60A5FA;
+    --visualizer-workspace-bg: #111827;
+    --visualizer-machine-bg: #1e293b;
 }
 
 * {
@@ -106,6 +108,8 @@ body.retro-theme {
     /* Dark grey buttons */
     --accent-hover: #1e293b;
     --canvas-bg: #FFFFFF;
+    --visualizer-workspace-bg: #a3a097;
+    --visualizer-machine-bg: #BDB8AA;
     --danger: #FF0000;
     /* Pure LED Red */
     --success: #10B981;
@@ -202,6 +206,8 @@ body.light-theme {
     /* Vibrant blue for buttons */
     --accent-hover: #1d4ed8;
     --btn-action-bg: var(--accent-color);
+    --visualizer-workspace-bg: #a8b8c8;
+    --visualizer-machine-bg: #cbd5e1;
 }
 
 body.light-theme .canvas-container canvas {
@@ -251,6 +257,8 @@ body.blue-theme {
     --warning: #f59e0b;
     --danger: #ef4444;
     --btn-action-bg: #ffffff;
+    --visualizer-workspace-bg: #a0c0e8;
+    --visualizer-machine-bg: #bfdbfe;
 }
 
 body.blue-theme .card,
@@ -338,6 +346,8 @@ body.red-theme {
     --accent-color: #ef4444;
     --accent-hover: #f87171;
     --btn-action-bg: var(--accent-color);
+    --visualizer-workspace-bg: #2b0b0b;
+    --visualizer-machine-bg: #450a0a;
 }
 
 /* Olive Theme (Cream / Brown / Olive) */
@@ -358,6 +368,8 @@ body.olive-theme {
     --warning: #BDB76B;
     --danger: #8B4513;
     --panel-shadow: 2px 2px 0px rgba(0, 0, 0, 0.1);
+    --visualizer-workspace-bg: #a8a390;
+    --visualizer-machine-bg: #C8BFA9;
 }
 
 .olive-theme .panel-glass {
@@ -456,6 +468,21 @@ body.olive-theme {
 .modal-header h2 {
     font-size: 1.1rem;
     color: var(--accent);
+}
+
+.welcome-heading {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.welcome-version {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    letter-spacing: 0;
+    white-space: nowrap;
 }
 
 .modal-body {
@@ -1284,6 +1311,9 @@ input[type="color"] {
     flex: 1;
     padding: 15px;
     overflow: auto;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable both-edges;
+    touch-action: pan-x pan-y;
 }
 
 .grid-stack {
@@ -2497,6 +2527,11 @@ h3 {
     max-height: none;
     /* Force canvas to receive events */
     pointer-events: auto !important;
+    touch-action: none;
+}
+
+.canvas-container {
+    touch-action: none;
 }
 
 .canvas-container canvas.rotating {
@@ -2763,8 +2798,8 @@ canvas {
 
 /* Scrollbar styling */
 ::-webkit-scrollbar {
-    width: 6px;
-    height: 6px;
+    width: 12px;
+    height: 12px;
 }
 
 ::-webkit-scrollbar-track {
@@ -2772,12 +2807,16 @@ canvas {
 }
 
 ::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.1);
-    border-radius: 3px;
+    background: rgba(255, 255, 255, 0.16);
+    border: 3px solid transparent;
+    border-radius: 999px;
+    background-clip: padding-box;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-    background: rgba(255, 255, 255, 0.2);
+    background: rgba(255, 255, 255, 0.26);
+    border: 3px solid transparent;
+    background-clip: padding-box;
     outline: none;
 }
 

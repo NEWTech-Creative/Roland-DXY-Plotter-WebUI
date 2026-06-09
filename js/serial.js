@@ -26,6 +26,8 @@ class SerialManager {
         this.noCtsPacingByteWindow = 256;
         this.noCtsPacingDrainMs = 120;
         this.noCtsMinCommandGapMs = 12;
+        this.communicationWriteTimeoutMs = 2500;
+        this.ctsAutoFallbackTriggered = false;
         this.noCtsBytesSinceDrain = 0;
         this.noCtsLastWriteAt = 0;
         this.estimatedPosition = { x: 0, y: 0 };
@@ -183,6 +185,7 @@ class SerialManager {
             this.ctsLastReadyAt = 0;
             this.noCtsBytesSinceDrain = 0;
             this.noCtsLastWriteAt = 0;
+            this.ctsAutoFallbackTriggered = false;
             this.estimatedPosition = { x: 0, y: 0 };
             this.estimatedAbsoluteMode = true;
             this.clearPreviewMotion(false);
@@ -260,6 +263,7 @@ class SerialManager {
             this.ctsLastReadyAt = 0;
             this.noCtsBytesSinceDrain = 0;
             this.noCtsLastWriteAt = 0;
+            this.ctsAutoFallbackTriggered = false;
             this.estimatedPosition = { x: 0, y: 0 };
             this.estimatedAbsoluteMode = true;
             this.clearPreviewMotion(false);
@@ -1070,6 +1074,56 @@ class SerialManager {
         return Math.max(baseDelay, fallbackDelay);
     }
 
+    shouldWatchForNoCtsCommunicationStall() {
+        return (this.app?.settings?.handshake || 'normal') === 'normal'
+            && this.app?.settings?.ctsPriorityEnabled === false
+            && !this.isTestMode();
+    }
+
+    handleNoCtsCommunicationStall(reason = 'serial communication stalled') {
+        if (!this.shouldWatchForNoCtsCommunicationStall()) return false;
+
+        this.ctsAutoFallbackTriggered = true;
+        this.isStreaming = false;
+        this.isHold = true;
+        this.setTrafficLight('orange');
+        this.app.ui.logToConsole(
+            `System: No serial communication detected (${reason}). CTS priority handshaking remains disabled because you turned it off. Check TX/RX/GND wiring, baud rate, DIP switches, or enable CTS priority manually if using a hardware-handshake cable.`,
+            'error'
+        );
+        return true;
+    }
+
+    async writeWithCommunicationWatchdog(bytes, part = '') {
+        if (!this.shouldWatchForNoCtsCommunicationStall()) {
+            await this.writer.write(bytes);
+            return true;
+        }
+
+        const timeoutMs = Math.max(500, Number(this.communicationWriteTimeoutMs) || 2500);
+        let timeoutId = null;
+        try {
+            const writeResult = this.writer.write(bytes).then(() => 'written');
+            const timeoutResult = new Promise(resolve => {
+                timeoutId = setTimeout(() => resolve('timeout'), timeoutMs);
+            });
+            const result = await Promise.race([writeResult, timeoutResult]);
+            if (timeoutId) clearTimeout(timeoutId);
+            if (result === 'timeout') {
+                this.handleNoCtsCommunicationStall(`write timeout after ${timeoutMs}ms`);
+                this.appendSerialDebugLog(
+                    `${this.getSerialDebugTimestamp()} No-CTS write stalled${part ? ` ${String(part).slice(0, 60)}` : ''}`,
+                    'warning'
+                );
+                return false;
+            }
+            return true;
+        } catch (error) {
+            if (timeoutId) clearTimeout(timeoutId);
+            this.handleNoCtsCommunicationStall(error?.message || 'write failed');
+            throw error;
+        }
+    }
     async _writePartWithFlowControl(part, encoder) {
         const bytes = encoder.encode(part);
         while (this.isConnected && !this.isHold) {
@@ -1090,7 +1144,8 @@ class SerialManager {
             const noCtsReady = await this.waitForNoCtsPacing(bytes.length);
             if (!noCtsReady) return false;
 
-            await this.writer.write(bytes);
+            const writeSucceeded = await this.writeWithCommunicationWatchdog(bytes, part);
+            if (!writeSucceeded) return false;
             this.bytesSincePriorityCtsPoll += bytes.length;
             if (this.shouldUseNoCtsPacing()) {
                 this.noCtsBytesSinceDrain += bytes.length;
