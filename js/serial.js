@@ -28,6 +28,7 @@ class SerialManager {
         this.noCtsMinCommandGapMs = 12;
         this.communicationWriteTimeoutMs = 2500;
         this.ctsAutoFallbackTriggered = false;
+        this.ctsBlindMoveAcknowledged = false;
         this.noCtsBytesSinceDrain = 0;
         this.noCtsLastWriteAt = 0;
         this.estimatedPosition = { x: 0, y: 0 };
@@ -118,6 +119,7 @@ class SerialManager {
             this.ctsLastReadyAt = 0;
             this.noCtsBytesSinceDrain = 0;
             this.noCtsLastWriteAt = 0;
+            this.ctsBlindMoveAcknowledged = false;
             this.rxLineBuffer = '';
             this.estimatedPosition = { x: 0, y: 0 };
             this.estimatedAbsoluteMode = true;
@@ -186,6 +188,7 @@ class SerialManager {
             this.noCtsBytesSinceDrain = 0;
             this.noCtsLastWriteAt = 0;
             this.ctsAutoFallbackTriggered = false;
+            this.ctsBlindMoveAcknowledged = false;
             this.estimatedPosition = { x: 0, y: 0 };
             this.estimatedAbsoluteMode = true;
             this.clearPreviewMotion(false);
@@ -198,8 +201,8 @@ class SerialManager {
             this.readLoopPromise = this._startReading();
             this.writer = this.port.writable.getWriter();
 
-            // Initialize machine
-            await this.sendManualCommand('IN;');
+            // Initialize machine. preview:false prevents a delayed IN; (e.g. held by CTS) from snapping the crosshair to 0,0 after the user has already moved.
+            await this.sendManualCommand('IN;', { preview: false });
 
         } catch (err) {
             this.app.ui.logToConsole(`Error: ${err.message}`, 'error');
@@ -264,6 +267,7 @@ class SerialManager {
             this.noCtsBytesSinceDrain = 0;
             this.noCtsLastWriteAt = 0;
             this.ctsAutoFallbackTriggered = false;
+            this.ctsBlindMoveAcknowledged = false;
             this.estimatedPosition = { x: 0, y: 0 };
             this.estimatedAbsoluteMode = true;
             this.clearPreviewMotion(false);
@@ -1244,12 +1248,14 @@ class SerialManager {
             if (expandedCommands.length === 0) continue;
 
             for (const part of expandedCommands) {
-                this.app.ui.logToConsole(part, options.commandLogType || 'tx');
-
                 let wasTransmitted = this.isTestMode();
                 if (!this.isTestMode()) {
                     wasTransmitted = await this._writePartWithFlowControl(part, encoder);
                     if (!wasTransmitted) return false;
+                }
+
+                if (wasTransmitted) {
+                    this.app.ui.logToConsole(part, options.commandLogType || 'tx');
                 }
 
                 // The preview must only follow commands that have actually gone out.
@@ -1817,8 +1823,33 @@ class SerialManager {
         }
     }
 
+    _confirmBlindMove() {
+        if (this.ctsBlindMoveAcknowledged) return true;
+        if (!this.isHardwareHandshakeEnabled() || !this.hardwareFlowSupported || !this.hardwareFlowPaused) return true;
+        const ok = confirm(
+            'No CTS handshake received from the plotter.\n\n' +
+            'The plotter buffer may be full or the machine may not be ready.\n\n' +
+            'Continue sending movement commands blind?'
+        );
+        if (ok) {
+            this.ctsBlindMoveAcknowledged = true;
+            // Drop into no-CTS paced mode for this session so writes flow normally
+            // and the visual tracker + command log behave as expected.
+            this.hardwareFlowSupported = false;
+            this.hardwareFlowPaused = false;
+            // Persist the choice — disable CTS priority so future connections never block on handshake.
+            if (this.app?.settings) {
+                this.app.settings.ctsPriorityEnabled = false;
+                this.app.saveSettings?.();
+            }
+            this.app.ui.logToConsole('System: CTS bypassed by user. CTS priority disabled and saved — paced streaming will be used for all future connections.', 'warning');
+        }
+        return ok;
+    }
+
     async sendJogCommand(dxMM, dyMM) {
         if (!this.writer) return false;
+        if (!this._confirmBlindMove()) return false;
 
         const bedWidth = this.app?.settings?.bedWidth || 432;
         const bedHeight = this.app?.settings?.bedHeight || 297;
@@ -1846,6 +1877,7 @@ class SerialManager {
 
     async sendHomeCommand() {
         if (!this.writer) return false;
+        if (!this._confirmBlindMove()) return false;
         this.clearPreviewMotion(false);
         this.resetStreamPrediction(false);
         await this.sendManualCommand('PU;PA0,0;', {

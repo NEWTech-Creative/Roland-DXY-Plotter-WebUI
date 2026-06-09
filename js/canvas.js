@@ -6981,8 +6981,9 @@ class CanvasManager {
 
         const ctx = this.ctx;
         const dpr = window.devicePixelRatio || 1;
+        const workspaceBg = getComputedStyle(document.body).getPropertyValue('--visualizer-workspace-bg').trim() || '#3d4657';
         const items = [
-            { label: 'Workspace', color: '#dbeafe', border: 'rgba(37, 99, 235, 0.45)' },
+            { label: 'Workspace', color: workspaceBg, border: 'rgba(0, 0, 0, 0.25)' },
             { label: 'Paper', color: '#ffffff', border: 'rgba(15, 23, 42, 0.28)' }
         ];
         const x = 14;
