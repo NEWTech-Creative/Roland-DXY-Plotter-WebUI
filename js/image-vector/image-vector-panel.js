@@ -170,6 +170,65 @@ class ImageVectorPanel {
         }, 300);
     }
 
+    applySpiralPreset(presetName, silent = false) {
+        const presets = {
+            portraitClean: {
+                spacing: 4, turns: 120, centerOffsetX: 0, centerOffsetY: 0,
+                influence: 75, gamma: 100, minMod: 0.3, maxMod: 4.5,
+                oscAmplitude: 1.6, oscFrequency: 7, previewStrokeWidth: 1.2,
+                smoothing: 58, detail: 62, margin: 10,
+                direction: 'cw', invert: 'false', cropMode: 'fit'
+            },
+            highDetail: {
+                spacing: 2.5, turns: 200, centerOffsetX: 0, centerOffsetY: 0,
+                influence: 80, gamma: 110, minMod: 0.2, maxMod: 5.5,
+                oscAmplitude: 2, oscFrequency: 9, previewStrokeWidth: 1.0,
+                smoothing: 40, detail: 85, margin: 8,
+                direction: 'cw', invert: 'false', cropMode: 'fit'
+            },
+            plotterSafe: {
+                spacing: 6, turns: 80, centerOffsetX: 0, centerOffsetY: 0,
+                influence: 70, gamma: 90, minMod: 0.5, maxMod: 3.5,
+                oscAmplitude: 1.2, oscFrequency: 5, previewStrokeWidth: 1.4,
+                smoothing: 75, detail: 45, margin: 12,
+                direction: 'cw', invert: 'false', cropMode: 'fit'
+            },
+            boldContrast: {
+                spacing: 5, turns: 100, centerOffsetX: 0, centerOffsetY: 0,
+                influence: 90, gamma: 130, minMod: 0.1, maxMod: 7,
+                oscAmplitude: 3, oscFrequency: 6, previewStrokeWidth: 1.5,
+                smoothing: 45, detail: 70, margin: 10,
+                direction: 'cw', invert: 'false', cropMode: 'fit'
+            },
+            softEngraving: {
+                spacing: 3, turns: 160, centerOffsetX: 0, centerOffsetY: 0,
+                influence: 60, gamma: 85, minMod: 0.4, maxMod: 3,
+                oscAmplitude: 0.8, oscFrequency: 10, previewStrokeWidth: 1.0,
+                smoothing: 70, detail: 55, margin: 15,
+                direction: 'cw', invert: 'false', cropMode: 'fit'
+            }
+        };
+
+        const p = presets[presetName];
+        if (!p) return;
+
+        const setVal = (id, val) => {
+            const el = document.getElementById('input-iv-' + id);
+            if (!el) return;
+            el.value = val;
+            const span = document.getElementById('val-iv-' + id);
+            if (span) span.textContent = val;
+        };
+
+        ['spacing', 'turns', 'centerOffsetX', 'centerOffsetY', 'influence', 'gamma',
+         'minMod', 'maxMod', 'oscAmplitude', 'oscFrequency', 'previewStrokeWidth',
+         'smoothing', 'detail', 'margin'].forEach(k => setVal(k, p[k]));
+
+        ['direction', 'invert', 'cropMode'].forEach(k => setVal(k, p[k]));
+
+        if (!silent) this.autoGenerate();
+    }
+
     handleImageFile(file) {
         if (!file.type.startsWith('image/')) return;
         this.currentImageName = file.name;
@@ -700,6 +759,7 @@ class ImageVectorPanel {
             simplify: gV('simplify', 10),
             traceSpeckle: gV('traceSpeckle', 4),
             traceCornerSmooth: gV('traceCornerSmooth', 100),
+
             spacing: gV('spacing', 5),
             turns: gV('turns', 120),
             squiggleLineCount: gV('squiggleLineCount', 50),
