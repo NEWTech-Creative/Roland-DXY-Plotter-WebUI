@@ -1262,6 +1262,95 @@ class HpglParser {
         return Math.hypot((last.x || 0) - (first.x || 0), (last.y || 0) - (first.y || 0)) <= tolerance;
     }
 
+    multiplySvgMatrices(a, b) {
+        return [
+            (a[0] * b[0]) + (a[2] * b[1]),
+            (a[1] * b[0]) + (a[3] * b[1]),
+            (a[0] * b[2]) + (a[2] * b[3]),
+            (a[1] * b[2]) + (a[3] * b[3]),
+            (a[0] * b[4]) + (a[2] * b[5]) + a[4],
+            (a[1] * b[4]) + (a[3] * b[5]) + a[5]
+        ];
+    }
+
+    applySvgMatrixToPoint(point, matrix) {
+        return {
+            x: (matrix[0] * point.x) + (matrix[2] * point.y) + matrix[4],
+            y: (matrix[1] * point.x) + (matrix[3] * point.y) + matrix[5]
+        };
+    }
+
+    parseSvgTransform(transformValue = '') {
+        let matrix = [1, 0, 0, 1, 0, 0];
+        const commands = String(transformValue).match(/[a-zA-Z]+\s*\([^)]*\)/g) || [];
+        commands.forEach(command => {
+            const match = command.match(/^([a-zA-Z]+)\s*\(([^)]*)\)$/);
+            if (!match) return;
+            const type = match[1].toLowerCase();
+            const values = match[2].trim().split(/[\s,]+/).filter(Boolean).map(Number);
+            let next = [1, 0, 0, 1, 0, 0];
+
+            if (type === 'matrix' && values.length >= 6) {
+                next = values.slice(0, 6);
+            } else if (type === 'translate') {
+                next = [1, 0, 0, 1, values[0] || 0, values.length > 1 ? values[1] || 0 : 0];
+            } else if (type === 'scale') {
+                const sx = values.length ? values[0] : 1;
+                const sy = values.length > 1 ? values[1] : sx;
+                next = [sx, 0, 0, sy, 0, 0];
+            } else if (type === 'rotate') {
+                const angle = (values[0] || 0) * Math.PI / 180;
+                const cos = Math.cos(angle);
+                const sin = Math.sin(angle);
+                const rotation = [cos, sin, -sin, cos, 0, 0];
+                if (values.length >= 3) {
+                    const cx = values[1] || 0;
+                    const cy = values[2] || 0;
+                    next = this.multiplySvgMatrices(
+                        this.multiplySvgMatrices([1, 0, 0, 1, cx, cy], rotation),
+                        [1, 0, 0, 1, -cx, -cy]
+                    );
+                } else {
+                    next = rotation;
+                }
+            } else if (type === 'skewx') {
+                next = [1, 0, Math.tan((values[0] || 0) * Math.PI / 180), 1, 0, 0];
+            } else if (type === 'skewy') {
+                next = [1, Math.tan((values[0] || 0) * Math.PI / 180), 0, 1, 0, 0];
+            }
+
+            matrix = this.multiplySvgMatrices(matrix, next);
+        });
+        return matrix;
+    }
+
+    transformSvgPathSegment(segment, matrix) {
+        const transformed = { type: segment.type };
+        if (segment.x !== undefined || segment.y !== undefined) {
+            const point = this.applySvgMatrixToPoint({ x: segment.x || 0, y: segment.y || 0 }, matrix);
+            transformed.x = point.x;
+            transformed.y = point.y;
+        }
+        if (segment.x1 !== undefined || segment.y1 !== undefined) {
+            const point = this.applySvgMatrixToPoint({ x: segment.x1 || 0, y: segment.y1 || 0 }, matrix);
+            transformed.x1 = point.x;
+            transformed.y1 = point.y;
+        }
+        if (segment.x2 !== undefined || segment.y2 !== undefined) {
+            const point = this.applySvgMatrixToPoint({ x: segment.x2 || 0, y: segment.y2 || 0 }, matrix);
+            transformed.x2 = point.x;
+            transformed.y2 = point.y;
+        }
+        if (segment.type === 'A') {
+            transformed.rx = segment.rx;
+            transformed.ry = segment.ry;
+            transformed.rot = segment.rot;
+            transformed.large = segment.large;
+            transformed.sweep = segment.sweep;
+        }
+        return transformed;
+    }
+
     // Convert an SVG file content into HPGL
     async parseSVG(svgString) {
         const dom = new DOMParser().parseFromString(svgString, 'image/svg+xml');
@@ -1286,7 +1375,7 @@ class HpglParser {
         };
 
         // Flatten SVG elements into line segments
-        const processElement = (el, inheritedColor = null) => {
+        const processElement = (el, inheritedColor = null, transformMatrix = [1, 0, 0, 1, 0, 0]) => {
             let pts = [];
             const tag = el.tagName.toLowerCase();
             const sourceColor = this.getSvgElementColor(el, inheritedColor);
@@ -1334,11 +1423,20 @@ class HpglParser {
             }
 
             pts.forEach(segment => {
-                const ptsArr = segment.points || segment;
+                const rawPtsArr = segment.points || segment;
+                const ptsArr = rawPtsArr.map(point => this.applySvgMatrixToPoint(point, transformMatrix));
                 if (ptsArr.length < 2) return;
                 ptsArr.forEach(p => updateBounds(p.x, p.y));
                 if (segment && typeof segment === 'object' && !Array.isArray(segment)) {
-                    allPaths.push({ ...segment, sourceColor });
+                    allPaths.push({
+                        ...segment,
+                        points: ptsArr,
+                        segments: Array.isArray(segment.segments)
+                            ? segment.segments.map(pathSegment => this.transformSvgPathSegment(pathSegment, transformMatrix))
+                            : segment.segments,
+                        sourceColor,
+                        closed: segment.closed === true || this.isClosedPointLoop(ptsArr)
+                    });
                 } else {
                     allPaths.push({
                         points: ptsArr,
@@ -1351,11 +1449,12 @@ class HpglParser {
             return sourceColor;
         };
 
-        // Recursive traversal (basic, ignoring transforms for now but flattened)
-        const walk = (node, inheritedColor = null) => {
+        const walk = (node, inheritedColor = null, inheritedTransform = [1, 0, 0, 1, 0, 0]) => {
             if (node.nodeType !== 1) return;
-            const nextInheritedColor = processElement(node, inheritedColor) || inheritedColor;
-            node.childNodes.forEach(child => walk(child, nextInheritedColor));
+            const localTransform = this.parseSvgTransform(node.getAttribute?.('transform') || '');
+            const nextTransform = this.multiplySvgMatrices(inheritedTransform, localTransform);
+            const nextInheritedColor = processElement(node, inheritedColor, nextTransform) || inheritedColor;
+            node.childNodes.forEach(child => walk(child, nextInheritedColor, nextTransform));
         };
         walk(svgElement);
 
