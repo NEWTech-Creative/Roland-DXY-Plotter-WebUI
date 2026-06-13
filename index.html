@@ -1336,7 +1336,7 @@
                                         <label>Flow Control Mode <span class="settings-tooltip" tabindex="0" aria-label="Hardware CTS uses the full handshake cable. No-CTS paced sending is for 3-wire/basic cables. Y-Drop manually asserts DTR/RTS and also uses paced sending.">?</span></label>
                                         <select id="sel-handshake">
                                             <option value="hardware">Hardware CTS handshake</option>
-                                            <option value="nocts">No-CTS paced sending</option>
+                                            <option value="nocts" selected>No-CTS paced sending</option>
                                             <option value="ydrop">Y-Drop (Manual DTR/RTS)</option>
                                         </select>
                                     </div>
@@ -1344,7 +1344,7 @@
                             </div>
                             <div class="settings-subsection settings-field-full">
                                 <h4>No-CTS Pacing (Clear To Send fallback) <span class="settings-tooltip" tabindex="0" aria-label="Used when No-CTS paced sending is selected, Y-Drop is selected, or the browser/driver cannot expose CTS. These settings protect the plotter buffer during blind sending.">?</span></h4>
-                                <div class="settings-two-col settings-subsection-grid settings-four-col">
+                                <div class="settings-two-col settings-subsection-grid settings-pacing-grid">
                                     <div class="form-group">
                                         <label>General Send Delay <span class="settings-tooltip" tabindex="0" aria-label="Extra pause between HPGL commands when hardware CTS flow is not active. Fast, medium, and slow do not change the no-CTS byte window, drain delay, or command gap values.">?</span></label>
                                         <select id="sel-speed">
