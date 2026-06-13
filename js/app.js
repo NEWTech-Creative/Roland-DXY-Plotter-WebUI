@@ -11,7 +11,8 @@ class App {
             model: '1200',
             theme: 'dark-theme',
             handshake: 'normal',
-            ctsPriorityEnabled: true,
+            ctsPriorityEnabled: false,
+            flowControlDefaultVersion: 2,
             speed: 'fast',
             noCtsPacingByteWindow: 256,
             noCtsPacingDrainMs: 120,
@@ -101,7 +102,13 @@ class App {
         try {
             const saved = localStorage.getItem('dxySettings');
             if (saved) {
-                this.settings = { ...this.settings, ...JSON.parse(saved) };
+                const savedSettings = JSON.parse(saved);
+                this.settings = { ...this.settings, ...savedSettings };
+                if ((savedSettings.flowControlDefaultVersion || 0) < 2 && this.settings.handshake !== 'ydrop') {
+                    this.settings.handshake = 'normal';
+                    this.settings.ctsPriorityEnabled = false;
+                    this.settings.flowControlDefaultVersion = 2;
+                }
             }
             this.settings.customPaperSizes = this.normalizeCustomPaperSizes(this.settings.customPaperSizes);
             if (!this.isValidPaperSize(this.settings.paperSize)) {
