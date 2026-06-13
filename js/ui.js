@@ -1389,7 +1389,6 @@ class UIController {
         const selTheme = document.getElementById('sel-theme');
         const selHandshake = document.getElementById('sel-handshake');
         const selSpeed = document.getElementById('sel-speed');
-        const inputCtsPriority = document.getElementById('input-cts-priority');
         const inputNoCtsPacingWindow = document.getElementById('input-no-cts-pacing-window');
         const inputNoCtsDrainDelay = document.getElementById('input-no-cts-drain-delay');
         const inputNoCtsCommandGap = document.getElementById('input-no-cts-command-gap');
@@ -1406,12 +1405,25 @@ class UIController {
         const btnBackupWorkspace = document.getElementById('btn-backup-workspace');
         const btnLoadWorkspace = document.getElementById('btn-load-workspace');
         const panelToggleInputs = Array.from(document.querySelectorAll('[data-panel-toggle]'));
+        const getFlowControlMode = () => {
+            const handshake = this.app.settings.handshake || 'normal';
+            if (handshake === 'ydrop') return 'ydrop';
+            return this.app.settings.ctsPriorityEnabled === false ? 'nocts' : 'hardware';
+        };
+        const applyFlowControlMode = (mode) => {
+            if (mode === 'ydrop') {
+                this.app.settings.handshake = 'ydrop';
+                this.app.settings.ctsPriorityEnabled = false;
+                return;
+            }
+            this.app.settings.handshake = 'normal';
+            this.app.settings.ctsPriorityEnabled = mode !== 'nocts';
+        };
 
         btnSettings.onclick = () => {
             selTheme.value = this.app.settings.theme || 'dark-theme';
-            if (selHandshake) selHandshake.value = this.app.settings.handshake || 'normal';
+            if (selHandshake) selHandshake.value = getFlowControlMode();
             if (selSpeed) selSpeed.value = this.app.settings.speed || 'fast';
-            if (inputCtsPriority) inputCtsPriority.checked = this.app.settings.ctsPriorityEnabled !== false;
             if (inputNoCtsPacingWindow) inputNoCtsPacingWindow.value = this.app.settings.noCtsPacingByteWindow ?? 256;
             if (inputNoCtsDrainDelay) inputNoCtsDrainDelay.value = this.app.settings.noCtsPacingDrainMs ?? 120;
             if (inputNoCtsCommandGap) inputNoCtsCommandGap.value = this.app.settings.noCtsMinCommandGapMs ?? 12;
@@ -1475,10 +1487,9 @@ class UIController {
         }
         btnSave.onclick = () => {
             this.app.settings.theme = selTheme.value;
-            if (selHandshake) this.app.settings.handshake = selHandshake.value;
+            const previousFlowControlMode = getFlowControlMode();
+            if (selHandshake) applyFlowControlMode(selHandshake.value || 'hardware');
             if (selSpeed) this.app.settings.speed = selSpeed.value;
-            const previousCtsPriority = this.app.settings.ctsPriorityEnabled !== false;
-            if (inputCtsPriority) this.app.settings.ctsPriorityEnabled = inputCtsPriority.checked;
             if (inputNoCtsPacingWindow) {
                 this.app.settings.noCtsPacingByteWindow = Math.max(1, Math.min(4096, parseInt(inputNoCtsPacingWindow.value, 10) || 256));
             }
@@ -1513,8 +1524,14 @@ class UIController {
                 return acc;
             }, this._getDefaultPanelVisibility());
             this.app.saveSettings();
-            if (inputCtsPriority && previousCtsPriority !== inputCtsPriority.checked) {
-                this.logToConsole(`System: CTS priority handshaking ${inputCtsPriority.checked ? 'enabled' : 'disabled'}.`);
+            const nextFlowControlMode = getFlowControlMode();
+            if (previousFlowControlMode !== nextFlowControlMode) {
+                const labels = {
+                    hardware: 'Hardware CTS handshake',
+                    nocts: 'No-CTS paced sending',
+                    ydrop: 'Y-Drop manual DTR/RTS'
+                };
+                this.logToConsole(`System: Flow control mode set to ${labels[nextFlowControlMode] || nextFlowControlMode}.`);
             }
             this.refreshImportResolutionControl();
             this.applyPanelVisibilitySettings();
