@@ -19,8 +19,12 @@ class SerialManager {
         this.ctsRecoveryRampMs = 3000;
         this.ctsReadyCooldownMs = 500;
         this.ctsPriorityDrainMs = 40;
+        this.ctsFullDrainCheckpointBytes = 4096;
+        this.ctsFullDrainMs = 6500;
         this.bytesSincePriorityCtsPoll = 0;
+        this.bytesSinceCtsFullDrain = 0;
         this.ctsRecoveryMode = false;
+        this.ctsFullDrainAfterHoldPending = false;
         this.ctsLastHoldAt = 0;
         this.ctsLastReadyAt = 0;
         this.noCtsPacingByteWindow = 256;
@@ -114,7 +118,9 @@ class SerialManager {
             this.hardwareFlowSupported = false;
             this.lastSignals = null;
             this.bytesSincePriorityCtsPoll = 0;
+            this.bytesSinceCtsFullDrain = 0;
             this.ctsRecoveryMode = false;
+            this.ctsFullDrainAfterHoldPending = false;
             this.ctsLastHoldAt = 0;
             this.ctsLastReadyAt = 0;
             this.noCtsBytesSinceDrain = 0;
@@ -182,7 +188,9 @@ class SerialManager {
             this.softwareFlowPaused = false;
             this.rxLineBuffer = '';
             this.bytesSincePriorityCtsPoll = 0;
+            this.bytesSinceCtsFullDrain = 0;
             this.ctsRecoveryMode = false;
+            this.ctsFullDrainAfterHoldPending = false;
             this.ctsLastHoldAt = 0;
             this.ctsLastReadyAt = 0;
             this.noCtsBytesSinceDrain = 0;
@@ -261,7 +269,9 @@ class SerialManager {
             this.hardwareFlowSupported = false;
             this.lastSignals = null;
             this.bytesSincePriorityCtsPoll = 0;
+            this.bytesSinceCtsFullDrain = 0;
             this.ctsRecoveryMode = false;
+            this.ctsFullDrainAfterHoldPending = false;
             this.ctsLastHoldAt = 0;
             this.ctsLastReadyAt = 0;
             this.noCtsBytesSinceDrain = 0;
@@ -476,6 +486,18 @@ class SerialManager {
 
     async waitForCtsRecoveryCooldown() {
         if (!this.ctsRecoveryMode || !this.ctsLastReadyAt) return;
+        if (this.ctsFullDrainAfterHoldPending) {
+            this.ctsFullDrainAfterHoldPending = false;
+            this.appendSerialDebugLog(
+                `${this.getSerialDebugTimestamp()} CTS recovery full-drain wait ${this.ctsFullDrainMs}ms after hold.`,
+                'flow'
+            );
+            await new Promise(resolve => setTimeout(resolve, this.ctsFullDrainMs));
+            this.bytesSincePriorityCtsPoll = 0;
+            this.bytesSinceCtsFullDrain = 0;
+            return;
+        }
+
         const elapsedSinceReady = performance.now() - this.ctsLastReadyAt;
         const remainingMs = this.ctsReadyCooldownMs - elapsedSinceReady;
         if (remainingMs <= 0) return;
@@ -506,6 +528,26 @@ class SerialManager {
             this.bytesSincePriorityCtsPoll = 0;
         }
         return ready;
+    }
+
+    async waitForCtsFullDrainCheckpoint(nextByteLength = 0) {
+        if (!this.isHardwareHandshakeEnabled() || !this.hardwareFlowSupported) return true;
+        if (this.ctsRecoveryMode) return true;
+
+        const checkpointBytes = Math.max(0, Number(this.ctsFullDrainCheckpointBytes) || 0);
+        if (checkpointBytes <= 0) return true;
+
+        const projectedBytes = this.bytesSinceCtsFullDrain + Math.max(0, Number(nextByteLength) || 0);
+        if (projectedBytes < checkpointBytes) return true;
+
+        this.appendSerialDebugLog(
+            `${this.getSerialDebugTimestamp()} CTS full-drain checkpoint after ${this.bytesSinceCtsFullDrain}B window=${checkpointBytes}B; waiting ${this.ctsFullDrainMs}ms.`,
+            'flow'
+        );
+        await new Promise(resolve => setTimeout(resolve, this.ctsFullDrainMs));
+        this.bytesSincePriorityCtsPoll = 0;
+        this.bytesSinceCtsFullDrain = 0;
+        return this.waitForTransmitReady();
     }
 
     shouldUseNoCtsPacing() {
@@ -1177,12 +1219,18 @@ class SerialManager {
             const ctsReady = await this.waitForCtsPriorityWindow(bytes.length);
             if (!ctsReady) return false;
 
+            const ctsCheckpointReady = await this.waitForCtsFullDrainCheckpoint(bytes.length);
+            if (!ctsCheckpointReady) return false;
+
             const noCtsReady = await this.waitForNoCtsPacing(bytes.length);
             if (!noCtsReady) return false;
 
             const writeSucceeded = await this.writeWithCommunicationWatchdog(bytes, part);
             if (!writeSucceeded) return false;
             this.bytesSincePriorityCtsPoll += bytes.length;
+            if (this.isHardwareHandshakeEnabled() && this.hardwareFlowSupported) {
+                this.bytesSinceCtsFullDrain += bytes.length;
+            }
             if (this.shouldUseNoCtsPacing()) {
                 this.noCtsBytesSinceDrain += bytes.length;
                 this.noCtsLastWriteAt = performance.now();
@@ -1508,6 +1556,8 @@ class SerialManager {
             `CTS recovery window bytes: ${this.ctsRecoveryByteWindow}`,
             `CTS ready cooldown ms: ${this.ctsReadyCooldownMs}`,
             `CTS recovery ramp ms: ${this.ctsRecoveryRampMs}`,
+            `CTS full-drain checkpoint bytes: ${this.ctsFullDrainCheckpointBytes}`,
+            `CTS full-drain wait ms: ${this.ctsFullDrainMs}`,
             `No-CTS pacing active: ${this.shouldUseNoCtsPacing() ? 'yes' : 'no'}`,
             `No-CTS pacing window bytes: ${this.getNoCtsPacingByteWindow()}`,
             `No-CTS pacing drain ms: ${this.getNoCtsPacingDrainMs()}`,
@@ -1637,6 +1687,7 @@ class SerialManager {
             stats.ctsHoldCount += 1;
             stats.maxBeforeCtsHold = Math.max(stats.maxBeforeCtsHold, bytesBeforeSignal);
             this.ctsRecoveryMode = true;
+            this.ctsFullDrainAfterHoldPending = true;
             this.ctsLastHoldAt = performance.now();
             this.ctsLastReadyAt = 0;
         }
