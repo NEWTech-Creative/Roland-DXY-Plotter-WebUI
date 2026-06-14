@@ -1503,6 +1503,13 @@ class HpglParser {
                     if (s.y1 !== undefined) ns.y1 = s.y1 * scale + offsetY;
                     if (s.x2 !== undefined) ns.x2 = s.x2 * scale + offsetX;
                     if (s.y2 !== undefined) ns.y2 = s.y2 * scale + offsetY;
+                    if (s.type === 'A') {
+                        if (s.rx !== undefined) ns.rx = s.rx * scale;
+                        if (s.ry !== undefined) ns.ry = s.ry * scale;
+                        if (s.rot !== undefined) ns.rot = s.rot;
+                        if (s.large !== undefined) ns.large = s.large;
+                        if (s.sweep !== undefined) ns.sweep = s.sweep;
+                    }
                     return ns;
                 });
             }
